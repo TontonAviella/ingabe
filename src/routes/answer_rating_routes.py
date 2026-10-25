@@ -6,7 +6,6 @@ from fastapi import APIRouter, Depends, HTTPException, Response
 from pydantic import BaseModel, Field
 
 from src.database.models import MundiMap
-from src.dependencies import health_metrics
 from src.dependencies.dag import get_map
 from src.dependencies.session import UserContext, verify_session_required
 from src.services import sage_answer_ratings
@@ -30,5 +29,4 @@ async def rate_sage_answer(
                                            rating=body.rating, comment=body.comment)
     if not saved:
         raise HTTPException(404, "No Sage answer with that id on this map")
-    await health_metrics.count("sage_answer_ratings_total", {"rating": body.rating})
     return Response(status_code=204)

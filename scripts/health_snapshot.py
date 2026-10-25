@@ -163,7 +163,7 @@ CHECKS = [
      ' / sum by (queryid) (increase(pg_stat_statements_calls_total{datname="mundidb"}[1h])))', "s", 2, 5, True,
      "Slowest database queries below"),
     ("sage", "Answers marked wrong (👎), last 7 days",
-     'sum(increase(sage_answer_ratings_total{rating="down"}[7d])) or vector(0)', "count", 1, 3, True,
+     'sum(sage_answer_ratings_last_7d{rating="down"}) or vector(0)', "count", 1, 3, True,
      "Sage: rated answers below"),
     ("monitoring", "Request traces arriving", "(sum(rate(tempo_distributor_spans_received_total[30m])) > bool 0)",
      "updown", None, None, False, "container mundi-tempo"),
@@ -386,8 +386,12 @@ SELECT coalesce(json_agg(q), '[]'::json) FROM (
 def slow_query_rows() -> list[dict]:
     """The 20 queries that took the most database time since Postgres started (pg_stat_statements)."""
     try:
+        # The compose service's container, whatever the project is called (ingabe-postgresdb-1 on the server).
+        container = subprocess.run(
+            ["docker", "ps", "-q", "--filter", "label=com.docker.compose.service=postgresdb"],
+            capture_output=True, text=True, timeout=15, check=True).stdout.split()[0]
         out = subprocess.run(
-            ["docker", "exec", "-u", "postgres", "ingabe-postgresdb-1", "psql", "-U", "mundi_admin", "-d", "mundidb",
+            ["docker", "exec", "-u", "postgres", container, "psql", "-U", "mundi_admin", "-d", "mundidb",
              "-At", "-c", SLOW_QUERIES_SQL], capture_output=True, text=True, timeout=30, check=True).stdout
         rows = json.loads(out.strip() or "[]")
     except Exception as e:  # noqa: BLE001 - one row saying so (e.g. the extension is not created yet)

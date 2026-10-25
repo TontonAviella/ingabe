@@ -100,9 +100,13 @@ def _init_opentelemetry():
         from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor
         from opentelemetry.instrumentation.requests import RequestsInstrumentor
 
+        # Query values are not recorded (asyncpg's default); URLs lose their query string (keys travel there).
         AsyncPGInstrumentor().instrument()
-        HTTPXClientInstrumentor().instrument()
-        RequestsInstrumentor().instrument()
+        HTTPXClientInstrumentor().instrument(
+            request_hook=lambda span, request: _url_without_query(span, request.url),
+            async_request_hook=_httpx_async_request_hook,
+        )
+        RequestsInstrumentor().instrument(request_hook=lambda span, request: _url_without_query(span, request.url))
 
         logging.getLogger("src").info(
             "OpenTelemetry initialized → %s (service=%s)",
@@ -113,6 +117,10 @@ def _init_opentelemetry():
         logging.getLogger("src").warning("OpenTelemetry SDK packages not installed: %s", e)
     except Exception as e:
         logging.getLogger("src").warning("OpenTelemetry init failed: %s", e)
+
+
+async def _httpx_async_request_hook(span, request) -> None:
+    _url_without_query(span, request.url)
 
 
 # Initialize before any module imports trace.get_tracer()
@@ -526,6 +534,22 @@ _UNTRACED_PATHS = frozenset({"/metrics"})
 _http_tracer = trace.get_tracer("ingabe.http")
 
 
+def _route_template(scope) -> str | None:
+    """The matched route with its router prefix ("/api/maps/{map_id}/tree"). scope["route"].path alone lacks the
+    prefix include_router adds ("/{map_id}/tree"), which would merge different routes; FastAPI keeps the full one on
+    its route context. Pinned by src/test_request_tracing.py."""
+    context = (scope.get("fastapi") or {}).get("effective_route_context")
+    return getattr(context, "path", None) or getattr(scope.get("route"), "path", None)
+
+
+def _url_without_query(span, url) -> None:
+    """Outside calls are traced without their query string: some carry keys there (Roboflow's api_key)."""
+    if span is not None and span.is_recording():
+        clean = str(url).split("?", 1)[0]
+        span.set_attribute("http.url", clean)
+        span.set_attribute("url.full", clean)
+
+
 class TraceRequestMiddleware(BaseHTTPMiddleware):
     """One trace per request (exported to Tempo when OTEL_EXPORTER_OTLP_ENDPOINT is set; a no-op otherwise).
 
@@ -546,8 +570,7 @@ class TraceRequestMiddleware(BaseHTTPMiddleware):
                 span.record_exception(exc)
                 raise
             finally:
-                route = request.scope.get("route")
-                template = getattr(route, "path", None)
+                template = _route_template(request.scope)
                 if template:
                     span.update_name(f"{request.method} {template}")
                     span.set_attribute("http.route", str(template))

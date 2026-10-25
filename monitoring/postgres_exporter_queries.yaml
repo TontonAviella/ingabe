@@ -43,3 +43,23 @@ pipeline_cache:
     - age_seconds:
         usage: GAUGE
         description: Seconds since the cache was last written (since the epoch when empty)
+
+# sage_answer_ratings_*: Sage's answers people marked right (up) or wrong (down), one per person and answer however
+# often they click (src/services/sage_answer_ratings.py). For the SageAnswersDisliked alarm and the Health page.
+sage_answer_ratings:
+  query: |
+    SELECT rating,
+           count(*) FILTER (WHERE updated_at > now() - interval '24 hours') AS last_24h,
+           count(*) FILTER (WHERE updated_at > now() - interval '7 days') AS last_7d
+      FROM sage_answer_ratings GROUP BY rating
+  metrics:
+    - rating:
+        usage: "LABEL"
+        description: "up or down"
+    - last_24h:
+        usage: "GAUGE"
+        description: "Answers rated this way in the last 24 hours"
+    - last_7d:
+        usage: "GAUGE"
+        description: "Answers rated this way in the last 7 days"
+

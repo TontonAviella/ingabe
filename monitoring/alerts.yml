@@ -704,7 +704,7 @@ groups:
   - name: sage-ratings
     rules:
       - alert: SageAnswersDisliked
-        expr: sum(increase(sage_answer_ratings_total{rating="down"}[24h])) >= 3
+        expr: sum(sage_answer_ratings_last_24h{rating="down"}) >= 3
         labels:
           severity: warning
           area: sage

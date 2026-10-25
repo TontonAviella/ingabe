@@ -39,7 +39,6 @@ _ZERO_FIELDS = (
     + [f"frontend_map_events_total|event={e}"
        for e in ("map_load", "map_error", "tile_error", "deck_ready", "deck_error", "webgl_lost")]
     + [f"frontend_errors_total|kind={k}" for k in ("js_error", "promise_error", "react_crash", "app_init_failed")]
-    + [f"sage_answer_ratings_total|rating={r}" for r in ("up", "down")]
 )
 
 _HELP = {
@@ -51,7 +50,6 @@ _HELP = {
     "sage_llm_errors_total": ("counter", "AI model errors by kind; stage=attempt is one try, stage=final ended the turn"),
     "frontend_map_events_total": ("counter", "Maps in people's browsers: loaded, failed, tile errors, deck.gl, lost graphics"),
     "frontend_errors_total": ("counter", "Errors in people's browsers by kind: script error, promise, crashed screen, app start"),
-    "sage_answer_ratings_total": ("counter", "People's ratings of Sage's answers (up, down)"),
 }
 
 

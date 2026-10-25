@@ -241,7 +241,8 @@ services:
       dockerfile: Dockerfile.postgres
     image: mundi-postgres:local
     # pg_stat_statements: time and calls per query, so slow queries can be found (Health page, Grafana Database).
-    # The extension itself is created once per database by an admin: CREATE EXTENSION pg_stat_statements.
+    # Once per database, as admin: CREATE EXTENSION pg_stat_statements; GRANT pg_read_all_stats TO mundiuser (the
+    # exporter reads as mundiuser; without it other roles' queries have no queryid and break its scrape).
     command: ["postgres", "-c", "shared_preload_libraries=pg_stat_statements", "-c", "pg_stat_statements.track=top",
               "-c", "track_io_timing=on"]
     environment:
@@ -425,7 +426,7 @@ services:
     image: prom/prometheus:v2.53.0
     container_name: mundi-prometheus
     ports:
-      - "9090:9090"
+      - "127.0.0.1:9090:9090"  # also takes remote writes (Tempo): never on a public interface
     volumes:
       - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - ./monitoring/alerts.yml:/etc/prometheus/alerts.yml:ro

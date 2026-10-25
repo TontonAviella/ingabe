@@ -392,7 +392,7 @@ tests:
         values: '0x10 1 2 3 4x60'
       - series: 'frontend_errors_total{kind="react_crash"}'
         values: '0x10 1x60'
-      - series: 'sage_answer_ratings_total{rating="down"}'
+      - series: 'sage_answer_ratings_last_24h{rating="down"}'
         values: '0x10 1 2 3x60'
       - series: 'tempo_distributor_spans_received_total{tenant="single-tenant"}'
         values: '0x80'

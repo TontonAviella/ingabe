@@ -11,7 +11,7 @@ const sent = new Set<string>();
 
 const IGNORED = [
   /ResizeObserver loop/i,
-  /AbortError|The user aborted a request|signal is aborted/i,
+  /AbortError|The user aborted a request|signal is aborted|operation was aborted|Fetch is aborted/i,
   /Failed to fetch dynamically imported module|Importing a module script failed/i,
   /^Script error\.?$/i, // another site's script: the browser hides the details
 ];
@@ -35,6 +35,8 @@ function topFrames(stack: string | undefined): string {
 export function reportBrowserError(kind: BrowserErrorKind, error: unknown, source = ''): void {
   try {
     const message = (error instanceof Error ? error.message : typeof error === 'string' ? error : String(error ?? '')).slice(0, 500);
+    // A cancelled request (a timeout, leaving the page) is not a fault; browsers word it differently, the name is the same.
+    if ((error as { name?: string } | null)?.name === 'AbortError') return;
     if (IGNORED.some((re) => re.test(message))) return;
     if (/^(chrome|moz|safari)-extension:/.test(source)) return;
     const key = `${kind}|${message}`;

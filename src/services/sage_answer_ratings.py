@@ -66,6 +66,9 @@ async def recent(days: int = 7) -> dict[str, Any]:
             ORDER BY (r.rating = 'down') DESC, r.updated_at DESC
             LIMIT 200
             """, days)
+        counts = {r["rating"]: r["n"] for r in await conn.fetch(
+            "SELECT rating, count(*) AS n FROM sage_answer_ratings WHERE updated_at > now() - make_interval(days => $1) "
+            "GROUP BY rating", days)}
     rated = []
     for r in rows:
         turn = sage_turn_log.turn_row(json.loads(r["turn"])) if r["turn"] else {}
@@ -76,5 +79,4 @@ async def recent(days: int = 7) -> dict[str, Any]:
             "steps": turn.get("steps"), "rules": turn.get("rules"), "error": turn.get("error"),
             "turn_seconds": turn.get("seconds"), "trace_id": turn.get("trace_id"),
         })
-    return {"up": sum(1 for r in rated if r["rating"] == "up"),
-            "down": sum(1 for r in rated if r["rating"] == "down"), "rated": rated}
+    return {"up": counts.get("up", 0), "down": counts.get("down", 0), "rated": rated}
