@@ -436,7 +436,9 @@ async def test_starting_the_finder_is_rate_limited_per_user(client, seeded, swit
 # --- Cards ----------------------------------------------------------------------------------------------------------
 
 @pytest.mark.anyio
-async def test_the_cards_follow_the_contract_and_the_reader(client, seeded, switched_on):
+async def test_the_cards_follow_the_contract_and_the_reader(client, seeded, switched_on, monkeypatch):
+    from src.services import card_memory
+    monkeypatch.setattr(card_memory, "daily_seed", lambda *_a, **_k: 0)  # no daily shuffle: the role alone orders
     ids = await seeded.make()
     _as(ids["owner"])
     for audience, first in (("owner", "equipment"), ("technician", "photos_to_check"), (None, "equipment")):
