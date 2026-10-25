@@ -22,7 +22,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 
 from src.dependencies.session import UserContext, verify_session_required
-from src.services import industry, insurance_engine
+from src.services import industry, insurance_engine, reader_roles
 from src.database.pool import get_async_db_connection
 
 router = APIRouter()
@@ -33,11 +33,17 @@ class AudienceUpdate(BaseModel):
 
 
 async def _audience_payload(conn, session: UserContext) -> dict:
-    audience, source = await insurance_engine.audience_setting(conn, session.get_user_id(), session.get_org_id())
+    """The user's role in the industry they work in now (src/services/reader_roles.py), where it comes from, and the
+    industry's roles. Reports are written in the role's voice (insurance_engine)."""
+    user_id, org_id = session.get_user_id(), session.get_org_id()
+    working_in = await industry.current_industry(conn, user_id, org_id) or "agriculture"
+    saved, source = await reader_roles.saved_role(conn, user_id, org_id)
+    role = reader_roles.for_industry(working_in, saved)
     return {
-        "audience": audience,
-        "source": source,
-        "options": [{"key": k, "label": v} for k, v in insurance_engine.AUDIENCE_LABELS.items()],
+        "audience": role,
+        "source": source if saved == role else "default",
+        "industry": working_in,
+        "options": [{"key": o["id"], "label": o["label"]} for o in reader_roles.options(working_in)],
     }
 
 
@@ -50,7 +56,7 @@ async def get_report_audience(session: UserContext = Depends(verify_session_requ
 
 @router.put("/report-audience")
 async def put_report_audience(body: AudienceUpdate, session: UserContext = Depends(verify_session_required)):
-    """Save the user's own report view (farmer, insurance, agronomist, scientist), or clear it."""
+    """Save the user's own role (any industry's, reader_roles), or clear it."""
     async with get_async_db_connection() as conn:
         try:
             saved = await insurance_engine.save_user_audience(conn, session.get_user_id(), body.audience)

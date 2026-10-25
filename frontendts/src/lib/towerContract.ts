@@ -52,12 +52,18 @@ export const ALL_PARTS: PartLabel[] = [
   { id: 'tower_bolt_loose', label: 'Loose bolt', plural: 'loose bolts' },
 ];
 
-export type TowerAudience = 'owner' | 'technician';
+// Who reads the tower and line questions (src/services/reader_roles.py ASSETS): each is asked its own questions.
+export type TowerAudience = 'owner' | 'manager' | 'technician';
 
 export const TOWER_AUDIENCES: { id: TowerAudience; label: string }[] = [
   { id: 'owner', label: 'Owner' },
+  { id: 'manager', label: 'Manager' },
   { id: 'technician', label: 'Technician' },
 ];
+
+export function isTowerAudience(role: string | null | undefined): role is TowerAudience {
+  return TOWER_AUDIENCES.some((a) => a.id === role);
+}
 
 /** GET /api/towers/layer/{layer_id}/photos */
 export interface InspectionPhoto {
@@ -112,6 +118,8 @@ export interface PhotoQuestion {
   /** What would answer it, for a question not answerable yet. */
   needs: string | null;
   lights: 'equipment' | 'defects' | 'antennas' | null;
+  /** Its answer changed since this reader last looked. */
+  new?: boolean;
 }
 
 export interface PhotoQuestions {

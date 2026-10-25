@@ -243,3 +243,31 @@ def detect_current_season(crop_type: str = "maize", ref_date: Optional[datetime]
         return "A"
     # Season B: Mar(3) through Aug(8)
     return "B"
+
+
+PLANTING_DAYS = 35  # from the season's planting date: planting and coming up
+HARVEST_DAYS = 25  # the last days before harvest and the first after it
+
+
+def season_moment(ref_date: Optional[datetime] = None, crop_type: str = "maize") -> str:
+    """Where the current season is for a crop: "planting" (first PLANTING_DAYS after the planting date),
+    "growing", "harvest" (HARVEST_DAYS either side of the expected harvest) or "between" (after a season's harvest,
+    before the next planting). Used to lead with the questions that matter now."""
+    ref_date = ref_date or datetime.utcnow()
+    calendar = CROP_CALENDARS.get(crop_type, CROP_CALENDARS["maize"])
+    moments = []
+    for year in (ref_date.year - 1, ref_date.year):
+        for entry in calendar.values():
+            month, day = (int(x) for x in entry["planting"].split("-"))
+            planted = datetime(year, month, day)
+            days = (ref_date - planted).days
+            if days >= 0:
+                moments.append((days, entry["harvest_dap"]))
+    days, harvest = min(moments)  # the most recent planting
+    if days < PLANTING_DAYS:
+        return "planting"
+    if days < harvest - HARVEST_DAYS:
+        return "growing"
+    if days <= harvest + HARVEST_DAYS:
+        return "harvest"
+    return "between"

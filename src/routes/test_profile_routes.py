@@ -8,9 +8,12 @@ async def test_get_report_audience_lists_the_views(auth_client):
     r = await auth_client.get("/api/user/report-audience")
     assert r.status_code == 200
     body = r.json()
-    assert body["audience"] in {"farmer", "insurance", "agronomist", "scientist"}
+    from src.services import reader_roles
+
+    keys = [o["key"] for o in body["options"]]
+    assert keys == [o["id"] for o in reader_roles.options(body["industry"])]  # the roles of the industry worked in
+    assert body["audience"] in keys
     assert body["source"] in {"user", "partner", "default"}
-    assert [o["key"] for o in body["options"]] == ["farmer", "insurance", "agronomist", "scientist"]
 
 
 @pytest.mark.anyio

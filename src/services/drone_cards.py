@@ -47,6 +47,7 @@ from src.services import (
     farm_records,
     field_checks,
     isdasoil_service,
+    reader_roles,
     wapor_service,
 )
 from src.services.card_status import (
@@ -61,7 +62,7 @@ from src.services.card_status import (
 )
 from src.services.card_status import how_sure as _how_sure
 from src.services.grvi import BARE_PIXEL, LOW_GREEN, grvi
-from src.services.insurance_engine import AUDIENCE_LABELS, normalize_audience
+from src.services.insurance_engine import normalize_audience
 
 logger = logging.getLogger(__name__)
 
@@ -94,7 +95,8 @@ STATUS_LABELS = {
     CANT_TELL: "Can't tell yet",
 }
 
-# How the cards are ranked: readiness first, then the situation, then the reader.
+# How the cards are ranked: readiness first, then the situation, then the reader's role (src/services/reader_roles.py),
+# the moment of the season, what changed since they last looked, and a little chance so each day's deck differs.
 _BASE_SCORE = {READY: 100, PARTLY: 60, WORKING: 55, NEEDS_FLIGHT: 40, NEEDS_CAMERA: 40, CANT_TELL: 20, TO_BUILD: 10,
                LEARN: 0}
 _READER_BOOST = {
@@ -106,7 +108,23 @@ _READER_BOOST = {
                   "growth": 10},
     "scientist": {"field_outlines": 20, "crop_types": 18, "plots_green": 15, "plot_stage": 12, "weak_spots": 10,
                   "soil": 10},
+    "cooperative": {"weeds": 22, "plots_green": 20, "plot_stage": 18, "bare_ground": 15, "field_outlines": 12,
+                    "plant_count": 12, "spray": 10},
+    "government": {"bare_ground": 25, "crop_types": 22, "field_outlines": 18, "growth": 15, "plots_green": 12,
+                   "history": 10, "water": 10},
+    "buyer": {"yield": 25, "crop_types": 22, "plot_stage": 18, "growth": 15, "field_outlines": 12, "history": 10},
 }
+# What matters at each moment of the season (crop_calendar.season_moment).
+_SEASON_BOOST = {
+    "planting": {"bare_ground": 25, "plant_count": 20, "field_outlines": 15, "soil": 15, "fertilizer": 12,
+                 "crop_types": 10},
+    "growing": {"weeds": 20, "plots_green": 18, "weak_spots": 15, "water": 15, "pests": 15, "plot_problems": 12,
+                "plot_stage": 12, "growth": 12, "spray": 10},
+    "harvest": {"yield": 25, "crop_types": 18, "history": 12, "plot_stage": 10, "growth": 10},
+    "between": {"history": 20, "soil": 20, "field_outlines": 15, "fertilizer": 10, "bare_ground": 10},
+}
+CHANGED_BOOST = 45  # an answer that changed since the reader last looked comes first, marked new
+SEEN_PENALTY = 40  # a question the reader opened in the last day gives way to others
 _SITUATION_BOOST = 30
 BARE_SHARE_WORTH_ASKING = 0.03  # bare ground on 3% of the photo or more moves its card up
 FOR_YOU_COUNT = 6  # cards shown first, the learning card included
@@ -178,6 +196,10 @@ class Here:
     fingerprinted: Optional[int] = None
     fingerprint_job: Optional[background_jobs.Job] = None
     seed: int = 0  # picks the wording of each question and shuffles the deck; 0 keeps both fixed
+    role: Optional[str] = None  # the reader's role (reader_roles): the questions are worded for it
+    moment: Optional[str] = None  # the moment of the season (crop_calendar.season_moment); None: not weighed
+    seen: frozenset[str] = frozenset()  # cards the reader opened in the last day
+    changed: frozenset[str] = frozenset()  # cards whose answer changed since the reader last saw the deck
 
 
 def _to_wgs84(crs: Any) -> Callable[..., Any]:
@@ -438,6 +460,85 @@ _CARDS = [
 ]
 _CARD_BY_ID = {card.id: card for card in _CARDS}
 
+# The questions each role asks, in its own words (the card's answer is the same facts). A role without its own words
+# for a card is asked the card's general question. Every wording must be answerable by the card: no promise of a
+# document, comparison or number the card does not give.
+_ROLE_WORDS: dict[str, dict[str, tuple[str, ...]]] = {
+    "farmer": {
+        "plots_green": ("Which of my plots look paler than the rest?", "Where should I walk first this week?"),
+        "weak_spots": ("Which part of my field is falling behind?", "Is any corner of my farm doing worse?"),
+        "bare_ground": ("Which of my fields are still empty?", "Is any of my land not planted yet?"),
+        "weeds": ("Which of my plots need weeding first?", "Where are weeds taking over my crop?"),
+        "plant_count": ("Did my seeds come up well?", "Where are the gaps in my rows?"),
+        "water": ("Is my crop getting enough water?", "Which part of my field is driest?"),
+        "pests": ("Is anything attacking my crop?", "Where should I look for pests?"),
+        "crop_types": ("What is planted in each of my plots?",),
+        "yield": ("How much harvest can I expect?",),
+        "soil": ("What does my soil need?",),
+        "learn_camera": ("Can this photo tell if my crop is sick?",),
+    },
+    "cooperative": {
+        "plots_green": ("Which members' plots look weakest?", "Which plots should the team visit first?"),
+        "weeds": ("Which plots still need weeding?", "Where should the weeding team go this week?"),
+        "bare_ground": ("Which plots are not planted yet?", "How much of our land is still bare?"),
+        "plot_stage": ("Which plots were planted late?", "Which blocks are behind the others?"),
+        "field_outlines": ("How many plots do we have, and how big is each?",),
+        "plant_count": ("Did enough seed come up on each plot?",),
+        "spray": ("Where should the team spray, and where can we skip?",),
+        "yield": ("How much will we harvest this season?",),
+        "water": ("Is water reaching every block?",),
+    },
+    "agronomist": {
+        "plot_problems": ("What problems show from the air, and where?", "Where are gaps, yellowing or standing water?"),
+        "plots_green": ("Which plots should I scout first?", "Which plots are paler than their neighbours?"),
+        "plot_stage": ("Which plots are behind in growth stage?",),
+        "soil": ("Which nutrients are likely short, zone by zone?", "Where should soil samples be taken?"),
+        "fertilizer": ("Which zones would respond to fertilizer?",),
+        "water": ("Is water stress showing anywhere?",),
+        "pests": ("Where might pests or disease be starting?",),
+        "weak_spots": ("Where is the canopy weakest?",),
+        "learn_camera": ("What can this camera measure, and what not?",),
+    },
+    "insurance": {
+        "crop_types": ("Which crops are in the field, plot by plot?", "What is planted here, and on how much land?"),
+        "bare_ground": ("Is this land planted, or still bare?", "How much of this area is not planted?"),
+        "history": ("How has this land been farmed in past seasons?",),
+        "plot_problems": ("Is there visible damage, and where?",),
+        "field_outlines": ("How many hectares does each plot cover?",),
+        "growth": ("Has the crop grown since the last photo?",),
+        "weak_spots": ("Which part of the field looks weak or damaged?",),
+    },
+    "scientist": {
+        "field_outlines": ("How were the plots outlined, and how big is each?",),
+        "crop_types": ("Which crop is in each plot, and how sure is each call?",),
+        "plots_green": ("How does greenness vary across plots?",),
+        "plot_stage": ("How do growth stages differ between plots?",),
+        "weak_spots": ("Where is the greenness lowest, and how was it measured?",),
+        "soil": ("What do the soil estimates say, and at what resolution?",),
+        "plant_count": ("How many plants per plot, and how close is the count?",),
+        "learn_camera": ("What can a colour camera measure, and what needs multispectral?",),
+    },
+    "government": {
+        "bare_ground": ("How much of this area is planted this season?", "Which parts are still not planted?"),
+        "crop_types": ("Which crops are grown here, and on how many hectares?",),
+        "field_outlines": ("How many plots are there, and how much land do they cover?",),
+        "plots_green": ("Which parts of this area look weakest?",),
+        "growth": ("Is the season on track since the last photo?",),
+        "history": ("How has this land been used in past seasons?",),
+        "yield": ("What harvest can this area expect?",),
+        "water": ("Is water reaching every block?",),
+    },
+    "buyer": {
+        "yield": ("How much will these fields produce?", "What harvest can we expect from here?"),
+        "crop_types": ("How much of each crop is growing here?",),
+        "plot_stage": ("Which plots are ahead, and which are behind?",),
+        "growth": ("Is the crop growing on schedule?",),
+        "field_outlines": ("How many hectares are planted here?",),
+        "history": ("How did these fields produce in past seasons?",),
+        "plots_green": ("Which plots look weakest, and could cut supply?",),
+    },
+}
+
 
 _PLOT_CARDS = ("field_outlines", "plots_green")
 
@@ -634,8 +735,12 @@ def _has_records(card_id: str, here: Here) -> bool:
 
 
 def _wording(definition: _CardDef, here: Here) -> str:
-    """The question in the words the seed picks (the first wording when the seed is 0)."""
-    words = definition.with_records if definition.with_records and _has_records(definition.id, here) else definition.questions
+    """The question in the reader's role's words (else the card's), in the wording the seed picks (the first when the
+    seed is 0). A card answered from the reader's own documents asks about them."""
+    if definition.with_records and _has_records(definition.id, here):
+        words = definition.with_records
+    else:
+        words = _ROLE_WORDS.get(here.role or "", {}).get(definition.id) or definition.questions
     if not here.seed:
         return words[0]
     return words[(here.seed + zlib.crc32(definition.id.encode())) % len(words)]
@@ -652,16 +757,22 @@ def _card(card_id: str, analysis: PhotoAnalysis, here: Here) -> dict[str, Any]:
         "preview": _preview(card_id, analysis, here),
         "status": status,
         "status_label": STATUS_LABELS[status],
+        "new": card_id in here.changed,  # its answer changed since the reader last looked
     }
 
 
 SHUFFLE_POINTS = 30  # with a seed, each card gets up to this many extra points at random, so the deck changes
 
 
-def _score(card: dict[str, Any], analysis: PhotoAnalysis, audience: str, seed: int = 0) -> float:
-    score: float = _BASE_SCORE[card["status"]] + _READER_BOOST.get(audience, {}).get(card["id"], 0)
-    if seed:
-        score += random.Random(f"{seed}:{card['id']}").uniform(0, SHUFFLE_POINTS)
+def _score(card: dict[str, Any], analysis: PhotoAnalysis, role: str, here: Here) -> float:
+    score: float = _BASE_SCORE[card["status"]] + _READER_BOOST.get(role, {}).get(card["id"], 0)
+    score += _SEASON_BOOST.get(here.moment or "", {}).get(card["id"], 0)
+    if card["id"] in here.changed:
+        score += CHANGED_BOOST
+    if card["id"] in here.seen:
+        score -= SEEN_PENALTY
+    if here.seed:
+        score += random.Random(f"{here.seed}:{card['id']}").uniform(0, SHUFFLE_POINTS)
     look_area = analysis.look.area_ha
     bare_share = analysis.bare.area_ha / look_area if look_area else 0.0
     if card["id"] == "bare_ground" and bare_share >= BARE_SHARE_WORTH_ASKING:
@@ -692,13 +803,20 @@ def _plot_label(plot: dict[str, Any]) -> str:
     return f"{plot['name']} · plot {plot['number']}" if plot.get("name") else f"Plot {plot['number']}"
 
 
+def statuses(analysis: PhotoAnalysis, here: Here) -> dict[str, str]:
+    """Each card's status now (for card_memory: what changed since the reader last looked)."""
+    return {card.id: _status(card.id, analysis, here) for card in _CARDS}
+
+
 def build_deck(analysis: PhotoAnalysis, audience: Optional[str], here: Here) -> dict[str, Any]:
-    """The photo's summary, the cards to show first, and every card grouped by service."""
-    reader = normalize_audience(audience)
+    """The photo's summary, the cards to show first, and every card grouped by service. `audience` is the reader's
+    role (reader_roles; an unknown one reads as the default): the questions are worded and ranked for it."""
+    role = reader_roles.for_industry("agriculture", audience)
+    here = dataclasses.replace(here, role=role)
     cards = [_card(card.id, analysis, here) for card in _CARDS]
     learn = next(card for card in cards if card["status"] == LEARN)
     ranked = sorted((card for card in cards if card is not learn),
-                    key=lambda card: _score(card, analysis, reader, here.seed), reverse=True)
+                    key=lambda card: _score(card, analysis, role, here), reverse=True)
     look = analysis.look
     summary = [f"About {_ha(look.area_ha)}" if look.area_ha is not None else None, _camera_label(analysis),
                f"{look.resolution_cm:.1f} cm per pixel" if look.resolution_cm is not None else None]
@@ -715,9 +833,10 @@ def build_deck(analysis: PhotoAnalysis, audience: Optional[str], here: Here) -> 
             "bounds": analysis.bounds,
             "photos_here": here.photos,
         },
-        "audience": reader,
-        "audience_label": AUDIENCE_LABELS[reader],
-        "audiences": [{"id": key, "label": label} for key, label in AUDIENCE_LABELS.items()],
+        "audience": role,
+        "audience_label": reader_roles.label(role),
+        "audiences": reader_roles.options("agriculture"),
+        "moment": here.moment,
         "for_you": ranked[:FOR_YOU_COUNT - 1] + [learn],
         "ask_sage": _deck_asks(analysis, here),
         "seed": here.seed,
@@ -1862,7 +1981,8 @@ def answer_card(card_id: str, analysis: PhotoAnalysis, audience: Optional[str], 
     """The answer to one card; KeyError for an unknown card. Soil and water read external data (blocking)."""
     if card_id not in _CARD_BY_ID:
         raise KeyError(card_id)
-    reader = normalize_audience(audience)
+    reader = normalize_audience(audience)  # the voice the answer is written in (a role reads in its voice)
+    here = dataclasses.replace(here, role=reader_roles.for_industry("agriculture", audience))
     answer = (_ANSWERS[card_id](analysis, reader, here) if card_id in _ANSWERS
               else _coming(card_id, analysis, reader, here))
     answer["ask_sage"] = _asks(card_id, analysis, here, answer["items"])

@@ -57,7 +57,7 @@ def test_the_deck_puts_each_readers_question_first_and_the_learning_card_last(au
     for state in (here(), here(OPEN)):
         cards = tower_cards.deck(state, audience)["cards"]
         assert [c["id"] for c in cards][0] == first and cards[-1]["id"] == "learn_review"
-        assert all(set(c) == {"id", "title", "status", "preview"} for c in cards)
+        assert all(set(c) == {"id", "title", "status", "preview", "new"} for c in cards)
         assert {c["id"] for c in cards} == set(tower_cards.CARDS)
     with pytest.raises(tower_cards.UnknownAudience):
         tower_cards.deck(here(), "farmer")
@@ -67,7 +67,8 @@ def test_every_answer_has_the_drone_answer_shape():
     for card_id in tower_cards.CARDS:
         for state in (here(), here(OPEN)):
             answer = tower_cards.answer_card(card_id, state, "owner")
-            assert DRONE_ANSWER_KEYS <= set(answer) and answer["title"] == tower_cards.CARDS[card_id]
+            assert DRONE_ANSWER_KEYS <= set(answer)
+            assert answer["title"] == tower_cards.question(tower_cards.DEFAULT_ASSET, "owner", card_id)
             upcoming = (tower_cards.DEFAULT_ASSET.upcoming or {}).get(card_id)
             assert answer["status_label"] == (upcoming.label if upcoming else tower_cards.STATUS_LABELS[answer["status"]])
             assert set(answer["how_sure"]) == {"level", "label", "bars", "because", "surer"}
@@ -339,7 +340,7 @@ BOLTS = {"a" * 64: _with(TELECOM_PARTS, tower_bolt_missing=dict(marks=1, suggest
 
 def test_counted_bolts_are_listed_with_their_photo_and_the_owner_is_told_what_to_do():
     answer = tower_cards.answer_card("defects", here(BOLTS), "owner")
-    assert answer["status"] == READY and answer["question"] == "Is the tower structurally safe?"
+    assert answer["status"] == READY and answer["question"] == "Is my tower structurally safe?"  # the owner's words
     assert "Rust, cracked welds, bent or broken steel" in answer["what"]  # what is not measured, said plainly
     assert answer["what"].startswith("Missing bolts: at least 3 on one photo (DJI_0001.JPG), counted on 1 photo.")
     assert [i["title"] for i in answer["items"]] == ["DJI_0001.JPG"]
@@ -367,8 +368,8 @@ def test_power_lines_ask_about_the_line_and_its_nests_never_tower_equipment():
     nests = {"a" * 64: work}
     power = tower_cards.Here(inspection=_inspection(PHOTOS, nests), earlier=NO_EARLIER, asset=POWER)
     deck = {c["id"]: c for c in tower_cards.deck(power, "owner")["cards"]}
-    assert deck["equipment"]["title"] == "What is on this line?"
-    assert deck["defects"]["title"] == "Are there bird nests on the line?" and deck["defects"]["status"] == READY
+    assert deck["equipment"]["title"] == "What equipment is on this stretch of line?"  # the owner's words
+    assert deck["defects"]["title"] == "Are birds nesting on my line?" and deck["defects"]["status"] == READY
     equipment = tower_cards.answer_card("equipment", power, "owner")
     assert "Pylons" in equipment["what"] and "ishes" not in equipment["what"]  # no dishes, antennas or radio units
     nest = tower_cards.answer_card("defects", power, "owner")
@@ -469,9 +470,45 @@ def test_the_photo_screen_asks_the_inspections_questions_for_one_photo():
     assert by["defects"]["on_photo"].startswith("Bolts are looked for only on a close-up where you mark one")
     assert by["hot_spots"]["on_photo"] == "An ordinary photo does not show heat." and by["hot_spots"]["needs"]
     assert by["equipment"]["needs"] is None
-    assert asked["summary"] == "This photo can answer: what is on the tower, against the tenancy contracts."
+    assert asked["summary"] == "This photo can answer: what is on my tower, against the tenancy contracts."
     night = tower_cards.photo_questions(here(OPEN), replace(photo, taken_at="2026-10-09T19:40:00"), "owner")
     assert {q["id"]: q for q in night["questions"]}["obstruction_light"]["on_photo"].startswith("Taken at 19:40, after dark")
     nothing = tower_cards.photo_questions(here(), photo, "owner")
     assert {q["id"]: q for q in nothing["questions"]}["equipment"]["on_photo"].startswith("No ")
     assert nothing["summary"] == "Nothing on this photo is ready to check yet."
+
+
+# --- Each role its own questions, a new set each day (Roger, 2026-10-25) -------------------------------------------
+
+def test_each_role_is_asked_its_own_questions():
+    owner = {c["id"]: c["title"] for c in tower_cards.deck(here(OPEN), "owner")["cards"]}
+    manager = tower_cards.deck(here(OPEN), "manager")
+    technician = {c["id"]: c["title"] for c in tower_cards.deck(here(OPEN), "technician")["cards"]}
+    assert owner["defects"] == "Is my tower structurally safe?"
+    assert technician["defects"] == "What do I need to fix on this tower?"
+    assert {c["id"]: c["title"] for c in manager["cards"]}["defects"] == "Which defects did this inspection find?"
+    assert [o["id"] for o in manager["audiences"]] == ["owner", "manager", "technician"]
+    owner_order = [c["id"] for c in tower_cards.deck(here(OPEN), "owner")["cards"]]
+    assert [c["id"] for c in manager["cards"]] != owner_order  # the manager's priorities, not the owner's
+    # A manager's answer is written as the owner's; a card with no manager words keeps the industry's question.
+    answer = tower_cards.answer_card("defects", here(BOLTS), "manager")
+    assert answer["question"] == "Which defects did this inspection find?"
+    assert answer["todo"] == tower_cards.answer_card("defects", here(BOLTS), "owner")["todo"]
+    assert tower_cards.question(tower_cards.DEFAULT_ASSET, "manager", "hot_spots") == tower_cards.CARDS["hot_spots"]
+
+
+def test_another_day_or_other_questions_change_the_deck_and_its_words():
+    decks = {seed: tower_cards.deck(replace(here(OPEN), seed=seed), "technician")["cards"] for seed in range(1, 30)}
+    assert len({tuple(c["id"] for c in cards) for cards in decks.values()}) > 1  # the order changes
+    assert len({next(c["title"] for c in cards if c["id"] == "photos_to_check") for cards in decks.values()}) == 2
+    assert all(cards[-1]["id"] == "learn_review" for cards in decks.values())  # the learning card stays last
+
+
+def test_an_answer_that_changed_comes_first_and_one_opened_today_gives_way():
+    usual = [c["id"] for c in tower_cards.deck(here(OPEN), "technician")["cards"]]
+    second = usual[1]  # a card whose answer just became ready moves up and is marked new
+    fresh = tower_cards.deck(replace(here(OPEN), changed=frozenset({second})), "technician")["cards"]
+    assert fresh[0]["id"] == second and fresh[0]["new"] is True and not fresh[1]["new"]
+    opened = tower_cards.deck(replace(here(OPEN), seen=frozenset({"photos_to_check"})), "technician")["cards"]
+    assert opened[0]["id"] != "photos_to_check"
+

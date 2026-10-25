@@ -28,6 +28,7 @@ from src.services import deafrica_stac
 from src.services import et_normals
 from src.services import forecast_openmeteo
 from src.services import land_surface_temperature
+from src.services import reader_roles
 from src.services.land_surface_temperature import heat_lines
 from src.services import wapor_service
 from src.services.data_coverage import point_sample_note
@@ -35,13 +36,9 @@ from src.services.numbers import round_or_none
 
 logger = logging.getLogger(__name__)
 
+# The voices reports are written in. A person's role (src/services/reader_roles.py) reads in one of them: a
+# cooperative manager in the farmer's words, a government officer in the insurer's.
 _VALID_AUDIENCES = {"farmer", "insurance", "agronomist", "scientist"}
-# Other names the model or a user uses for the same readers.
-_AUDIENCE_ALIASES = {
-    "underwriter": "insurance", "insurer": "insurance", "insurance_officer": "insurance",
-    "claims": "insurance", "extension_officer": "agronomist", "extension": "agronomist",
-    "researcher": "scientist",
-}
 DEFAULT_AUDIENCE = "agronomist"
 
 
@@ -49,9 +46,10 @@ AUDIENCE_LABELS = {"farmer": "Farmer", "insurance": "Insurer", "agronomist": "Ag
 
 
 def _known_audience(audience: Optional[str]) -> Optional[str]:
-    key = (audience or "").strip().lower().replace(" ", "_")
-    key = _AUDIENCE_ALIASES.get(key, key)
-    return key if key in _VALID_AUDIENCES else None
+    """The report voice for a role or voice name (aliases accepted); None for no agriculture role."""
+    role = reader_roles.known(audience)
+    voice = reader_roles.voice(role) if role else None
+    return voice if voice in _VALID_AUDIENCES else None
 
 
 def normalize_audience(audience: Optional[str]) -> str:
@@ -64,16 +62,9 @@ async def audience_setting(conn: asyncpg.Connection, user_id: Optional[str],
     """(audience, source) from saved settings: the user's own role, else the
     partner's default (organizations.metadata.default_audience), else
     DEFAULT_AUDIENCE. Source is "user", "partner" or "default"."""
-    if user_id:
-        mine = await conn.fetchval("SELECT report_audience FROM users WHERE internal_uuid = $1", user_id)
-        if _known_audience(mine):
-            return _known_audience(mine), "user"  # type: ignore[return-value]
-    if partner_id:
-        theirs = await conn.fetchval(
-            "SELECT metadata->>'default_audience' FROM organizations WHERE id::text = $1", partner_id)
-        if _known_audience(theirs):
-            return _known_audience(theirs), "partner"  # type: ignore[return-value]
-    return DEFAULT_AUDIENCE, "default"
+    role, source = await reader_roles.saved_role(conn, user_id, partner_id)
+    voice = _known_audience(role)
+    return (voice, source) if voice else (DEFAULT_AUDIENCE, "default")
 
 
 async def resolve_audience(conn: asyncpg.Connection, requested: Optional[str],
@@ -90,12 +81,9 @@ async def resolve_audience(conn: asyncpg.Connection, requested: Optional[str],
 
 
 async def save_user_audience(conn: asyncpg.Connection, user_id: str, audience: Optional[str]) -> bool:
-    """Save (or clear, with None) the user's report audience. False if the user has no account row."""
-    value = None if audience is None else _known_audience(audience)
-    if audience is not None and value is None:
-        raise ValueError(f"audience must be one of {', '.join(sorted(_VALID_AUDIENCES))}")
-    status = await conn.execute("UPDATE users SET report_audience = $2 WHERE internal_uuid = $1", user_id, value)
-    return status.endswith(" 1")
+    """Save (or clear, with None) the user's role (src/services/reader_roles.py: any industry's role). False if the
+    user has no account row."""
+    return await reader_roles.save_role(conn, user_id, audience)
 
 _RWANDA_CENTER = (-1.94, 29.87)
 

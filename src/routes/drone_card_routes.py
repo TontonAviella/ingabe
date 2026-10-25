@@ -18,7 +18,9 @@ from src.dependencies.redis_client import get_async_redis
 from src.dependencies.session import UserContext, verify_session_required
 from src.services import (
     background_jobs,
+    card_memory,
     close_look,
+    crop_calendar,
     drone_cards,
     drone_plots,
     drone_vision,
@@ -86,10 +88,21 @@ async def get_drone_cards(
     layer: MapLayer = Depends(get_layer),
     session: UserContext = Depends(verify_session_required),
 ) -> dict[str, Any]:
-    """The questions for a drone photo: its summary, the cards to show first, and every card by service.
-    A seed other than 0 picks other wordings and a different mix of cards."""
+    """The questions for a drone photo: its summary, the cards to show first, and every card by service, worded for
+    the reader's role. Seed 0 gives the day's set (the same all day, new tomorrow); another seed ("Other questions")
+    another wording and mix. The season's moment, what changed since the reader last looked and what they opened
+    today order the cards (src/services/card_memory.py)."""
+    reader_id = session.get_user_id() or "anonymous"
+    seed = seed or card_memory.daily_seed(reader_id, layer.layer_id)
     analysis, here, reader = await _photo(layer, session, audience, seed=seed)
-    return await asyncio.to_thread(drone_cards.build_deck, analysis, reader, here)
+    redis = get_async_redis()
+    seen, before = await card_memory.recall(redis, reader_id, layer.layer_id)
+    now = await asyncio.to_thread(drone_cards.statuses, analysis, here)
+    here = dataclasses.replace(here, moment=crop_calendar.season_moment(), seen=seen,
+                               changed=card_memory.changed(before, now))
+    deck = await asyncio.to_thread(drone_cards.build_deck, analysis, reader, here)
+    await card_memory.remember_deck(redis, reader_id, layer.layer_id, now)
+    return deck
 
 
 @router.get("/layer/{layer_id}/cards/{card_id}", operation_id="get_drone_card_answer")
@@ -101,7 +114,10 @@ async def get_drone_card_answer(
     session: UserContext = Depends(verify_session_required),
 ) -> dict[str, Any]:
     """One card's answer: what and where, why it matters, what to do, how sure, and the outline to draw."""
+    reader_id = session.get_user_id() or "anonymous"
+    seed = seed or card_memory.daily_seed(reader_id, layer.layer_id)  # the same wording as the day's deck
     analysis, here, reader = await _photo(layer, session, audience, retry_plots=True, seed=seed)
+    await card_memory.remember_opened(get_async_redis(), reader_id, layer.layer_id, card_id)
     spot_plots = drone_cards.plots_to_measure_spots(card_id, here)
     if spot_plots and here.plots is not None:
         metadata = _photo_ready(layer)

@@ -10,6 +10,7 @@ as it is shown (EXIF orientation applied)."""
 
 from __future__ import annotations
 
+import dataclasses
 import logging
 from dataclasses import dataclass
 from typing import Any, Optional
@@ -24,6 +25,7 @@ from src.dependencies.redis_client import get_async_redis
 from src.dependencies.session import UserContext, verify_session_required
 from src.routes.switched_routes import switched_route
 from src.services import (
+    card_memory,
     close_look,
     example_finder,
     example_finder_pictures,
@@ -32,6 +34,7 @@ from src.services import (
     part_outlines,
     photo_context,
     photo_inspections,
+    reader_roles,
     site_surroundings,
     tower_cards,
     tower_inspection,
@@ -334,6 +337,25 @@ def _check_audience(audience: Optional[str]) -> str:
         raise HTTPException(422, str(e)) from None
 
 
+async def _reading(inspection: _Inspection, session: UserContext, audience: Optional[str],
+                   seed: int) -> tuple[str, tower_cards.Here, str]:
+    """(role, the cards' context with the day's seed and what the reader saw, the reader's memory key). Without a
+    role asked for, the reader's saved role for this industry (reader_roles), else the owner."""
+    if audience is not None:
+        role = _check_audience(audience)
+    else:
+        async with async_read_conn("towers.role", user_id=session.get_user_id()) as conn:
+            role = await reader_roles.role_in(conn, inspection.industries[0], None, session.get_user_id(),
+                                              session.get_org_id())
+    reader_id = session.get_user_id() or "anonymous"
+    target = inspection.layer.layer_id
+    here = await _here(inspection, session)
+    seen, before = await card_memory.recall(get_async_redis(), reader_id, target)
+    here = dataclasses.replace(here, seed=seed or card_memory.daily_seed(reader_id, target), seen=seen,
+                               changed=card_memory.changed(before, tower_cards.statuses(here)))
+    return role, here, reader_id
+
+
 @router.get("/towers/layer/{layer_id}/photos/{sha256}/questions", operation_id="get_tower_photo_questions")
 async def get_tower_photo_questions(sha256: str, audience: Optional[str] = None,
                                     inspection: _Inspection = Depends(_with_cards),
@@ -341,7 +363,8 @@ async def get_tower_photo_questions(sha256: str, audience: Optional[str] = None,
     """The inspection's questions for one photo: each with its status, what this photo can tell and the parts it
     lights up (tower_cards.photo_questions)."""
     photo = _photo(inspection, sha256)
-    return tower_cards.photo_questions(await _here(inspection, session), photo, _check_audience(audience))
+    role, here, _reader_id = await _reading(inspection, session, audience, 0)
+    return tower_cards.photo_questions(here, photo, role)
 
 
 # --- A close look (close_look): flags for a person to check, on Telecom Towers photos ------------------------------
@@ -469,20 +492,23 @@ async def start_tower_close_looks(inspection: _Inspection = Depends(_edited)) ->
 
 
 @router.get("/towers/layer/{layer_id}/cards", operation_id="get_tower_cards")
-async def get_tower_cards(audience: Optional[str] = None, inspection: _Inspection = Depends(_with_cards),
+async def get_tower_cards(audience: Optional[str] = None, seed: int = 0, inspection: _Inspection = Depends(_with_cards),
                           session: UserContext = Depends(verify_session_required)) -> dict[str, Any]:
-    """The tower question cards for this inspection and reader (owner or technician), the most useful first."""
-    reader = _check_audience(audience)
-    return tower_cards.deck(await _here(inspection, session), reader)
+    """The question cards for this inspection, worded for the reader's role (owner, manager or technician), the most
+    useful first. Seed 0 gives the day's set; another seed ("Other questions") another mix and wording."""
+    role, here, reader_id = await _reading(inspection, session, audience, seed)
+    deck = tower_cards.deck(here, role)
+    await card_memory.remember_deck(get_async_redis(), reader_id, inspection.layer.layer_id, tower_cards.statuses(here))
+    return deck
 
 
 @router.get("/towers/layer/{layer_id}/cards/{card_id}", operation_id="get_tower_card_answer")
-async def get_tower_card_answer(card_id: str, audience: Optional[str] = None,
+async def get_tower_card_answer(card_id: str, audience: Optional[str] = None, seed: int = 0,
                                 inspection: _Inspection = Depends(_with_cards),
                                 session: UserContext = Depends(verify_session_required)) -> dict[str, Any]:
     """One card's answer, in the drone cards' answer shape: what, why, what to do, how sure, facts, photos."""
-    reader = _check_audience(audience)
-    here = await _here(inspection, session)
+    role, here, reader_id = await _reading(inspection, session, audience, seed)
     if card_id not in here.asset.cards:
         raise HTTPException(404, f"No card {card_id}")
-    return tower_cards.answer_card(card_id, here, reader)
+    await card_memory.remember_opened(get_async_redis(), reader_id, inspection.layer.layer_id, card_id)
+    return tower_cards.answer_card(card_id, here, role)
