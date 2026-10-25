@@ -7,9 +7,9 @@ worded (src/services/drone_cards.py, src/services/tower_cards.py); the answers a
 and each role reads in one of them (VOICE): a cooperative manager reads the farmer's plain words, a government
 officer the insurer's evidence-first words, an operations manager the owner's.
 
-A person's role is saved on their account (users.report_audience), else their company's default
-(organizations.metadata.default_audience), else the industry's default. A role saved for another industry (Ingabe's
-own people switch industries) falls back to the default of the industry being read.
+A person keeps one role per group of industries, so picking one never changes the other: Agriculture in
+users.report_audience (reports read it too), Telecom Towers and Power Grid in users.asset_role. Else their company's
+default (organizations.metadata.default_audience, Agriculture), else the industry's default.
 """
 
 from __future__ import annotations
@@ -31,6 +31,8 @@ ASSETS = {
     "technician": "Field technician",
 }
 ROLES: dict[str, dict[str, str]] = {"agriculture": AGRICULTURE, "telecom": ASSETS, "power_grid": ASSETS}
+# Where each group's role is saved on the account.
+_COLUMN = {"agriculture": "report_audience", "telecom": "asset_role", "power_grid": "asset_role"}
 DEFAULT_ROLE = {"agriculture": "agronomist", "telecom": "owner", "power_grid": "owner"}
 ALL_ROLES = frozenset(AGRICULTURE) | frozenset(ASSETS)
 
@@ -80,27 +82,32 @@ def label(role: str) -> str:
     return AGRICULTURE.get(role) or ASSETS[role]
 
 
-async def saved_role(conn: Any, user_id: Optional[str], partner_id: Optional[str]) -> tuple[Optional[str], str]:
-    """(role, source) from saved settings: the user's own ("user"), else their company's default ("partner"), else
-    (None, "default")."""
+async def saved_role(conn: Any, industry: Optional[str], user_id: Optional[str],
+                     partner_id: Optional[str]) -> tuple[Optional[str], str]:
+    """(role, source) for an industry from saved settings: the user's own ("user"), else their company's default
+    ("partner", Agriculture only), else (None, "default"). Only that industry's roles count."""
+    industry = industry or "agriculture"
+    roles = ROLES.get(industry, AGRICULTURE)
     if user_id:
-        mine = known(await conn.fetchval("SELECT report_audience FROM users WHERE internal_uuid = $1", user_id))
-        if mine:
+        mine = known(await conn.fetchval(f"SELECT {_COLUMN[industry]} FROM users WHERE internal_uuid = $1", user_id))
+        if mine in roles:
             return mine, "user"
-    if partner_id:
+    if partner_id and industry == "agriculture":
         theirs = known(await conn.fetchval(
             "SELECT metadata->>'default_audience' FROM organizations WHERE id::text = $1", partner_id))
-        if theirs:
+        if theirs in roles:
             return theirs, "partner"
     return None, "default"
 
 
-async def save_role(conn: Any, user_id: str, role: Optional[str]) -> bool:
-    """Save (or clear, with None) the user's role. ValueError for an unknown one; False without an account row."""
+async def save_role(conn: Any, user_id: str, role: Optional[str], industry: Optional[str] = None) -> bool:
+    """Save a role in its own industry's place (clearing, with None, the given industry's: Agriculture's by
+    default). ValueError for an unknown role; False without an account row."""
     value = None if role is None else known(role)
     if role is not None and value is None:
         raise ValueError(f"the role must be one of {', '.join(sorted(ALL_ROLES))}")
-    status = await conn.execute("UPDATE users SET report_audience = $2 WHERE internal_uuid = $1", user_id, value)
+    column = _COLUMN["telecom"] if value in ASSETS else _COLUMN.get(industry or "agriculture", "report_audience")
+    status = await conn.execute(f"UPDATE users SET {column} = $2 WHERE internal_uuid = $1", user_id, value)
     return status.endswith(" 1")
 
 
@@ -109,5 +116,5 @@ async def role_in(conn: Any, industry: Optional[str], requested: Optional[str], 
     """The role to read with: one asked for now, else the saved one, each kept only when it is the industry's."""
     if known(requested) in ROLES.get(industry or "agriculture", AGRICULTURE):
         return known(requested)  # type: ignore[return-value]
-    saved, _source = await saved_role(conn, user_id, partner_id)
+    saved, _source = await saved_role(conn, industry, user_id, partner_id)
     return for_industry(industry, saved)

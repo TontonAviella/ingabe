@@ -117,7 +117,6 @@ async def get_drone_card_answer(
     reader_id = session.get_user_id() or "anonymous"
     seed = seed or card_memory.daily_seed(reader_id, layer.layer_id)  # the same wording as the day's deck
     analysis, here, reader = await _photo(layer, session, audience, retry_plots=True, seed=seed)
-    await card_memory.remember_opened(get_async_redis(), reader_id, layer.layer_id, card_id)
     spot_plots = drone_cards.plots_to_measure_spots(card_id, here)
     if spot_plots and here.plots is not None:
         metadata = _photo_ready(layer)
@@ -131,9 +130,11 @@ async def get_drone_card_answer(
             job = drone_plots.start_spots(s3, bucket, key, await _cog_url(s3, metadata, _LONG_URL_SECONDS), spot_plots)
         here = dataclasses.replace(here, spots=spots, spots_job=None if spots is not None else job)
     try:
-        return await asyncio.to_thread(drone_cards.answer_card, card_id, analysis, reader, here)
+        answer = await asyncio.to_thread(drone_cards.answer_card, card_id, analysis, reader, here)
     except KeyError:
         raise HTTPException(404, f"No card {card_id}") from None
+    await card_memory.remember_opened(get_async_redis(), reader_id, layer.layer_id, card_id, answer.get("status"))
+    return answer
 
 
 class PlotSource(BaseModel):

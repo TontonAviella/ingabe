@@ -364,7 +364,8 @@ async def get_tower_photo_questions(sha256: str, audience: Optional[str] = None,
     lights up (tower_cards.photo_questions)."""
     photo = _photo(inspection, sha256)
     role, here, _reader_id = await _reading(inspection, session, audience, 0)
-    return tower_cards.photo_questions(here, photo, role)
+    # A photo's questions mark nothing new: only the deck moves a card's baseline on, so "new" lives there.
+    return tower_cards.photo_questions(dataclasses.replace(here, changed=frozenset()), photo, role)
 
 
 # --- A close look (close_look): flags for a person to check, on Telecom Towers photos ------------------------------
@@ -510,5 +511,7 @@ async def get_tower_card_answer(card_id: str, audience: Optional[str] = None, se
     role, here, reader_id = await _reading(inspection, session, audience, seed)
     if card_id not in here.asset.cards:
         raise HTTPException(404, f"No card {card_id}")
-    await card_memory.remember_opened(get_async_redis(), reader_id, inspection.layer.layer_id, card_id)
-    return tower_cards.answer_card(card_id, here, role)
+    answer = tower_cards.answer_card(card_id, here, role)
+    await card_memory.remember_opened(get_async_redis(), reader_id, inspection.layer.layer_id, card_id,
+                                      answer.get("status"))
+    return answer

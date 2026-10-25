@@ -674,7 +674,8 @@ export function DroneCards({
   }, [photos, layerId]);
 
   const deck = useDroneDeck(layerId, audience, seed);
-  const answer = useDroneCardAnswer(layerId, openCard, audience, seed);
+  // The answer is asked with the deck's own seed (the day's set when none was picked), so its question reads the same.
+  const answer = useDroneCardAnswer(layerId, openCard, audience, deck.data?.seed ?? seed);
   useAnswerOverlay(map, collapsed ? null : (answer.data ?? null), deck.data?.photo.bounds ?? null);
 
   // A photo the cards cannot read (not a colour photo, not a raster) shows no panel.

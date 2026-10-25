@@ -62,7 +62,7 @@ async def audience_setting(conn: asyncpg.Connection, user_id: Optional[str],
     """(audience, source) from saved settings: the user's own role, else the
     partner's default (organizations.metadata.default_audience), else
     DEFAULT_AUDIENCE. Source is "user", "partner" or "default"."""
-    role, source = await reader_roles.saved_role(conn, user_id, partner_id)
+    role, source = await reader_roles.saved_role(conn, "agriculture", user_id, partner_id)
     voice = _known_audience(role)
     return (voice, source) if voice else (DEFAULT_AUDIENCE, "default")
 
@@ -80,10 +80,11 @@ async def resolve_audience(conn: asyncpg.Connection, requested: Optional[str],
         return DEFAULT_AUDIENCE
 
 
-async def save_user_audience(conn: asyncpg.Connection, user_id: str, audience: Optional[str]) -> bool:
-    """Save (or clear, with None) the user's role (src/services/reader_roles.py: any industry's role). False if the
-    user has no account row."""
-    return await reader_roles.save_role(conn, user_id, audience)
+async def save_user_audience(conn: asyncpg.Connection, user_id: str, audience: Optional[str],
+                             industry: Optional[str] = None) -> bool:
+    """Save the user's role (src/services/reader_roles.py: any industry's role), or clear, with None, their role in
+    `industry` (Agriculture by default). False if the user has no account row."""
+    return await reader_roles.save_role(conn, user_id, audience, industry)
 
 _RWANDA_CENTER = (-1.94, 29.87)
 

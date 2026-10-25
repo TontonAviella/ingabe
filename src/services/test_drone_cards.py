@@ -826,10 +826,54 @@ def test_the_days_set_is_the_same_all_day_and_new_the_next():
 def test_only_answers_that_became_ready_count_as_changed():
     from src.services import card_memory
 
-    before = {"a": "working", "b": "ready", "c": "to_build", "d": "partly"}
-    now = {"a": "ready", "b": "ready", "c": "to_build", "d": "ready", "e": "ready"}
-    assert card_memory.changed(before, now) == {"a", "d"}  # "e" is new to the deck, not changed
+    before = {"a": "working", "b": "ready", "c": "to_build", "d": "partly", "f": "ready", "g": "cant_tell"}
+    now = {"a": "ready", "b": "ready", "c": "to_build", "d": "ready", "e": "ready", "f": "partly", "g": "working"}
+    # "e" is new to the deck, not changed; "f" got worse; "g" improved but cannot be read yet
+    assert card_memory.changed(before, now) == {"a", "d"}
     assert card_memory.changed({}, now) == frozenset()  # a first look marks nothing new
+
+
+class _FakeRedis:
+    def __init__(self):
+        self.hash: dict[str, str] = {}
+
+    async def hsetnx(self, key, field, value):
+        self.hash.setdefault(field, value)
+
+    async def hset(self, key, mapping):
+        self.hash.update(mapping)
+
+    async def expire(self, key, seconds):
+        pass
+
+    async def hgetall(self, key):
+        return dict(self.hash)
+
+
+def test_a_new_mark_stays_until_the_reader_opens_the_card():
+    import asyncio
+
+    from src.services import card_memory
+
+    redis = _FakeRedis()
+    asyncio.run(card_memory.remember_deck(redis, "u", "L", {"a": "working"}))
+    asyncio.run(card_memory.remember_deck(redis, "u", "L", {"a": "ready"}))  # another look does not move the baseline
+    _, before = asyncio.run(card_memory.recall(redis, "u", "L"))
+    assert card_memory.changed(before, {"a": "ready"}) == {"a"}
+    asyncio.run(card_memory.remember_opened(redis, "u", "L", "a", "ready"))
+    seen, before = asyncio.run(card_memory.recall(redis, "u", "L"))
+    assert "a" in seen and card_memory.changed(before, {"a": "ready"}) == frozenset()
+
+
+def test_a_role_or_the_season_never_lifts_a_question_ingabe_cannot_answer_yet(photo):
+    analysis = _analysis(photo)
+    card = {"id": "yield", "status": drone_cards.TO_BUILD}
+    assert drone_cards._READER_BOOST["buyer"]["yield"] and drone_cards._SEASON_BOOST["harvest"]["yield"]
+    assert (drone_cards._score(card, analysis, "buyer", drone_cards.Here(moment="harvest"))
+            == drone_cards._score(card, analysis, "farmer", drone_cards.Here()))
+    ready = {"id": "yield", "status": drone_cards.READY}
+    assert (drone_cards._score(ready, analysis, "buyer", drone_cards.Here(moment="harvest"))
+            > drone_cards._score(ready, analysis, "farmer", drone_cards.Here()))
 
 
 def test_season_moments_follow_the_calendar():

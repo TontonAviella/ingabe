@@ -37,11 +37,11 @@ async def _audience_payload(conn, session: UserContext) -> dict:
     industry's roles. Reports are written in the role's voice (insurance_engine)."""
     user_id, org_id = session.get_user_id(), session.get_org_id()
     working_in = await industry.current_industry(conn, user_id, org_id) or "agriculture"
-    saved, source = await reader_roles.saved_role(conn, user_id, org_id)
+    saved, source = await reader_roles.saved_role(conn, working_in, user_id, org_id)
     role = reader_roles.for_industry(working_in, saved)
     return {
         "audience": role,
-        "source": source if saved == role else "default",
+        "source": source,
         "industry": working_in,
         "options": [{"key": o["id"], "label": o["label"]} for o in reader_roles.options(working_in)],
     }
@@ -56,10 +56,11 @@ async def get_report_audience(session: UserContext = Depends(verify_session_requ
 
 @router.put("/report-audience")
 async def put_report_audience(body: AudienceUpdate, session: UserContext = Depends(verify_session_required)):
-    """Save the user's own role (any industry's, reader_roles), or clear it."""
+    """Save the user's own role (any industry's, reader_roles), or clear their role in the industry they work in."""
     async with get_async_db_connection() as conn:
+        working_in = await industry.current_industry(conn, session.get_user_id(), session.get_org_id())
         try:
-            saved = await insurance_engine.save_user_audience(conn, session.get_user_id(), body.audience)
+            saved = await insurance_engine.save_user_audience(conn, session.get_user_id(), body.audience, working_in)
         except ValueError as e:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
         if not saved:

@@ -123,6 +123,7 @@ _SEASON_BOOST = {
     "harvest": {"yield": 25, "crop_types": 18, "history": 12, "plot_stage": 10, "growth": 10},
     "between": {"history": 20, "soil": 20, "field_outlines": 15, "fertilizer": 10, "bare_ground": 10},
 }
+_ANSWERABLE = (READY, PARTLY, WORKING)  # cards the role and season boosts apply to
 CHANGED_BOOST = 45  # an answer that changed since the reader last looked comes first, marked new
 SEEN_PENALTY = 40  # a question the reader opened in the last day gives way to others
 _SITUATION_BOOST = 30
@@ -478,7 +479,7 @@ _ROLE_WORDS: dict[str, dict[str, tuple[str, ...]]] = {
         "learn_camera": ("Can this photo tell if my crop is sick?",),
     },
     "cooperative": {
-        "plots_green": ("Which members' plots look weakest?", "Which plots should the team visit first?"),
+        "plots_green": ("Which plots look weakest?", "Which plots should the team visit first?"),
         "weeds": ("Which plots still need weeding?", "Where should the weeding team go this week?"),
         "bare_ground": ("Which plots are not planted yet?", "How much of our land is still bare?"),
         "plot_stage": ("Which plots were planted late?", "Which blocks are behind the others?"),
@@ -492,7 +493,7 @@ _ROLE_WORDS: dict[str, dict[str, tuple[str, ...]]] = {
         "plot_problems": ("What problems show from the air, and where?", "Where are gaps, yellowing or standing water?"),
         "plots_green": ("Which plots should I scout first?", "Which plots are paler than their neighbours?"),
         "plot_stage": ("Which plots are behind in growth stage?",),
-        "soil": ("Which nutrients are likely short, zone by zone?", "Where should soil samples be taken?"),
+        "soil": ("What is this soil likely short of?", "What do the soil estimates say about this field?"),
         "fertilizer": ("Which zones would respond to fertilizer?",),
         "water": ("Is water stress showing anywhere?",),
         "pests": ("Where might pests or disease be starting?",),
@@ -502,7 +503,7 @@ _ROLE_WORDS: dict[str, dict[str, tuple[str, ...]]] = {
     "insurance": {
         "crop_types": ("Which crops are in the field, plot by plot?", "What is planted here, and on how much land?"),
         "bare_ground": ("Is this land planted, or still bare?", "How much of this area is not planted?"),
-        "history": ("How has this land been farmed in past seasons?",),
+        "history": ("What photos and harvest records are kept for this land?",),
         "plot_problems": ("Is there visible damage, and where?",),
         "field_outlines": ("How many hectares does each plot cover?",),
         "growth": ("Has the crop grown since the last photo?",),
@@ -515,7 +516,7 @@ _ROLE_WORDS: dict[str, dict[str, tuple[str, ...]]] = {
         "plot_stage": ("How do growth stages differ between plots?",),
         "weak_spots": ("Where is the greenness lowest, and how was it measured?",),
         "soil": ("What do the soil estimates say, and at what resolution?",),
-        "plant_count": ("How many plants per plot, and how close is the count?",),
+        "plant_count": ("How many plants came up, and how close is the count?",),
         "learn_camera": ("What can a colour camera measure, and what needs multispectral?",),
     },
     "government": {
@@ -524,7 +525,7 @@ _ROLE_WORDS: dict[str, dict[str, tuple[str, ...]]] = {
         "field_outlines": ("How many plots are there, and how much land do they cover?",),
         "plots_green": ("Which parts of this area look weakest?",),
         "growth": ("Is the season on track since the last photo?",),
-        "history": ("How has this land been used in past seasons?",),
+        "history": ("What photos and records are kept of this area?",),
         "yield": ("What harvest can this area expect?",),
         "water": ("Is water reaching every block?",),
     },
@@ -534,8 +535,8 @@ _ROLE_WORDS: dict[str, dict[str, tuple[str, ...]]] = {
         "plot_stage": ("Which plots are ahead, and which are behind?",),
         "growth": ("Is the crop growing on schedule?",),
         "field_outlines": ("How many hectares are planted here?",),
-        "history": ("How did these fields produce in past seasons?",),
-        "plots_green": ("Which plots look weakest, and could cut supply?",),
+        "history": ("What harvest records are kept for these fields?",),
+        "plots_green": ("Which plots look weakest?",),
     },
 }
 
@@ -765,8 +766,10 @@ SHUFFLE_POINTS = 30  # with a seed, each card gets up to this many extra points 
 
 
 def _score(card: dict[str, Any], analysis: PhotoAnalysis, role: str, here: Here) -> float:
-    score: float = _BASE_SCORE[card["status"]] + _READER_BOOST.get(role, {}).get(card["id"], 0)
-    score += _SEASON_BOOST.get(here.moment or "", {}).get(card["id"], 0)
+    score: float = _BASE_SCORE[card["status"]]
+    if card["status"] in _ANSWERABLE:  # a role or the season never lifts a question Ingabe cannot answer yet
+        score += _READER_BOOST.get(role, {}).get(card["id"], 0)
+        score += _SEASON_BOOST.get(here.moment or "", {}).get(card["id"], 0)
     if card["id"] in here.changed:
         score += CHANGED_BOOST
     if card["id"] in here.seen:
