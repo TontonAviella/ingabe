@@ -551,6 +551,18 @@ async def component_check_results(request: Request):
     return JSONResponse(await component_checks.results())
 
 
+@app.get("/internal/sage-turns")
+async def sage_turn_summary(request: Request, days: int = 7):
+    """What Sage did over the last days: per tool, per rule, and the latest turns (src/services/sage_turn_log.py).
+    Internal only, like /metrics: the Ingabe Health page's snapshot reads it on the server."""
+    from src.services import sage_turn_log
+
+    if any(h in request.headers for h in _PROXY_HEADERS):
+        return Response(status_code=404)
+    return JSONResponse(await sage_turn_log.recent_summary(max(1, min(days, sage_turn_log.RETENTION_DAYS))),
+                        headers={"Cache-Control": "no-store"})
+
+
 @app.get("/metrics")
 async def metrics(request: Request):
     """Lightweight metrics endpoint for monitoring (Prometheus-compatible text format). Internal only."""
