@@ -1658,6 +1658,8 @@ async def _within_tool_limit(function_name: str, call: Any) -> Any:
             "status": "error",
             "error": (f"{function_name} did not finish within {limit:.0f} seconds and was stopped. "
                       "Answer with what the other tools found, and say plainly which part is missing."),
+            # Marks the result as the tool time limit's (src/services/sage_turn_log.py rule_of_tool_result).
+            "stopped_after_seconds": round(limit),
         }
     except Exception:
         await health_metrics.count("sage_tool_calls_total", {"tool": function_name, "outcome": "error"})

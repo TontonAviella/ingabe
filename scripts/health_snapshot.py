@@ -2,12 +2,19 @@
 """One snapshot of Ingabe's health from Prometheus, as JSON, for the Ingabe Health page in Claude.
 
 Run on the server (Prometheus answers on 127.0.0.1:9090 there):  python3 scripts/health_snapshot.py
-Prints {"generated_at", "checks", "alerts", "history"}:
-- checks: one row per thing watched (area, check, status ok|warn|bad|unknown, value, where), from the same numbers
-  and limits as the alerts in monitoring/alerts.yml;
+Prints {"generated_at", "checks", "alerts", "history", "alarm_rules", "logs", "sage_tools", "sage_rules",
+"sage_turns"}:
+- checks: one row per thing watched (area, check, status ok|warn|bad|unknown, value, where, and to dig deeper: limit,
+  the limits in words, and measured, the exact query or self-test), from the same numbers and limits as the alerts in
+  monitoring/alerts.yml;
 - alerts: every alert firing now, with its area, severity, summary and where to look (one row with
   severity "none" when nothing fires);
-- history: per area and hour over the last 7 days, the worst alert that fired (for the timeline).
+- history: per area and hour over the last 7 days, the worst alert that fired (for the timeline);
+- alarm_rules: every alarm rule (the system's rules), its state now, what it watches and its exact condition;
+- logs: per container, error lines in the last 24 hours (count and the latest three), from Loki through Grafana
+  (GRAFANA_MCP_TOKEN, the read-only Viewer token in ~/ingabe/.env);
+- sage_tools, sage_rules, sage_turns: what Sage did over 7 days, per tool, per rule and turn by turn (the app's
+  /internal/sage-turns, from the Sage turn log; src/services/sage_turn_log.py).
 Standard library only; read-only.
 """
 
@@ -15,6 +22,7 @@ from __future__ import annotations
 
 import json
 import os
+import pathlib
 import sys
 import time
 import urllib.parse
@@ -24,6 +32,14 @@ from datetime import datetime, timezone
 PROM = os.environ.get("PROMETHEUS_URL", "http://127.0.0.1:9090")
 # The app's component self-tests with their details (internal only; the app listens on 127.0.0.1:8000 here).
 APP = os.environ.get("APP_URL", "http://127.0.0.1:8000")
+GRAFANA = os.environ.get("GRAFANA_URL", "http://127.0.0.1:3000")
+ENV_FILE = pathlib.Path(__file__).resolve().parent.parent / ".env"
+# Lines that count as errors in any container's log (the same words as the Grafana Logs dashboard).
+ERROR_LINES = '(?i)\\b(error|exception|traceback|fatal|panic|critical)\\b'
+# ...unless the line's own level says otherwise (Grafana logs each query, and queries say "error").
+NOT_ERRORS = '(?i)(level=(info|debug|warn)|"level": ?"(INFO|DEBUG|WARNING)")'
+# Ingabe's containers (not the helpers Claude Code starts, which get random names).
+OWN = '(mundi|ingabe|mundiai)-.+'
 TIER_AREA = {"core": "components", "ai": "ai-model", "feed": "feeds"}
 # Component checks that belong to an earlier step than "app features": the data stores and sign-in.
 CHECK_AREA = {"postgis": "database", "redis": "database", "minio": "database", "workos": "app"}
@@ -144,8 +160,153 @@ def component_rows() -> list[dict]:
         area = CHECK_AREA.get(name) or TIER_AREA.get(r.get("tier", ""), "components")
         rows.append({"area": area, "check": r.get("component", name),
                      "status": status, "value": f'{r.get("detail", "")} ({r.get("seconds", 0):.1f} s)',
-                     "where": f"check {name}; checked {age_min:.0f} min ago"})
+                     "where": f"check {name}; checked {age_min:.0f} min ago",
+                     "limit": "Asked to do its job with a known answer every 30 minutes; amber after one failure "
+                              "(retried in 2 minutes), red after two in a row (outside feeds stay amber).",
+                     "measured": f"component self-test '{name}' (src/dependencies/component_checks.py)"})
     return rows
+
+
+def _limit_words(unit: str, warn, bad, higher_worse: bool) -> str:
+    if unit == "updown":
+        return "Red when down."
+    if unit == "okfail":
+        return "Red when it failed."
+    if warn is None and bad is None:
+        return "Shown for context; no limit."
+    side = "or more" if higher_worse else "or less"
+    parts = [f"amber at {_show(warn, unit)} {side}" if warn is not None else "",
+             f"red at {_show(bad, unit)} {side}" if bad is not None else ""]
+    text = "; ".join(p for p in parts if p)
+    return text[:1].upper() + text[1:] + "."
+
+
+def alarm_rules() -> list[dict]:
+    """Every alarm rule Prometheus runs (monitoring/alerts.yml), with its state now."""
+    try:
+        with urllib.request.urlopen(f"{PROM}/api/v1/rules", timeout=20) as resp:
+            groups = json.load(resp)["data"]["groups"]
+    except Exception as e:  # noqa: BLE001 - one row saying so; the rest of the snapshot still goes out
+        return [{"step": "9 Monitoring", "area": "monitoring", "alarm": "(rules)", "severity": "", "state": "quiet",
+                 "since": "", "watches": f"could not read the alarm rules: {str(e)[:120]}", "where": "Prometheus",
+                 "condition": "", "for_minutes": 0, "healthy": False, "rule_error": str(e)[:200], "group": ""}]
+    rows = []
+    for g in groups:
+        for r in g["rules"]:
+            if r.get("type") != "alerting":
+                continue
+            lab, ann = r.get("labels", {}), r.get("annotations", {})
+            active = [a.get("activeAt", "") for a in r.get("alerts", [])]
+            rows.append({
+                "step": step_of(lab.get("area", "monitoring")), "area": lab.get("area", ""), "alarm": r["name"],
+                "severity": lab.get("severity", ""),
+                "state": {"firing": "firing", "pending": "starting"}.get(r.get("state", ""), "quiet"),
+                "since": (min(active)[:19] + "Z") if active else "",
+                "watches": ann.get("summary", ""), "where": ann.get("where", ""),
+                "condition": " ".join(r.get("query", "").split()),
+                "for_minutes": round(r.get("duration", 0) / 60),
+                "healthy": r.get("health") == "ok", "rule_error": r.get("lastError", ""),
+                "group": g["name"],
+            })
+    order = {"firing": 0, "starting": 1, "quiet": 2}
+    rows.sort(key=lambda x: (x["step"], order[x["state"]], x["alarm"]))
+    return rows
+
+
+def _env(name: str) -> str:
+    try:
+        for line in ENV_FILE.read_text().splitlines():
+            if line.startswith(f"{name}="):
+                return line.split("=", 1)[1].strip().strip('"').strip("'")
+    except OSError:
+        pass
+    return os.environ.get(name, "")
+
+
+def _loki(path: str, **params) -> list:
+    token = _env("GRAFANA_MCP_TOKEN")
+    if not token:
+        raise RuntimeError("GRAFANA_MCP_TOKEN is not in .env")
+    url = f"{GRAFANA}/api/datasources/proxy/uid/loki/loki/api/v1/{path}?{urllib.parse.urlencode(params)}"
+    req = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        return json.load(resp)["data"]["result"]
+
+
+def _log_text(line: str) -> str:
+    """A log line as words: the app logs JSON (level, logger, message); other containers plain text."""
+    try:
+        obj = json.loads(line)
+        if isinstance(obj, dict):
+            text = " ".join(str(obj.get(k, "")) for k in ("level", "logger", "message") if obj.get(k))
+            exc = obj.get("exception") or obj.get("exc_info")
+            if isinstance(exc, dict):  # src/logging_json.py: {"type", "message", "traceback": [...]}
+                text += f" | {exc.get('type', '')}: {exc.get('message', '')}"
+            elif exc:
+                last = str(exc).strip().splitlines()[-1:]
+                text += (" | " + last[0]) if last else ""
+            line = text or line
+    except ValueError:
+        pass
+    line = " ".join(line.split())
+    return line if len(line) <= 300 else line[:299] + "…"
+
+
+def log_rows(now: float) -> list[dict]:
+    """Per container, error lines in the last 24 hours: how many and the latest three."""
+    try:
+        counts = _loki("query", query=f'sum by (container) (count_over_time({{container=~"{OWN}"}} |~ `{ERROR_LINES}` !~ `{NOT_ERRORS}` [24h]))',
+                       time=int(now))
+    except Exception as e:  # noqa: BLE001 - the page then says the logs could not be read
+        return [{"container": "(logs)", "step": "9 Monitoring", "errors_24h": None,
+                 "latest": f"could not read the logs: {str(e)[:120]}", "latest_at": ""}]
+    rows = []
+    for series in counts:
+        name = series["metric"].get("container", "")
+        if not name or name.startswith("grafana-mcp"):
+            continue
+        n = int(float(series["value"][1]))
+        lines = []
+        try:
+            streams = _loki("query_range", query=f'{{container="{name}"}} |~ `{ERROR_LINES}` !~ `{NOT_ERRORS}`', limit=3,
+                            direction="backward", start=int((now - 86400) * 1e9), end=int(now * 1e9))
+            entries = sorted((v for st in streams for v in st["values"]), key=lambda v: v[0], reverse=True)[:3]
+            lines = [(datetime.fromtimestamp(int(ts) / 1e9, timezone.utc).strftime("%Y-%m-%d %H:%M:%SZ"),
+                      _log_text(text)) for ts, text in entries]
+        except Exception as e:  # noqa: BLE001 - keep the count; say the lines could not be read
+            lines = [("", f"could not read the lines: {str(e)[:120]}")]
+        rows.append({"container": name, "step": step_of(CONTAINER_AREA.get(_service(name), "monitoring")),
+                     "errors_24h": n, "latest_at": lines[0][0] if lines else "",
+                     "latest": "\n".join(f"{at[11:16]} {text}" if at else text for at, text in lines)})
+    rows.sort(key=lambda r: -(r["errors_24h"] or 0))
+    return rows
+
+
+# Which step a container's errors belong to (compose service name -> area).
+CONTAINER_AREA = {"postgresdb": "database", "redis": "database", "minio": "database", "app": "components",
+                  "rasterd": "maps", "ollama": "components", "dagster-daemon": "dagster", "backup": "backup"}
+
+
+def _service(container: str) -> str:
+    """The compose service of a container: mundi-app -> app, ingabe-redis-1 -> redis."""
+    name = container.removeprefix("mundi-").removeprefix("ingabe-").removeprefix("mundiai-")
+    return name.rsplit("-", 1)[0] if name[-1:].isdigit() and "-" in name else name
+
+
+def sage_tables() -> dict[str, list[dict]]:
+    """What Sage did over 7 days, from the app (internal only)."""
+    try:
+        with urllib.request.urlopen(f"{APP}/internal/sage-turns?days=7", timeout=30) as resp:
+            found = json.load(resp)
+    except Exception as e:  # noqa: BLE001 - one row saying so; the page shows it
+        note = f"could not read Sage's turn log: {str(e)[:120]}"
+        return {"sage_tools": [{"tool": "(none)", "calls": 0, "last_error": note}],
+                "sage_rules": [{"rule": "(none)", "name": note, "turns": 0}],
+                "sage_turns": [{"started_at": "", "outcome": "unknown", "steps": note}]}
+    empty = "no Sage turns recorded in the last 7 days"
+    return {"sage_tools": found.get("tools") or [{"tool": "(none)", "calls": 0, "last_error": empty}],
+            "sage_rules": found.get("rules") or [{"rule": "(none)", "name": "No rule stepped in", "turns": 0}],
+            "sage_turns": found.get("turns") or [{"started_at": "", "outcome": "none", "steps": empty}]}
 
 
 def _get(path: str, **params) -> list:
@@ -198,7 +359,8 @@ def snapshot() -> dict:
         except Exception as e:  # noqa: BLE001 - one broken query is one unknown row
             value, where = None, f"{where} (query failed: {str(e)[:80]})"
         checks.append({"area": area, "check": name, "status": _status(value, unit, warn, bad, higher_worse),
-                       "value": _show(value, unit), "where": where})
+                       "value": _show(value, unit), "where": where,
+                       "limit": _limit_words(unit, warn, bad, higher_worse), "measured": expr})
 
     checks += component_rows()
 
@@ -241,7 +403,8 @@ def snapshot() -> dict:
     if not alerts:  # the Health page reads an empty file as a failed load; one row says nothing is firing
         alerts = [{"alert": "none", "area": "", "severity": "none", "summary": "No alarm is firing", "where": "",
                    "since": at}]
-    return {"generated_at": at, "checks": checks, "alerts": alerts, "history": history}
+    return {"generated_at": at, "checks": checks, "alerts": alerts, "history": history,
+            "alarm_rules": alarm_rules(), "logs": log_rows(now), **sage_tables()}
 
 
 if __name__ == "__main__":

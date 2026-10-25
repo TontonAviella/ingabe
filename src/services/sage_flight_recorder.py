@@ -12,7 +12,10 @@ Spans go to a self-hosted Langfuse over OTLP through a tracer provider of
 their own, never the global one: Tempo and Langfuse do not see each other's
 spans, and the infra trace id is kept as metadata to correlate the two.
 Tracing is off unless ``LANGFUSE_PUBLIC_KEY`` and ``LANGFUSE_SECRET_KEY`` are
-set; every method is then a no-op. Recording never raises into the caller.
+set. Whether or not it is on, every turn also keeps a short record of its own
+(steps in order with time, status and error; the rules that stepped in; the
+outcome; no message text), saved to the Sage turn log for the Ingabe Health
+page (``src/services/sage_turn_log.py``). Recording never raises into the caller.
 """
 from __future__ import annotations
 
@@ -22,6 +25,7 @@ import json
 import logging
 import os
 import threading
+import time
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -30,6 +34,8 @@ from typing import Any, TypeVar
 from opentelemetry import context as otel_context
 from opentelemetry import trace
 from opentelemetry.trace import Status, StatusCode
+
+from src.services import sage_turn_log
 
 
 logger = logging.getLogger(__name__)
@@ -201,10 +207,12 @@ def summarize_tool_result(result: Any) -> dict[str, Any]:
 class Observation:
     """One step inside a turn (a span, model call, tool call or guardrail)."""
 
-    def __init__(self, span: Any = None) -> None:
+    def __init__(self, span: Any = None, on_end: Callable[[str | None, str | None], None] | None = None) -> None:
         self._span = span
         self._first_token_seen = False
         self.ended = span is None
+        # The turn's own record of this step (time, status), kept whether or not Langfuse is on.
+        self._on_end = on_end
 
     @_never_raises
     def first_token(self) -> None:
@@ -226,6 +234,9 @@ class Observation:
         status: str | None = None,
         metadata: Mapping[str, Any] | None = None,
     ) -> None:
+        if self._on_end is not None:
+            on_end, self._on_end = self._on_end, None
+            on_end(level, status)
         if self.ended:
             return
         self.ended = True
@@ -266,6 +277,20 @@ class TurnTrace:
         self._environment = environment or os.environ.get("LANGFUSE_TRACING_ENVIRONMENT") or "local"
         self._root: Any = None
         self._context: Any = None
+        # The turn's own record (src/services/sage_turn_log.py), kept whether or not Langfuse is on.
+        self._t0 = time.monotonic()
+        meta_in = dict(metadata or {})
+        self._record: dict[str, Any] = {
+            "started_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "conversation_id": str(session_id) if session_id else None,
+            "map_id": _str_or_none(meta_in.get("map_id")),
+            "partner_id": _str_or_none(meta_in.get("partner_id")),
+            "steps": [],
+        }
+        self._tool_steps: dict[str, dict[str, Any]] = {}
+        self._finished = False
+        # Only real turns go to the turn log; evals (scripts/eval_sage_routing.py, "sage.eval_case") stay out of it.
+        self._log_turn = name == "sage.turn" and self._environment != "eval"
         if tracer is None:
             return
         try:
@@ -297,6 +322,27 @@ class TurnTrace:
     @property
     def tags(self) -> frozenset[str]:
         return frozenset(self._tags)
+
+    def _step(self, kind: str, name: str) -> dict[str, Any] | None:
+        """Start a step in the turn's own record (None past MAX_STEPS)."""
+        steps = self._record["steps"]
+        if len(steps) >= sage_turn_log.MAX_STEPS:
+            self.flag("steps_truncated")
+            return None
+        step = {"kind": kind, "name": name, "t": round(time.monotonic() - self._t0, 2), "seconds": None,
+                "status": None}
+        steps.append(step)
+        return step
+
+    def _end_step(self, step: dict[str, Any] | None, *, status: str, error: Any = None, rule: str | None = None):
+        if step is None or step["status"] is not None:
+            return
+        step["seconds"] = round(time.monotonic() - self._t0 - step["t"], 2)
+        step["status"] = status
+        if error is not None:
+            step["error"] = sage_turn_log.clip_error(error)
+        if rule:
+            step["rule"] = rule
 
     def flag(self, *tags: str) -> None:
         """Tag the turn; tags are how problem turns are found in Langfuse."""
@@ -368,6 +414,10 @@ class TurnTrace:
         """Record which tools the model will be offered this turn, and why."""
         self.set_input(user_text)
         names = _tool_names(tools)
+        self._record["routing"] = {"reason": reason, "categories": sorted(categories), "tool_count": len(names),
+                                   "shortlist": shortlist}
+        if model:
+            self._record["model"] = model
         if small_talk:
             self.flag("small_talk")
         fallback = bool(shortlist and shortlist.startswith("bm25"))
@@ -393,6 +443,7 @@ class TurnTrace:
         """A deterministic fast path answered the turn without the model."""
         if user_text is not None:
             self.set_input(user_text)
+        self._record["fast_path"] = handler
         self.flag(f"fast_path:{handler}")
         self.event("fast_path", output={"handler": handler}, metadata={"handler": handler})
 
@@ -408,13 +459,20 @@ class TurnTrace:
         name: str = "model_call",
     ) -> Observation:
         """Start a model call; ``end`` it with the reply or the error."""
+        rec_step = self._step("model", model)
+        self._record["model"] = model
+
+        def on_end(level: str | None, status: str | None) -> None:
+            failed = level == "ERROR"
+            self._end_step(rec_step, status="error" if failed else "ok", error=status if failed else None)
+
         if not self.enabled:
-            return Observation()
+            return Observation(on_end=on_end)
         names = _tool_names(tools)
         system = next((m for m in messages if m.get("role") == "system"), None)
         recent = [m for m in messages if m is not system][-_MAX_INPUT_MESSAGES:]
         shown = ([system] if system is not None else []) + recent
-        return self.observe(
+        observation = self.observe(
             name,
             kind="generation",
             input=[_clip_message(m) for m in shown],
@@ -430,10 +488,17 @@ class TurnTrace:
                 "langfuse.observation.model.parameters": _json(dict(parameters or {})),
             },
         )
+        observation._on_end = on_end
+        return observation
 
     @_never_raises
     def tool_started(self, call_id: str, name: str, args: Any) -> None:
-        if not self.enabled or not call_id:
+        if not call_id:
+            return
+        step = self._step("tool", name)
+        if step is not None:
+            self._tool_steps[call_id] = step
+        if not self.enabled:
             return
         self._tools[call_id] = self.observe(
             name,
@@ -445,20 +510,25 @@ class TurnTrace:
     @_never_raises
     def tool_finished(self, call_id: str, content: Any) -> None:
         """Close a tool call with its result; failed results flag the turn."""
-        observation = self._tools.pop(str(call_id or ""), None)
-        if observation is None:
-            return
         summary = summarize_tool_result(content)
+        parsed = content
+        if isinstance(content, str):
+            try:
+                parsed = json.loads(content)
+            except Exception:
+                parsed = content
         error_text = None
         if summary["tool_has_error"]:
             self.flag("tool_error")
-            parsed = content
-            if isinstance(content, str):
-                try:
-                    parsed = json.loads(content)
-                except Exception:
-                    parsed = content
             error_text = str(parsed.get("error") or summary["tool_status"]) if isinstance(parsed, Mapping) else str(parsed)
+        rule = sage_turn_log.rule_of_tool_result(parsed)
+        if rule:
+            self.flag(rule)
+        self._end_step(self._tool_steps.pop(str(call_id or ""), None),
+                       status="error" if summary["tool_has_error"] else "ok", error=error_text, rule=rule)
+        observation = self._tools.pop(str(call_id or ""), None)
+        if observation is None:
+            return
         observation.end(
             output=content,
             level="WARNING" if summary["tool_has_error"] else None,
@@ -469,6 +539,10 @@ class TurnTrace:
     @_never_raises
     def finish(self, *, error: str | None = None) -> None:
         """End the turn; observations still open are closed and flagged."""
+        if self._finished:
+            return
+        self._finished = True
+        self._save_record(error)
         if not self.enabled:
             return
         for observation in self._open:
@@ -490,6 +564,33 @@ class TurnTrace:
             root.set_attribute("langfuse.observation.level", "WARNING")
         root.end()
         self._root = None
+
+
+    def record(self) -> dict[str, Any]:
+        """The turn's own record so far (what the Sage turn log saves at the end)."""
+        return self._record
+
+    def _save_record(self, error: str | None) -> None:
+        try:
+            rec = self._record
+            for step in rec["steps"]:
+                if step["status"] is None:
+                    self.flag("unfinished_step")
+                    self._end_step(step, status="unfinished")
+            if error:
+                self.flag("turn_error")
+                rec["error"] = sage_turn_log.clip_error(error)
+            rec["seconds"] = round(time.monotonic() - self._t0, 2)
+            rec["outcome"] = "failed" if error else "cancelled" if "cancelled" in self._tags else "completed"
+            rec["rules"] = sorted(t for t in self._tags if t != "turn_error")
+            if self._log_turn:
+                sage_turn_log.save_soon(rec)
+        except Exception:
+            logger.debug("sage flight recorder: could not save the turn record", exc_info=True)
+
+
+def _str_or_none(value: Any) -> str | None:
+    return None if value is None else str(value)
 
 
 # Tags that mark a turn as worth a look; the turn's level becomes WARNING.

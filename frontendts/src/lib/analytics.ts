@@ -23,12 +23,27 @@ export const initAnalytics = () => {
   const posthogKey = import.meta.env.VITE_POSTHOG_KEY;
   if (!posthogKey) return;
 
+  // PostHog only counts usage here: nothing of it may appear on screen. Its toolbar, once opened from the PostHog
+  // site, is remembered in this browser and pops up on every visit; forget it, and load no extra PostHog scripts
+  // (toolbar, surveys, chat, tours, replay), whatever is switched on in the PostHog project.
+  try {
+    window.localStorage.removeItem('_postHogToolbarParams');
+    window.sessionStorage.removeItem('_postHogToolbarParams');
+  } catch {
+    // Storage blocked (private window): there is nothing remembered to forget.
+  }
   posthog.init(posthogKey, {
     api_host: import.meta.env.VITE_POSTHOG_HOST || 'https://us.i.posthog.com',
     autocapture: true,
     capture_pageview: true,
     capture_pageleave: true,
     persistence: 'localStorage+cookie',
+    disable_external_dependency_loading: true,
+    disable_surveys: true,
+    disable_conversations: true,
+    disable_product_tours: true,
+    disable_web_experiments: true,
+    disable_session_recording: true,
   });
 };
 
