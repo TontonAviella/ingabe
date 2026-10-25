@@ -64,3 +64,34 @@ scrape_configs:
   - job_name: "alertmanager"
     static_configs:
       - targets: ["alertmanager:9093"]
+
+  # Containers (cAdvisor), Redis, MinIO storage, and the monitoring tools themselves.
+  - job_name: "containers"
+    static_configs:
+      - targets: ["cadvisor:8080"]
+    scrape_interval: 30s
+
+  - job_name: "redis"
+    static_configs:
+      - targets: ["redis-exporter:9121"]
+
+  - job_name: "minio"
+    metrics_path: /minio/v2/metrics/cluster
+    static_configs:
+      - targets: ["minio:9000"]
+    scrape_interval: 60s
+
+  - job_name: "grafana"
+    static_configs:
+      - targets: ["grafana:3000"]
+    scrape_interval: 60s
+
+  - job_name: "loki"
+    static_configs:
+      - targets: ["loki:3100"]
+    scrape_interval: 60s
+
+  - job_name: "alloy"
+    static_configs:
+      - targets: ["alloy:12345"]
+    scrape_interval: 60s

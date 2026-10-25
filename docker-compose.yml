@@ -188,6 +188,9 @@ services:
       - MINIO_ROOT_USER=${MINIO_ROOT_USER:-admin}
       - MINIO_ROOT_PASSWORD=${MINIO_ROOT_PASSWORD:-changeme}
       - MINIO_DEFAULT_BUCKETS=${S3_BUCKET:-test-bucket}
+      # Storage health for Prometheus (/minio/v2/metrics/cluster). Readable without a key, so MinIO's port must stay
+      # private: the server binds it to 127.0.0.1 and the public routes only pass /test-bucket/.
+      - MINIO_PROMETHEUS_AUTH_TYPE=public
     volumes:
       - ./data/minio:/data
     restart: unless-stopped
@@ -428,6 +431,36 @@ services:
       - "--storage.tsdb.retention.time=30d"
     restart: unless-stopped
 
+  # Every container's health for Prometheus: running, restarts, memory against its limit, out-of-memory kills.
+  # Reads Docker's state read-only; no published port.
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:v0.49.1
+    container_name: mundi-cadvisor
+    mem_limit: 256m
+    command:
+      - "--docker_only=true"
+      - "--housekeeping_interval=30s"
+      - "--store_container_labels=false"
+      - "--whitelisted_container_labels=com.docker.compose.service"
+      - "--disable_metrics=advtcp,cpu_topology,cpuset,hugetlb,memory_numa,percpu,perf_event,process,referenced_memory,resctrl,sched,tcp,udp,disk,diskIO"
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+    devices:
+      - /dev/kmsg
+    restart: unless-stopped
+
+  # Redis health for Prometheus: up, memory against its 2 GB limit, evictions, clients.
+  redis-exporter:
+    image: oliver006/redis_exporter:v1.62.0
+    container_name: mundi-redis-exporter
+    mem_limit: 32m
+    environment:
+      - REDIS_ADDR=redis://${REDIS_HOST:-redis}:${REDIS_PORT:-6379}
+    restart: unless-stopped
+
   # Alarms to Roger's phone: Prometheus -> Alertmanager -> alert-notifier -> ntfy (no published ports).
   alertmanager:
     image: prom/alertmanager:v0.27.0
@@ -527,6 +560,13 @@ services:
       - "--collector.pressure"
       - "--collector.loadavg"
       - "--collector.cpu"
+      # Early warnings: disk busy, network errors, reboots, clock drift, open files, swapping.
+      - "--collector.diskstats"
+      - "--collector.netdev"
+      - "--collector.stat"
+      - "--collector.timex"
+      - "--collector.filefd"
+      - "--collector.vmstat"
       - "--collector.filesystem"
       - "--path.rootfs=/host/root"
       - "--collector.filesystem.mount-points-exclude=^/(dev|proc|run|sys|var/lib/docker/.+|snap/.+)($$|/)"
@@ -557,7 +597,8 @@ services:
     image: grafana/alloy:v1.10.2
     container_name: mundi-alloy
     mem_limit: 256m
-    command: ["run", "--storage.path=/var/lib/alloy/data", "/etc/alloy/config.alloy"]
+    # Its own health on :12345 inside the Docker network (Prometheus reads it).
+    command: ["run", "--storage.path=/var/lib/alloy/data", "--server.http.listen-addr=0.0.0.0:12345", "/etc/alloy/config.alloy"]
     volumes:
       - ./monitoring/alloy.alloy:/etc/alloy/config.alloy:ro
       - /var/run/docker.sock:/var/run/docker.sock:ro

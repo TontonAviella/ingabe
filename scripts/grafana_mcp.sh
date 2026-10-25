@@ -11,5 +11,5 @@ GRAFANA_SERVICE_ACCOUNT_TOKEN="$(grep '^GRAFANA_MCP_TOKEN=' .env | cut -d= -f2-)
 export GRAFANA_SERVICE_ACCOUNT_TOKEN
 [ -n "$GRAFANA_SERVICE_ACCOUNT_TOKEN" ] || { echo "GRAFANA_MCP_TOKEN is not set in .env" >&2; exit 1; }
 NETWORK="$(docker inspect mundi-grafana -f '{{range $k, $v := .NetworkSettings.Networks}}{{$k}}{{end}}')"
-exec docker run -i --rm --network "$NETWORK" -e GRAFANA_URL=http://grafana:3000 -e GRAFANA_SERVICE_ACCOUNT_TOKEN \
+exec docker run -i --rm --name "grafana-mcp-$$" --network "$NETWORK" -e GRAFANA_URL=http://grafana:3000 -e GRAFANA_SERVICE_ACCOUNT_TOKEN \
   grafana/mcp-grafana:2.0.2 -t stdio -disable-write -disable-admin -log-level error

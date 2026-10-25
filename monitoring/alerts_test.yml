@@ -230,7 +230,7 @@ tests:
       - eval_time: 65m
         alertname: DataFeedCheckFailing
         exp_alerts:
-          - exp_labels: {area: components, severity: warning, job: mundi-app, check: chirps, component: CHIRPS rain, tier: feed}
+          - exp_labels: {area: feeds, severity: warning, job: mundi-app, check: chirps, component: CHIRPS rain, tier: feed}
             exp_annotations:
               where: "CHIRPS rain: the outside service; detail at /internal/component-checks"
               summary: "Outside data feed CHIRPS rain has failed its check for an hour"
@@ -280,4 +280,42 @@ tests:
             exp_annotations:
               where: "container mundi-app (the component check loop; COMPONENT_CHECKS, Redis lock component_checks:runner)"
               summary: No component check has run for 30 minutes; the self-tests are blind
+
+  # Early warnings: free disk falls 20 GB an hour from 100 GB (full in 5 h); the app container disappears after 30 min;
+  # Postgres uses 85 of 100 connections; the domain date is not near (no alarm).
+  - interval: 1m
+    input_series:
+      - series: 'node_filesystem_avail_bytes{job="docker-vm",mountpoint="/",device="/dev/sda1",fstype="ext4"}'
+        values: '100e9-0.333e9x300'
+      - series: 'container_last_seen{job="containers",name="mundi-app"}'
+        values: '1x30 _x300'
+      - series: 'pg_stat_activity_count{job="postgres",datname="mundidb",state="active"}'
+        values: '85x300'
+      - series: 'pg_settings_max_connections{job="postgres"}'
+        values: '100x300'
+    alert_rule_test:
+      - eval_time: 3h
+        alertname: DiskFullWithin7Days
+        exp_alerts:
+          - exp_labels: {area: server, severity: warning, job: docker-vm, mountpoint: "/", device: /dev/sda1, fstype: ext4}
+            exp_annotations:
+              where: "server disk: docker images and build cache (docker builder prune), MinIO photos, Loki logs"
+              summary: "At the current rate the server disk is full within 7 days"
+      - eval_time: 3h
+        alertname: ContainerMissing_mundi_app
+        exp_alerts:
+          - exp_labels: {area: containers, severity: critical}
+            exp_annotations:
+              where: "docker ps on the server; docker logs of the mundi-app container"
+              summary: "The container for the app itself is not running"
+      - eval_time: 30m
+        alertname: PostgresConnectionsNearLimit
+        exp_alerts:
+          - exp_labels: {area: database, severity: warning}
+            exp_annotations:
+              where: "Postgres connections (Grafana Database and backups); the app pool, Dagster, Grafana"
+              summary: "Postgres is using over 80% of its allowed connections; new ones will soon be refused"
+      - eval_time: 30m
+        alertname: DomainExpiresSoon
+        exp_alerts: []
 

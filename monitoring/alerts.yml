@@ -1,5 +1,6 @@
 # Alert rules (Prometheus :9090/alerts, Grafana, and the Ingabe Health page). Every rule has an `area` label
-# (app, sage, ai-model, dagster, data, backup, database, server, monitoring, components, maps) and a `where` annotation saying
+# in the order problems are traced: 1 server, 2 containers, 3 database (data stores), 4 app + access,
+# 5 sage, ai-model, maps, components, 6 dagster + data, 7 feeds, 8 backup, 9 monitoring and a `where` annotation saying
 # where to look first. Added after 2026-10-03, when Postgres looped through
 # crash recovery under Docker-VM memory pressure with nothing showing it.
 groups:
@@ -267,7 +268,7 @@ groups:
   - name: monitoring
     rules:
       - alert: MonitoringTargetDown
-        expr: up{job=~"postgres|dagster|docker-vm|public-app|alertmanager"} == 0
+        expr: up{job=~"postgres|dagster|docker-vm|public-app|alertmanager|containers|redis|minio|grafana|loki|alloy"} == 0
         for: 5m
         labels:
           severity: warning
@@ -294,7 +295,7 @@ groups:
         for: 1h
         labels:
           severity: warning
-          area: components
+          area: feeds
         annotations:
           where: "{{ $labels.component }}: the outside service; detail at /internal/component-checks"
           summary: "Outside data feed {{ $labels.component }} has failed its check for an hour"
@@ -333,3 +334,296 @@ groups:
         annotations:
           where: "tile routes /api/layer/... and rasterd; Grafana Logs (container mundi-app, mundi-rasterd)"
           summary: People's maps reported 5 or more tile errors in the last hour (at most one per page a minute)
+
+  # ---- Early warnings: the trend says something will break, before it does -------------------------------------
+  - name: server-early-warning
+    rules:
+      - alert: DiskFullWithin7Days
+        # Straight-line forecast from the last 24 hours of free disk space.
+        expr: predict_linear(node_filesystem_avail_bytes{mountpoint="/"}[24h], 7 * 86400) < 0
+        for: 1h
+        labels:
+          severity: warning
+          area: server
+        annotations:
+          where: "server disk: docker images and build cache (docker builder prune), MinIO photos, Loki logs"
+          summary: "At the current rate the server disk is full within 7 days"
+      - alert: MemoryRunsOutWithin24Hours
+        expr: predict_linear(node_memory_MemAvailable_bytes[6h], 86400) < 1e9 and node_memory_MemAvailable_bytes < 6e9
+        for: 30m
+        labels:
+          severity: warning
+          area: server
+        annotations:
+          where: "Grafana Server (memory), Components (which container grows)"
+          summary: "Free memory is falling steadily; at this rate it runs out within a day"
+      - alert: MemoryPressure
+        # Share of time processes stalled waiting for memory (Linux pressure stall information).
+        expr: rate(node_pressure_memory_waiting_seconds_total[5m]) > 0.1
+        for: 15m
+        labels:
+          severity: warning
+          area: server
+        annotations:
+          where: "Grafana Server; the biggest containers in Grafana Components"
+          summary: "Programs are waiting for memory over 10% of the time; the server is slowing down"
+      - alert: CPUOverloaded
+        expr: node_load5 > 1.5 * count(node_cpu_seconds_total{mode="idle"})
+        for: 30m
+        labels:
+          severity: warning
+          area: server
+        annotations:
+          where: "Grafana Server (CPU); a Dagster run or a stuck process"
+          summary: "The server has had more work than its 8 cores for 30 minutes"
+      - alert: CPUStolenByHost
+        # A shared virtual server: Contabo's host gives our CPU time to other customers.
+        expr: avg(rate(node_cpu_seconds_total{mode="steal"}[10m])) > 0.1
+        for: 30m
+        labels:
+          severity: warning
+          area: server
+        annotations:
+          where: "Contabo (the host is oversold); ask Contabo support or move the server"
+          summary: "Over 10% of our CPU time is being taken by the hosting company's other machines"
+      - alert: DiskBusy
+        expr: max(rate(node_disk_io_time_seconds_total[10m])) > 0.9
+        for: 30m
+        labels:
+          severity: warning
+          area: server
+        annotations:
+          where: "Grafana Server (disk); backups, Dagster runs or Postgres"
+          summary: "The server disk has been busy over 90% of the time for 30 minutes"
+      - alert: ServerRestarted
+        expr: changes(node_boot_time_seconds[1h]) > 0
+        labels:
+          severity: warning
+          area: server
+        annotations:
+          where: "Contabo control panel (maintenance or crash); check that every container came back"
+          summary: "The server restarted in the last hour"
+      - alert: ServerClockWrong
+        expr: node_timex_sync_status == 0
+        for: 30m
+        labels:
+          severity: warning
+          area: server
+        annotations:
+          where: "timedatectl on the server (NTP); a wrong clock breaks sign-in and scheduled jobs"
+          summary: "The server clock is not synchronised"
+      - alert: OpenFilesNearLimit
+        expr: node_filefd_allocated / node_filefd_maximum > 0.8
+        for: 15m
+        labels:
+          severity: warning
+          area: server
+        annotations:
+          where: "the container with the most connections (Grafana Components)"
+          summary: "The server is close to its limit of open files"
+      - alert: NetworkErrors
+        expr: sum(rate(node_network_receive_errs_total[10m]) + rate(node_network_transmit_errs_total[10m])) > 1
+        for: 30m
+        labels:
+          severity: warning
+          area: server
+        annotations:
+          where: "Contabo network; the server's network card"
+          summary: "The server network is dropping packets with errors"
+
+  - name: containers
+    rules:
+      - alert: ContainerRestarting
+        # The mcp-grafana containers Claude Code starts and stops on demand are left out.
+        expr: changes(container_start_time_seconds{name!~"grafana-mcp.*|"}[1h]) > 2
+        labels:
+          severity: warning
+          area: containers
+        annotations:
+          where: "docker logs {{ $labels.name }} on the server (Grafana Logs, container {{ $labels.name }})"
+          summary: "Container {{ $labels.name }} restarted more than twice in the last hour"
+      - alert: ContainerNearMemoryLimit
+        expr: |
+          container_memory_working_set_bytes{name!=""} / (container_spec_memory_limit_bytes{name!=""} > 0) > 0.9
+        for: 15m
+        labels:
+          severity: warning
+          area: containers
+        annotations:
+          where: "Grafana Components (memory per container); raise mem_limit in docker-compose.yml or find the leak"
+          summary: "Container {{ $labels.name }} uses over 90% of its memory limit; it will be killed when it reaches it"
+      - alert: ContainerKilledOutOfMemory
+        expr: increase(container_oom_events_total{name!=""}[30m]) > 0
+        labels:
+          severity: critical
+          area: containers
+        annotations:
+          where: "docker logs {{ $labels.name }}; Grafana Components (memory)"
+          summary: "Container {{ $labels.name }} ran out of memory and was killed"
+      - alert: ContainerMissing_postgresdb
+        # cAdvisor reports every running container; none whose name contains "postgresdb" for 5 minutes = it is not running.
+        expr: absent(container_last_seen{name=~".*postgresdb.*"})
+        for: 5m
+        labels:
+          severity: critical
+          area: containers
+        annotations:
+          where: "docker ps on the server; docker logs of the postgresdb container"
+          summary: "The container for Postgres (the database) is not running"
+      - alert: ContainerMissing_redis
+        # cAdvisor reports every running container; none whose name contains "redis" for 5 minutes = it is not running.
+        expr: absent(container_last_seen{name=~".*redis.*"})
+        for: 5m
+        labels:
+          severity: critical
+          area: containers
+        annotations:
+          where: "docker ps on the server; docker logs of the redis container"
+          summary: "The container for Redis (cache and Sage counters) is not running"
+      - alert: ContainerMissing_minio
+        # cAdvisor reports every running container; none whose name contains "minio" for 5 minutes = it is not running.
+        expr: absent(container_last_seen{name=~".*minio.*"})
+        for: 5m
+        labels:
+          severity: critical
+          area: containers
+        annotations:
+          where: "docker ps on the server; docker logs of the minio container"
+          summary: "The container for MinIO (file storage: uploads, drone photos, backups) is not running"
+      - alert: ContainerMissing_mundi_app
+        # cAdvisor reports every running container; none whose name contains "mundi-app" for 5 minutes = it is not running.
+        expr: absent(container_last_seen{name=~".*mundi-app.*"})
+        for: 5m
+        labels:
+          severity: critical
+          area: containers
+        annotations:
+          where: "docker ps on the server; docker logs of the mundi-app container"
+          summary: "The container for the app itself is not running"
+      - alert: ContainerMissing_dagster_daemon
+        # cAdvisor reports every running container; none whose name contains "dagster-daemon" for 5 minutes = it is not running.
+        expr: absent(container_last_seen{name=~".*dagster-daemon.*"})
+        for: 5m
+        labels:
+          severity: warning
+          area: containers
+        annotations:
+          where: "docker ps on the server; docker logs of the dagster-daemon container"
+          summary: "The container for Dagster (scheduled data jobs) is not running"
+      - alert: ContainerMissing_rasterd
+        # cAdvisor reports every running container; none whose name contains "rasterd" for 5 minutes = it is not running.
+        expr: absent(container_last_seen{name=~".*rasterd.*"})
+        for: 5m
+        labels:
+          severity: warning
+          area: containers
+        annotations:
+          where: "docker ps on the server; docker logs of the rasterd container"
+          summary: "The container for the raster tile server (map images) is not running"
+      - alert: ContainerMissing_ollama
+        # cAdvisor reports every running container; none whose name contains "ollama" for 5 minutes = it is not running.
+        expr: absent(container_last_seen{name=~".*ollama.*"})
+        for: 5m
+        labels:
+          severity: warning
+          area: containers
+        annotations:
+          where: "docker ps on the server; docker logs of the ollama container"
+          summary: "The container for Ollama (Brain search embeddings) is not running"
+
+  - name: data-stores
+    rules:
+      - alert: PostgresConnectionsNearLimit
+        expr: sum(pg_stat_activity_count{job="postgres"}) / max(pg_settings_max_connections{job="postgres"}) > 0.8
+        for: 10m
+        labels:
+          severity: warning
+          area: database
+        annotations:
+          where: "Postgres connections (Grafana Database and backups); the app pool, Dagster, Grafana"
+          summary: "Postgres is using over 80% of its allowed connections; new ones will soon be refused"
+      - alert: PostgresDeadlocks
+        expr: increase(pg_stat_database_deadlocks{job="postgres",datname="mundidb"}[1h]) > 0
+        labels:
+          severity: warning
+          area: database
+        annotations:
+          where: "Postgres logs (Grafana Logs, container *postgresdb*)"
+          summary: "Postgres had a deadlock in the last hour (two writes blocked each other)"
+      - alert: RedisDown
+        expr: redis_up == 0
+        for: 2m
+        labels:
+          severity: critical
+          area: database
+        annotations:
+          where: "container *redis* on the server"
+          summary: "Redis is not answering (sign-in, Sage locks and counters, tile cache)"
+      - alert: RedisMemoryNearLimit
+        # Redis drops old cache entries when full (allkeys-lru), so this is a warning that the cache is too small.
+        expr: redis_memory_used_bytes / (redis_memory_max_bytes > 0) > 0.95
+        for: 30m
+        labels:
+          severity: warning
+          area: database
+        annotations:
+          where: "Redis maxmemory in docker-compose.yml (2 GB); Grafana Database and backups"
+          summary: "Redis has been over 95% of its memory for 30 minutes; older cache entries are being dropped"
+      - alert: StorageNotHealthy
+        expr: minio_cluster_health_status == 0
+        for: 5m
+        labels:
+          severity: critical
+          area: database
+        annotations:
+          where: "container *minio* on the server"
+          summary: "MinIO file storage reports itself unhealthy"
+
+  - name: public-access
+    rules:
+      - alert: CertificateExpiresSoon
+        expr: (min(probe_ssl_earliest_cert_expiry{job="public-app"}) - time()) / 86400 < 14
+        labels:
+          severity: warning
+          area: app
+        annotations:
+          where: "Cloudflare (SSL/TLS for nozalabs.rw); Cloudflare renews it, so this means renewal failed"
+          summary: "The HTTPS certificate of gis.nozalabs.rw expires within 14 days"
+      - alert: DomainExpiresSoon
+        # nozalabs.rw is paid until 2027-09-11 (renewed through AOS, 12,711.87 RWF a year). Update the date after renewing.
+        expr: vector(1820620800 - time()) / 86400 < 60
+        labels:
+          severity: warning
+          area: app
+        annotations:
+          where: "the .rw registrar (AOS); then update the date in monitoring/alerts.yml"
+          summary: "The domain nozalabs.rw expires within 60 days; the site and sign-in stop if it lapses"
+
+  - name: monitoring-health
+    rules:
+      - alert: LogsNotArriving
+        expr: sum(rate(loki_distributor_lines_received_total[15m])) == 0
+        for: 30m
+        labels:
+          severity: warning
+          area: monitoring
+        annotations:
+          where: "containers mundi-alloy and mundi-loki"
+          summary: "No container logs have reached Loki for 30 minutes; Grafana Logs is blind"
+      - alert: AlarmRulesFailing
+        expr: increase(prometheus_rule_evaluation_failures_total[30m]) > 0
+        labels:
+          severity: warning
+          area: monitoring
+        annotations:
+          where: "Prometheus rules (monitoring/alerts.yml); Prometheus logs"
+          summary: "Some alarm rules could not be evaluated, so those alarms are blind"
+      - alert: PhoneAlarmsFailing
+        expr: increase(alertmanager_notifications_failed_total[1h]) > 0
+        labels:
+          severity: warning
+          area: monitoring
+        annotations:
+          where: "containers mundi-alertmanager and mundi-alert-notifier (ntfy.sh reachable?)"
+          summary: "Some alarms could not be delivered to your phone in the last hour"
+
