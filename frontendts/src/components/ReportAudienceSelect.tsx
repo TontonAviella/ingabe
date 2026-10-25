@@ -9,12 +9,11 @@ interface ReportAudience {
 
 const KEY = ['user', 'report-audience'];
 
-/** "Answers for: Farmer / Insurer / Agronomist / Scientist" — the view Sage's
- * reports use for this user. Saved on the account; the partner's default
- * applies until the user picks one. */
-export function ReportAudienceSelect() {
+/** The user's role (src/services/reader_roles.py) in the industry they work in, and saving another. The question
+ * panels and the "Answers for" select share it, so a role picked in one is the role in all of them. */
+export function useReaderRole() {
   const queryClient = useQueryClient();
-  const { data } = useQuery<ReportAudience>({
+  const query = useQuery<ReportAudience>({
     queryKey: KEY,
     queryFn: async () => {
       const res = await apiFetch('/api/user/report-audience');
@@ -35,6 +34,14 @@ export function ReportAudienceSelect() {
     },
     onSuccess: (saved) => queryClient.setQueryData(KEY, saved),
   });
+  return { data: query.data, role: query.data?.source === 'default' ? null : (query.data?.audience ?? null), save };
+}
+
+/** "Answers for: Farmer / Cooperative / Agronomist / …" — the user's role in the industry they work in: the
+ * questions they are asked and the words Sage's reports use. Saved on the account; the partner's default applies
+ * until the user picks one. */
+export function ReportAudienceSelect() {
+  const { data, save } = useReaderRole();
 
   if (!data) return null;
   const hint =

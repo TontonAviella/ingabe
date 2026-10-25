@@ -14,6 +14,7 @@ import {
   StatusIcon,
   writeCollapsed,
 } from '@/components/CardAnswer';
+import { useReaderRole } from '@/components/ReportAudienceSelect';
 import {
   type DroneCard,
   type DroneCardAnswer,
@@ -150,6 +151,11 @@ function byZoom<T>(far: Paint<T>, near: Paint<T>): ExpressionSpecification {
 function StatusLine({ card }: { card: DroneCard }) {
   return (
     <span className="inline-flex items-center gap-1.5 text-[12px] font-semibold text-[#D8CCBF]">
+      {card.new && (
+        <span className="rounded-full bg-[#D9A066] px-1.5 py-px text-[10.5px] font-bold uppercase tracking-[0.04em] text-[#17110E]">
+          New
+        </span>
+      )}
       <StatusIcon status={card.status} />
       {card.status_label}
     </span>
@@ -436,21 +442,21 @@ function DeckView({
         <span className="text-[13px] text-[#B8A99B]">{photo.summary}</span>
       </div>
 
-      <div className="grid grid-cols-4 gap-[2px] rounded-[12px] bg-[#221813] p-[3px]" role="group" aria-label="Who is reading">
-        {deck.audiences.map((a) => (
-          <button
-            key={a.id}
-            type="button"
-            aria-pressed={deck.audience === a.id}
-            onClick={() => onPickAudience(a.id)}
-            className={`min-h-8 rounded-[9px] text-[12px] cursor-pointer ${
-              deck.audience === a.id ? 'bg-[#3A2A21] text-[#F3EDE6] font-bold' : 'text-[#B8A99B] font-semibold hover:text-[#F3EDE6]'
-            }`}
-          >
-            {a.label}
-          </button>
-        ))}
-      </div>
+      <label className="flex items-center gap-2 rounded-[12px] bg-[#221813] px-3 py-1.5">
+        <span className="text-[12px] font-semibold text-[#B8A99B]">Questions for</span>
+        <select
+          value={deck.audience}
+          onChange={(e) => onPickAudience(e.target.value)}
+          aria-label="Who is reading: the questions are asked for this role"
+          className="min-h-8 flex-1 cursor-pointer rounded-[9px] border border-white/10 bg-[#17110E] px-2 text-[13px] font-semibold text-[#F3EDE6] focus:border-[#D9A066]/60 focus:outline-none"
+        >
+          {deck.audiences.map((a) => (
+            <option key={a.id} value={a.id}>
+              {a.label}
+            </option>
+          ))}
+        </select>
+      </label>
 
       <div className="flex flex-col gap-2.5">
         <div className="flex items-center justify-between">
@@ -630,7 +636,8 @@ function useAnswerOverlay(map: MLMap | null, answer: DroneCardAnswer | null, bou
   }, [map, answer]);
 }
 
-/** A new mix of questions each time the panel opens, and on "Other questions". */
+/** Another mix of questions, for "Other questions". The panel opens on the day's set (seed 0: the server picks the
+ * day's), so the questions change each day, not on every page load. */
 function newSeed() {
   return 1 + Math.floor(Math.random() * 1_000_000);
 }
@@ -650,7 +657,8 @@ export function DroneCards({
   /** Sends a question to Sage in the chat. */
   onAskSage: (prompt: string) => void;
 }) {
-  const [seed, setSeed] = useState(newSeed);
+  const [seed, setSeed] = useState(0);
+  const reader = useReaderRole();
   const photos = useMemo(() => layers.filter((l) => l.type === 'raster' && !hiddenLayerIDs.includes(l.id)), [layers, hiddenLayerIDs]);
   const [layerId, setLayerId] = useState<string | null>(null);
   const [audience, setAudience] = useState<string | null>(null);
@@ -666,7 +674,8 @@ export function DroneCards({
   }, [photos, layerId]);
 
   const deck = useDroneDeck(layerId, audience, seed);
-  const answer = useDroneCardAnswer(layerId, openCard, audience, seed);
+  // The answer is asked with the deck's own seed (the day's set when none was picked), so its question reads the same.
+  const answer = useDroneCardAnswer(layerId, openCard, audience, deck.data?.seed ?? seed);
   useAnswerOverlay(map, collapsed ? null : (answer.data ?? null), deck.data?.photo.bounds ?? null);
 
   // A photo the cards cannot read (not a colour photo, not a raster) shows no panel.
@@ -703,7 +712,10 @@ export function DroneCards({
             setLayerId(id);
             setOpenCard(null);
           }}
-          onPickAudience={setAudience}
+          onPickAudience={(role) => {
+            setAudience(role);
+            reader.save.mutate(role); // the role sticks: on the next photo, visit and in Sage's reports
+          }}
           onOpen={setOpenCard}
           onShuffle={() => setSeed(newSeed())}
           onAskSage={onAskSage}

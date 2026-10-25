@@ -755,3 +755,144 @@ def test_no_card_talks_about_money_with_the_looks_off(photo, audience):
     answers = [drone_cards.answer_card(c, _analysis(photo), audience, here) for c in ("crop_types",) + LOOK_ONLY]
     text = json.dumps([{k: a[k] for k in ("what", "why", "todo", "items", "facts")} for a in answers])
     assert not MONEY.search(text)
+
+
+# --- Each role its own questions; the season, what changed and a new set each day (Roger, 2026-10-25) --------------
+
+def _for_you(photo, role, here=None):
+    return drone_cards.build_deck(_analysis(photo), role, here or drone_cards.Here(photos=1))
+
+
+def test_each_role_is_asked_its_own_questions(photo):
+    farmer = {c["id"]: c["question"] for s in _for_you(photo, "farmer")["services"] for c in s["cards"]}
+    insurer = {c["id"]: c["question"] for s in _for_you(photo, "insurer")["services"] for c in s["cards"]}
+    government = _for_you(photo, "government")
+    assert farmer["bare_ground"] == "Which of my fields are still empty?"
+    assert insurer["bare_ground"] == "Is this land planted, or still bare?"
+    assert {c["id"]: c["question"] for s in government["services"] for c in s["cards"]}["bare_ground"] == \
+        "How much of this area is planted this season?"
+    assert (government["audience"], government["audience_label"]) == ("government", "Government / district")
+    assert [o["id"] for o in government["audiences"]] == [
+        "farmer", "cooperative", "agronomist", "insurance", "scientist", "government", "buyer"]
+    # A role with no words of its own for a card is asked the card's question.
+    assert {c["id"]: c["question"] for s in _for_you(photo, "buyer")["services"] for c in s["cards"]}["weeds"] == \
+        "Which plots need weeding first?"
+    # A role from another industry reads as the default.
+    assert _for_you(photo, "technician")["audience"] == "agronomist"
+
+
+def test_every_role_wording_belongs_to_a_real_card():
+    assert set(drone_cards._ROLE_WORDS) <= set(drone_cards.reader_roles.AGRICULTURE)
+    for words in drone_cards._ROLE_WORDS.values():
+        assert set(words) <= set(drone_cards._CARD_BY_ID)
+
+
+def test_an_answer_keeps_the_roles_question_and_its_voice(photo):
+    analysis = _analysis(photo)
+    coop = drone_cards.answer_card("bare_ground", analysis, "cooperative", drone_cards.Here(photos=1))
+    farmer = drone_cards.answer_card("bare_ground", analysis, "farmer", drone_cards.Here(photos=1))
+    assert coop["question"] in ("Which plots are not planted yet?", "How much of our land is still bare?")
+    assert coop["what"] == farmer["what"]  # a cooperative manager reads the farmer's plain words
+
+
+def test_the_season_leads_with_what_matters_now(photo):
+    planting = [c["id"] for c in _for_you(photo, "farmer", drone_cards.Here(photos=1, moment="planting"))["for_you"]]
+    growing = [c["id"] for c in _for_you(photo, "farmer", drone_cards.Here(photos=1, moment="growing"))["for_you"]]
+    assert planting != growing
+    assert planting.index("bare_ground") < growing.index("bare_ground") if "bare_ground" in growing else True
+
+
+def test_a_card_that_changed_comes_first_and_one_opened_today_gives_way(photo):
+    usual = _for_you(photo, "farmer")["for_you"]
+    second = usual[1]["id"]
+    fresh = _for_you(photo, "farmer", drone_cards.Here(photos=1, changed=frozenset({second})))["for_you"]
+    assert fresh[0]["id"] == second and fresh[0]["new"] is True
+    opened = _for_you(photo, "farmer", drone_cards.Here(photos=1, seen=frozenset({usual[0]["id"]})))["for_you"]
+    assert opened[0]["id"] != usual[0]["id"]
+
+
+def test_the_days_set_is_the_same_all_day_and_new_the_next():
+    from datetime import date
+
+    from src.services import card_memory
+
+    monday, tuesday = date(2026, 10, 26), date(2026, 10, 27)
+    assert card_memory.daily_seed("u1", "L1", monday) == card_memory.daily_seed("u1", "L1", monday)
+    assert card_memory.daily_seed("u1", "L1", monday) != card_memory.daily_seed("u1", "L1", tuesday)
+    assert card_memory.daily_seed("u1", "L1", monday) != card_memory.daily_seed("u2", "L1", monday)
+    assert all(card_memory.daily_seed("u", f"L{i}", monday) > 0 for i in range(50))
+
+
+def test_only_answers_that_became_ready_count_as_changed():
+    from src.services import card_memory
+
+    before = {"a": "working", "b": "ready", "c": "to_build", "d": "partly", "f": "ready", "g": "cant_tell"}
+    now = {"a": "ready", "b": "ready", "c": "to_build", "d": "ready", "e": "ready", "f": "partly", "g": "working"}
+    # "e" is new to the deck, not changed; "f" got worse; "g" improved but cannot be read yet
+    assert card_memory.changed(before, now) == {"a", "d"}
+    assert card_memory.changed({}, now) == frozenset()  # a first look marks nothing new
+
+
+class _FakeRedis:
+    def __init__(self):
+        self.hash: dict[str, str] = {}
+
+    async def hsetnx(self, key, field, value):
+        self.hash.setdefault(field, value)
+
+    async def hset(self, key, mapping):
+        self.hash.update(mapping)
+
+    async def expire(self, key, seconds):
+        pass
+
+    async def hgetall(self, key):
+        return dict(self.hash)
+
+
+def test_a_new_mark_stays_until_the_reader_opens_the_card():
+    import asyncio
+
+    from src.services import card_memory
+
+    redis = _FakeRedis()
+    asyncio.run(card_memory.remember_deck(redis, "u", "L", {"a": "working"}))
+    asyncio.run(card_memory.remember_deck(redis, "u", "L", {"a": "ready"}))  # another look does not move the baseline
+    _, before = asyncio.run(card_memory.recall(redis, "u", "L"))
+    assert card_memory.changed(before, {"a": "ready"}) == {"a"}
+    asyncio.run(card_memory.remember_opened(redis, "u", "L", "a", "ready"))
+    seen, before = asyncio.run(card_memory.recall(redis, "u", "L"))
+    assert "a" in seen and card_memory.changed(before, {"a": "ready"}) == frozenset()
+
+
+def test_a_role_or_the_season_never_lifts_a_question_ingabe_cannot_answer_yet(photo):
+    analysis = _analysis(photo)
+    card = {"id": "yield", "status": drone_cards.TO_BUILD}
+    assert drone_cards._READER_BOOST["buyer"]["yield"] and drone_cards._SEASON_BOOST["harvest"]["yield"]
+    assert (drone_cards._score(card, analysis, "buyer", drone_cards.Here(moment="harvest"))
+            == drone_cards._score(card, analysis, "farmer", drone_cards.Here()))
+    ready = {"id": "yield", "status": drone_cards.READY}
+    assert (drone_cards._score(ready, analysis, "buyer", drone_cards.Here(moment="harvest"))
+            > drone_cards._score(ready, analysis, "farmer", drone_cards.Here()))
+
+
+def test_season_moments_follow_the_calendar():
+    from datetime import datetime
+
+    from src.services import crop_calendar
+
+    moments = {d: crop_calendar.season_moment(datetime.fromisoformat(d)) for d in
+               ("2026-09-20", "2026-10-25", "2027-01-05", "2027-02-20", "2027-07-25")}
+    assert moments == {"2026-09-20": "planting", "2026-10-25": "growing", "2027-01-05": "harvest",
+                       "2027-02-20": "planting", "2027-07-25": "between"}
+
+
+def test_roles_read_in_their_voices():
+    from src.services import insurance_engine, reader_roles
+
+    assert reader_roles.for_industry("telecom", "farmer") == "owner"
+    assert reader_roles.for_industry("agriculture", "Farm manager") == "cooperative"
+    assert [reader_roles.voice(r) for r in ("cooperative", "government", "buyer", "manager")] == \
+        ["farmer", "insurance", "farmer", "owner"]
+    assert insurance_engine.normalize_audience("cooperative") == "farmer"  # reports keep their four voices
+    assert insurance_engine.normalize_audience("technician") == insurance_engine.DEFAULT_AUDIENCE

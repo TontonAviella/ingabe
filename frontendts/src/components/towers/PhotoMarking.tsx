@@ -3,6 +3,7 @@ import { useQueryClient } from '@tanstack/react-query';
 import { ArrowLeft, Check, ChevronLeft, ChevronRight, LoaderCircle, ScanSearch, Trash2, Undo2, X } from 'lucide-react';
 import { useCallback, useEffect, useReducer, useRef, useState } from 'react';
 import { PANEL_FONT } from '@/components/CardAnswer';
+import { useReaderRole } from '@/components/ReportAudienceSelect';
 import { BOX_STYLE, type BoxKind, type CanvasBox, type CanvasTool, PhotoCanvas } from '@/components/towers/PhotoCanvas';
 import { usePhotoCloseLook } from '@/hooks/useCloseLook';
 import {
@@ -32,6 +33,7 @@ import {
   type CloseLookRegion,
   type CountedPart,
   type InspectionPhoto,
+  isTowerAudience,
   type PartLabel,
   type PhotoCloseLook,
   type PhotoQuestion,
@@ -186,9 +188,18 @@ function PartCrop({
   );
 }
 
+/** "New": the answer changed since this reader last looked. */
+function NewMark() {
+  return (
+    <span className="mr-1.5 inline-block rounded-full bg-[#D9A066] px-1.5 py-px align-[1px] text-[10.5px] font-bold uppercase tracking-[0.04em] text-[#17110E]">
+      New
+    </span>
+  );
+}
+
 function ReaderSwitch({ audience, onChange }: { audience: TowerAudience; onChange: (a: TowerAudience) => void }) {
   return (
-    <div className="inline-grid grid-cols-2 gap-[2px] rounded-[10px] bg-[#221813] p-[3px]" role="group" aria-label="Reading as">
+    <div className="inline-grid grid-cols-3 gap-[2px] rounded-[10px] bg-[#221813] p-[3px]" role="group" aria-label="Reading as">
       {TOWER_AUDIENCES.map(({ id, label }) => (
         <button
           key={id}
@@ -895,7 +906,10 @@ function PhotoWorkspace({
                 }
                 className="grid w-full grid-cols-[minmax(0,1fr)_auto] items-center gap-x-2.5 gap-y-1 rounded-[14px] border border-white/[0.06] bg-[#221813] px-3.5 py-3 text-left hover:border-[#D9A066]/45 cursor-pointer"
               >
-                <span className="text-[14.5px] font-semibold leading-snug text-[#F3EDE6]">{q.question}</span>
+                <span className="text-[14.5px] font-semibold leading-snug text-[#F3EDE6]">
+                  {q.new && <NewMark />}
+                  {q.question}
+                </span>
                 <Pill status={q.status} label={q.status_label} />
                 <span className="col-span-2 text-[12.5px] leading-snug text-[#B8A99B]">{q.on_photo}</span>
               </button>
@@ -1498,7 +1512,14 @@ export function PhotoMarking({
   const [dirty, setDirty] = useState(false);
   const [searching, setSearching] = useState(false);
   const [message, setMessage] = useState<string | null>(note ?? null);
-  const [audience, setAudience] = useState<TowerAudience>('owner');
+  const reader = useReaderRole();
+  const [picked, setPicked] = useState<TowerAudience | null>(null);
+  // The role picked here, else the one saved on the account, else the owner's questions.
+  const audience: TowerAudience = picked ?? (isTowerAudience(reader.role) ? reader.role : 'owner');
+  const setAudience = (role: TowerAudience) => {
+    setPicked(role);
+    reader.save.mutate(role);
+  };
   const photo = photos[index];
   const towerWork = parts.some((p) => TOWER_PARTS.some((t) => t.id === p.id));
 

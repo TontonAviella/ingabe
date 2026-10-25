@@ -14,11 +14,12 @@ import {
   StatusIcon,
   writeCollapsed,
 } from '@/components/CardAnswer';
+import { useReaderRole } from '@/components/ReportAudienceSelect';
 import { PhotoMarking } from '@/components/towers/PhotoMarking';
 import { photosToCheckNow, useInspectionPhotos, useScan, useTowerCardAnswer, useTowerCards } from '@/hooks/useTowers';
 import type { AnswerItem } from '@/lib/cardAnswer';
 import { isPhotoInspectionLayer } from '@/lib/inspectionPhoto';
-import { TOWER_AUDIENCES, type TowerAudience, type TowerCardAnswer } from '@/lib/towerContract';
+import { isTowerAudience, TOWER_AUDIENCES, type TowerAudience, type TowerCardAnswer } from '@/lib/towerContract';
 import { photoToOpen } from '@/lib/towerReview';
 import type { MapLayer } from '@/lib/types';
 
@@ -85,7 +86,14 @@ export function TowerCards({
     [layers, hiddenLayerIDs],
   );
   const [layerId, setLayerId] = useState<string | null>(null);
-  const [audience, setAudience] = useState<TowerAudience>('owner');
+  const reader = useReaderRole();
+  const [picked, setPicked] = useState<TowerAudience | null>(null);
+  // The role picked here, else the one saved on the account, else the owner's questions.
+  const audience: TowerAudience = picked ?? (isTowerAudience(reader.role) ? reader.role : 'owner');
+  const setAudience = (role: TowerAudience) => {
+    setPicked(role);
+    reader.save.mutate(role);
+  };
   const [openCard, setOpenCard] = useState<string | null>(null);
   const [collapsed, setCollapsed] = useState(() => readCollapsed(COLLAPSED_KEY));
   const [marking, setMarking] = useState<{ index: number; note: string | null } | null>(null);
@@ -192,7 +200,7 @@ export function TowerCards({
             </div>
 
             {!noCards && (
-              <div className="grid grid-cols-2 gap-[2px] rounded-[12px] bg-[#221813] p-[3px]" role="group" aria-label="Who is reading">
+              <div className="grid grid-cols-3 gap-[2px] rounded-[12px] bg-[#221813] p-[3px]" role="group" aria-label="Who is reading">
                 {TOWER_AUDIENCES.map((a) => (
                   <button
                     key={a.id}

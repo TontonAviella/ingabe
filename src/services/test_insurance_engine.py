@@ -2194,6 +2194,32 @@ def test_an_explicit_request_beats_the_saved_role():
     assert _run(resolve_audience(conn, None, "u1", None)) == "farmer"
 
 
+class _RolesConn:
+    """users.report_audience and users.asset_role, as reader_roles reads and writes them."""
+
+    def __init__(self, report=None, asset=None):
+        self.columns = {"report_audience": report, "asset_role": asset}
+
+    async def fetchval(self, sql, arg):
+        return next((v for k, v in self.columns.items() if f"SELECT {k} " in sql), None)
+
+    async def execute(self, sql, user_id, value):
+        column = next(k for k in self.columns if f"SET {k} " in sql)
+        self.columns[column] = value
+        return "UPDATE 1"
+
+
+def test_a_role_in_one_industry_never_changes_the_other():
+    from src.services import reader_roles
+    conn = _RolesConn(report="scientist")
+    assert _run(reader_roles.save_role(conn, "u1", "technician")) is True
+    assert conn.columns == {"report_audience": "scientist", "asset_role": "technician"}
+    assert _run(reader_roles.saved_role(conn, "telecom", "u1", None)) == ("technician", "user")
+    assert _run(reader_roles.saved_role(conn, "agriculture", "u1", None)) == ("scientist", "user")
+    _run(reader_roles.save_role(conn, "u1", None, "power_grid"))  # clearing in Power Grid keeps Agriculture's
+    assert conn.columns == {"report_audience": "scientist", "asset_role": None}
+
+
 def test_save_user_audience_validates_and_reports_missing_accounts():
     from src.services.insurance_engine import save_user_audience
     conn = _AudienceConn()

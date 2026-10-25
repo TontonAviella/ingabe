@@ -15,6 +15,8 @@ export interface DroneCard {
   preview: string;
   status: 'ready' | 'partly' | 'working' | 'needs_flight' | 'needs_camera' | 'cant_tell' | 'to_build' | 'learn';
   status_label: string;
+  /** Its answer changed since this reader last looked. */
+  new?: boolean;
 }
 
 export interface DroneDeck {

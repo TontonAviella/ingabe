@@ -3,8 +3,11 @@ answered from what a person counted. Each industry has its own questions and wor
 line, its defects (missing and loose bolts on a telecom tower; bird nests on a power line), the photos to check, where
 they were taken from, what changed, and how the suggestions were measured.
 
-Two readers: the tower owner or asset manager (what is on the tower, what changed) and the field technician (which
-photos to check next, where the photos were taken from). Each answer comes in the drone cards' order (what, why,
+Three readers (src/services/reader_roles.py): the owner (what is on the tower or line, what changed), the operations
+manager (which sites need a crew, how far the inspection is) and the field technician (which photos to check next,
+what to fix up there). Each is asked its own questions in its own words (_ROLE_WORDS); the answers are written for
+the owner or the technician (a manager reads the owner's). The deck changes each day and with what changed since the
+reader last looked (src/services/card_memory.py). Each answer comes in the drone cards' order (what, why,
 what to do, how sure) and in their shape, so the screen renders both alike (src/services/drone_cards.py `_answer`).
 
 Rules (TOWERS_RULES.md):
@@ -18,6 +21,9 @@ Rules (TOWERS_RULES.md):
 
 from __future__ import annotations
 
+import dataclasses
+import random
+import zlib
 from dataclasses import dataclass
 from typing import Any, Optional, Sequence
 
@@ -26,6 +32,7 @@ from src.services import (
     example_finder,
     line_conductors,
     photo_inspections,
+    reader_roles,
     site_surroundings,
     tower_inspection,
 )
@@ -57,8 +64,9 @@ from src.services.tower_inspection import (
 )
 
 OWNER = "owner"
+MANAGER = "manager"
 TECHNICIAN = "technician"
-AUDIENCES = {OWNER: "Tower owner / asset manager", TECHNICIAN: "Field technician"}
+AUDIENCES = reader_roles.ASSETS  # owner, operations manager, field technician
 DEFAULT_AUDIENCE = OWNER
 
 STATUS_LABELS = {
@@ -223,7 +231,59 @@ _BASE_SCORE = {READY: 100, PARTLY: 60, WORKING: 55, NEEDS_FLIGHT: 40, NEEDS_CAME
 # list of photos to check comes first for them.
 _READER_BOOST = {
     OWNER: {"equipment": 90, "defects": 85, "changes": 20},
+    MANAGER: {"defects": 80, "changes": 45, "photos_to_check": 40, "equipment": 30, "right_of_way": 20},
     TECHNICIAN: {"photos_to_check": 45, "defects": 30, "camera_positions": 15},
+}
+SHUFFLE_POINTS = 30  # with a seed (each day's, or "Other questions"), each card gets up to this many points at random
+CHANGED_BOOST = 45  # an answer that changed since the reader last looked comes first, marked new
+SEEN_PENALTY = 40  # a question opened in the last day gives way to others
+
+# Each role's questions in its own words (the answer is the same facts); a card a role has no words for is asked in
+# the industry's words (Asset.cards). Every wording must be answerable by the card.
+_ROLE_WORDS: dict[str, dict[str, dict[str, tuple[str, ...]]]] = {
+    "telecom": {
+        OWNER: {
+            "equipment": ("What is on my tower, against the tenancy contracts?",
+                          "Which tenants' equipment is on this tower?"),
+            "defects": ("Is my tower structurally safe?", "Are any bolts on my tower missing or loose?"),
+            "changes": ("Has anything been added or removed since the last visit?",),
+            "surroundings": ("Is anything changing around my site?",),
+        },
+        MANAGER: {
+            "defects": ("Which defects did this inspection find?", "Does this tower need a crew sent?"),
+            "photos_to_check": ("How far along is this inspection?", "Which photos still need checking?"),
+            "changes": ("What changed on this site since the last inspection?",),
+            "equipment": ("Does what is on the tower match the contracts?",),
+            "camera_positions": ("Did the drone cover every side of the tower?",),
+        },
+        TECHNICIAN: {
+            "photos_to_check": ("Which photos do I check next?", "Where should I start checking?"),
+            "defects": ("What do I need to fix on this tower?", "Which bolts need fixing up there?"),
+            "camera_positions": ("Where was the drone when each photo was taken?",),
+            "equipment": ("What equipment will I find up there?",),
+            "learn_review": ("Why must I check every suggestion?",),
+        },
+    },
+    "power_grid": {
+        OWNER: {
+            "defects": ("Are birds nesting on my line?", "Which towers on my line have bird nests?"),
+            "equipment": ("What equipment is on this stretch of line?",),
+            "changes": ("What changed on my line since the last inspection?",),
+            "right_of_way": ("Is anything growing or built too close to my line?",),
+        },
+        MANAGER: {
+            "defects": ("Where should a crew go to clear nests?", "Which towers need a crew for nests?"),
+            "photos_to_check": ("How far along is this inspection?", "Which photos still need checking?"),
+            "changes": ("What changed along this line since the last patrol?",),
+            "right_of_way": ("Which spans need clearing?",),
+        },
+        TECHNICIAN: {
+            "photos_to_check": ("Which photos do I check next?",),
+            "defects": ("Which towers have nests I need to clear?",),
+            "conductors": ("Where do the conductors run on these photos?",),
+            "camera_positions": ("Where was the drone for each photo?",),
+        },
+    },
 }
 LISTED_PHOTOS = 20  # photos listed in one answer; the facts give the totals
 
@@ -249,11 +309,17 @@ class UnknownAudience(ValueError):
 
 
 def check_audience(audience: Optional[str]) -> str:
+    """The reader's role (owner, manager or technician); UnknownAudience for anything else."""
     if audience is None:
         return DEFAULT_AUDIENCE
     if audience not in AUDIENCES:
         raise UnknownAudience(f"the reader must be one of {list(AUDIENCES)}, not {audience!r}")
     return audience
+
+
+def _voice(role: str) -> str:
+    """The reader the answer's words are written for: a manager reads the owner's."""
+    return reader_roles.voice(role)
 
 
 @dataclass(frozen=True)
@@ -265,6 +331,10 @@ class Here:
     asset: Asset = DEFAULT_ASSET
     surroundings: Optional[dict[str, dict[str, Any]]] = None  # site_surroundings results by photo (None: not loaded)
     conductors: Optional[dict[str, dict[str, Any]]] = None  # line_conductors results by photo (None: not loaded)
+    role: Optional[str] = None  # the reader's role: its questions are worded for it
+    seed: int = 0  # picks each question's wording and shuffles the deck (card_memory.daily_seed); 0 keeps both fixed
+    seen: frozenset[str] = frozenset()  # cards the reader opened in the last day
+    changed: frozenset[str] = frozenset()  # cards whose answer changed since the reader last saw the deck
 
     @property
     def inventory(self) -> dict[str, PartInventory]:
@@ -516,19 +586,47 @@ def _preview(card_id: str, here: Here) -> str:
     return "The finder suggests, you decide: what it was measured to do."
 
 
+def question(asset: Asset, role: Optional[str], card_id: str, seed: int = 0) -> str:
+    """A card's question in a role's words (else the industry's), in the wording the seed picks (the first for 0)."""
+    words = _ROLE_WORDS.get(asset.industry, {}).get(role or "", {}).get(card_id) or (asset.cards[card_id],)
+    return words[(seed + zlib.crc32(card_id.encode())) % len(words)] if seed else words[0]
+
+
+def _title(card_id: str, here: Here) -> str:
+    return question(here.asset, here.role, card_id, here.seed)
+
+
 def _card(card_id: str, here: Here) -> dict[str, Any]:
     status = _status(card_id, here)
-    return {"id": card_id, "title": here.asset.cards[card_id], "status": status, "preview": _preview(card_id, here)}
+    return {"id": card_id, "title": _title(card_id, here), "status": status, "preview": _preview(card_id, here),
+            "new": card_id in here.changed}
+
+
+def statuses(here: Here) -> dict[str, str]:
+    """Each card's status now (for card_memory: what changed since the reader last looked)."""
+    return {card_id: _status(card_id, here) for card_id in here.asset.cards}
+
+
+def _score(card: dict[str, Any], role: str, here: Here) -> float:
+    score: float = _BASE_SCORE[card["status"]] + _READER_BOOST[role].get(card["id"], 0)
+    if card["id"] in here.changed:
+        score += CHANGED_BOOST
+    if card["id"] in here.seen:
+        score -= SEEN_PENALTY
+    if here.seed:
+        score += random.Random(f"{here.seed}:{card['id']}").uniform(0, SHUFFLE_POINTS)
+    return score
 
 
 def deck(here: Here, audience: Optional[str]) -> dict[str, Any]:
-    """The cards for this inspection and reader, the most useful first; the learning card last."""
-    reader = check_audience(audience)
+    """The cards for this inspection and reader's role, the most useful first; the learning card last."""
+    role = check_audience(audience)
+    here = dataclasses.replace(here, role=role)
     cards = [_card(card_id, here) for card_id in here.asset.cards]
     learn = [c for c in cards if c["status"] == LEARN]
-    ranked = sorted((c for c in cards if c["status"] != LEARN),
-                    key=lambda c: _BASE_SCORE[c["status"]] + _READER_BOOST[reader].get(c["id"], 0), reverse=True)
-    return {"cards": ranked + learn, "heading": here.asset.heading}
+    ranked = sorted((c for c in cards if c["status"] != LEARN), key=lambda c: _score(c, role, here), reverse=True)
+    return {"cards": ranked + learn, "heading": here.asset.heading, "audience": role,
+            "audiences": reader_roles.options(here.asset.industry)}
 
 
 # --- Answers -------------------------------------------------------------------------------------------------------
@@ -1063,8 +1161,11 @@ def _not_yet(card_id: str, here: Here, audience: str) -> dict[str, Any]:
 
 
 def answer_card(card_id: str, here: Here, audience: Optional[str]) -> dict[str, Any]:
-    """One card's answer; KeyError for an unknown card, UnknownAudience for an unknown reader."""
-    reader = check_audience(audience)
+    """One card's answer; KeyError for an unknown card, UnknownAudience for an unknown reader. The question is in the
+    reader's role's words; the answer in its voice (a manager reads the owner's)."""
+    role = check_audience(audience)
+    here = dataclasses.replace(here, role=role)
+    reader = _voice(role)
     if card_id not in here.asset.cards:
         raise KeyError(card_id)
     if _upcoming(card_id, here) is not None:
@@ -1165,6 +1266,7 @@ def photo_questions(here: Here, photo: PhotoFacts, audience: Optional[str]) -> d
         label = ("Needs your check" if status == CHECK else upcoming.label if upcoming is not None
                  else STATUS_LABELS.get(status, ""))
         out.append({"id": card["id"], "question": card["title"], "status": status, "status_label": label,
+                    "new": card["new"],
                     "on_photo": line, "needs": upcoming.needs if upcoming is not None else None,
                     "lights": _QUESTION_PARTS.get(card["id"])})
     first = [o for o in out if o["status"] in (CHECK, READY)]

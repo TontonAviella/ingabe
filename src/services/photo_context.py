@@ -20,8 +20,8 @@ from src.services import (
     farm_records,
     field_checks,
     photo_plots,
+    reader_roles,
 )
-from src.services.insurance_engine import resolve_audience
 from src.services.remote_cog_layer import validate_remote_cog_bounds
 from src.services.shown_maps import SHOWN_MAPS_SQL
 from src.structures import async_read_conn
@@ -59,7 +59,7 @@ SELECT DISTINCT s.project_id FROM ({SHOWN_MAPS_SQL}) s
 class PhotoContext:
     analysis: drone_cards.PhotoAnalysis
     here: drone_cards.Here
-    reader: str  # the audience the answers are written for
+    reader: str  # the reader's role (reader_roles): the questions are worded for it, the answers in its voice
 
 
 def is_photo_ready(metadata: dict[str, Any]) -> bool:
@@ -190,7 +190,7 @@ async def load(s3: Any, bucket: str, *, layer_id: str, name: str, bounds: Any, m
             return None
         west, south, east, north = analysis.bounds
         photos_here = await conn.fetchval(_PHOTOS_HERE_SQL, layer_id, west, south, east, north)
-        reader = await resolve_audience(conn, audience, user_id, org_id)
+        reader = await reader_roles.role_in(conn, "agriculture", audience, user_id, org_id)
         maps = await photo_plots.plot_maps(conn, layer_id, analysis.bounds)
         project_id = await project_of(conn, layer_id)
     records = await farm_records.load_records(s3, bucket, project_id) if project_id else []
