@@ -185,6 +185,7 @@ export interface SanitizedToolResponse {
 }
 
 export interface SanitizedMessage {
+  id?: number; // the answer's id: what a 👍/👎 points at
   role: string;
   content?: string;
   has_tool_calls: boolean;

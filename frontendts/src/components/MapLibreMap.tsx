@@ -1878,6 +1878,8 @@ export default function MapLibreMap({
         )}
         <SageReply
           reply={lastAssistantMsg}
+          replyMessageId={lastMsg && lastMsg.role === 'assistant' ? lastMsg.id : undefined}
+          mapId={mapId}
           waiting={!!lastMsg && (lastMsg.role === 'user' || lastMsg.role === 'tool' || (lastMsg.role === 'assistant' && !lastMsg.content))}
           streamingText={streamingText}
           actions={activeActions}

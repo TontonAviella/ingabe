@@ -165,7 +165,7 @@ def summarize(records: list[Mapping[str, Any]], *, recent: int = 60) -> dict[str
             rule_turns[rule] += 1
             rule_last.setdefault(rule, rec)
         if len(turns) < recent:
-            turns.append(_turn_row(rec))
+            turns.append(turn_row(rec))
 
     tool_rows = []
     for name, t in tools.items():
@@ -185,7 +185,9 @@ def summarize(records: list[Mapping[str, Any]], *, recent: int = 60) -> dict[str
     return {"tools": tool_rows, "rules": rule_rows, "turns": turns}
 
 
-def _turn_row(rec: Mapping[str, Any]) -> dict[str, Any]:
+def turn_row(rec: Mapping[str, Any]) -> dict[str, Any]:
+    """One turn as the Health page shows it: its steps in order as one line, time in the model vs in tools, the
+    rules by name, and the error."""
     parts, model_s, tool_s, errors = [], 0.0, 0.0, []
     for step in rec.get("steps") or []:
         secs = step.get("seconds")
@@ -209,7 +211,7 @@ def _turn_row(rec: Mapping[str, Any]) -> dict[str, Any]:
         "steps": " → ".join(parts) or "(no steps)",
         "rules": ", ".join(rule_info(r)[0] for r in rec.get("rules") or []),
         "error": rec.get("error") or ("; ".join(errors[:3]) if errors else None),
-        "map_id": rec.get("map_id"), "project_id": rec.get("project_id"),
+        "map_id": rec.get("map_id"), "project_id": rec.get("project_id"), "trace_id": rec.get("trace_id"),
         "conversation_id": rec.get("conversation_id"),
     }
 

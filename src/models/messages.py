@@ -81,6 +81,7 @@ class SanitizedToolResponse(BaseModel):
 
 
 class SanitizedMessage(BaseModel):
+    id: Optional[int] = None  # chat_completion_messages.id: what a 👍/👎 on an answer points at
     role: str
     content: Optional[str] = None
     has_tool_calls: bool
@@ -176,6 +177,7 @@ def convert_mundi_message_to_sanitized(
             pass
 
     return SanitizedMessage(
+        id=getattr(cc_message, "id", None),
         role=role,
         content=cc_message.message_json["content"] if role != "tool" else None,
         has_tool_calls=bool(cc_message.message_json.get("tool_calls")),

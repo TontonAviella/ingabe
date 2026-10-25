@@ -1,4 +1,5 @@
-import { ChevronDown, ChevronUp, LoaderCircle, Sparkles, X } from 'lucide-react';
+import { apiFetch } from '@mundi/ee';
+import { ChevronDown, ChevronUp, LoaderCircle, Sparkles, ThumbsDown, ThumbsUp, X } from 'lucide-react';
 import type { ReactNode } from 'react';
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { Components } from 'react-markdown';
@@ -62,6 +63,89 @@ function Answer({ text, streaming }: { text: string; streaming?: boolean }) {
   );
 }
 
+/** "Was this right?" under a finished answer: 👍, or 👎 with an optional note. Saved per person and answer; the
+ * Ingabe Health page shows each rated answer next to the steps Sage took (src/services/sage_answer_ratings.py). */
+function AnswerRating({ mapId, messageId }: { mapId: string; messageId: number }) {
+  const [state, setState] = useState<'idle' | 'asking' | 'sending' | 'sent' | 'failed'>('idle');
+  const [rating, setRating] = useState<'up' | 'down' | null>(null);
+  const [note, setNote] = useState('');
+  // biome-ignore lint/correctness/useExhaustiveDependencies: a new answer starts unrated
+  useEffect(() => {
+    setState('idle');
+    setRating(null);
+    setNote('');
+  }, [messageId]);
+
+  const send = async (value: 'up' | 'down', comment?: string) => {
+    setRating(value);
+    setState('sending');
+    try {
+      const res = await apiFetch(`/api/maps/${encodeURIComponent(mapId)}/messages/${messageId}/rating`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ rating: value, comment: comment?.trim() || null }),
+      });
+      setState(res.ok ? 'sent' : 'failed');
+    } catch {
+      setState('failed');
+    }
+  };
+
+  const button = (value: 'up' | 'down', label: string, Icon: typeof ThumbsUp) => (
+    <button
+      type="button"
+      aria-label={label}
+      aria-pressed={rating === value}
+      disabled={state === 'sending'}
+      onClick={() => (value === 'up' ? send('up') : (setRating('down'), setState('asking')))}
+      className={`flex size-8 items-center justify-center rounded-full cursor-pointer hover:bg-white/[0.06] disabled:opacity-50 ${
+        rating === value ? 'text-[#D9A066] bg-white/[0.06]' : 'text-[#B8A99B] hover:text-[#F3EDE6]'
+      }`}
+    >
+      <Icon className="size-4" />
+    </button>
+  );
+
+  if (state === 'sent') {
+    return (
+      <p className="m-0 border-t border-white/[0.06] px-4 py-2.5 text-[12px] text-[#B8A99B]">
+        {rating === 'up' ? 'Thanks.' : 'Thanks. Ingabe will look at this answer and the steps Sage took.'}
+      </p>
+    );
+  }
+  return (
+    <div className="flex flex-col gap-2 border-t border-white/[0.06] px-4 py-2">
+      <div className="flex items-center gap-1">
+        <span className="mr-1 text-[12px] text-[#8E7F73]">Was this answer right?</span>
+        {button('up', 'Yes, this answer was right', ThumbsUp)}
+        {button('down', 'No, this answer was wrong', ThumbsDown)}
+        {state === 'failed' && <span className="ml-1 text-[12px] text-[#F3C9B4]">Not saved. Try again.</span>}
+      </div>
+      {(state === 'asking' || (state === 'sending' && rating === 'down') || (state === 'failed' && rating === 'down')) && (
+        <div className="flex items-end gap-2 pb-1">
+          <textarea
+            value={note}
+            onChange={(e) => setNote(e.target.value)}
+            maxLength={1000}
+            rows={2}
+            placeholder="What was wrong? (optional)"
+            aria-label="What was wrong with this answer (optional)"
+            className="min-h-[2.5rem] flex-1 resize-none rounded-[12px] border border-white/10 bg-white/[0.04] px-3 py-2 text-[13px] text-[#F3EDE6] placeholder:text-[#8E7F73] focus:border-[#D9A066]/60 focus:outline-none"
+          />
+          <button
+            type="button"
+            disabled={state === 'sending'}
+            onClick={() => send('down', note)}
+            className="min-h-8 rounded-full bg-[#D9A066] px-3 text-[12px] font-semibold text-[#17110E] hover:bg-[#E9B987] disabled:opacity-60 cursor-pointer"
+          >
+            {state === 'sending' ? 'Sending…' : 'Send'}
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function Sources({ sources }: { sources: string[] }) {
   if (sources.length === 0) return null;
   return (
@@ -78,6 +162,8 @@ function Sources({ sources }: { sources: string[] }) {
 
 export function SageReply({
   reply,
+  replyMessageId,
+  mapId,
   waiting,
   streamingText,
   actions,
@@ -88,6 +174,9 @@ export function SageReply({
   actionIcon,
 }: {
   reply?: string;
+  /** The answer's id, for 👍/👎 (absent while it is still being written). */
+  replyMessageId?: number;
+  mapId: string;
   /** The chat's last message still waits for Sage's answer (a question, or tools running). */
   waiting?: boolean;
   streamingText?: string;
@@ -212,6 +301,7 @@ export function SageReply({
         </button>
       )}
       {!streamingText && <Sources sources={sources} />}
+      {!working && text && replyMessageId !== undefined && <AnswerRating mapId={mapId} messageId={replyMessageId} />}
       {working && !text && actions.length === 0 && (
         <div className="flex items-center gap-2 px-4 pb-3 text-[14px] text-[#B8A99B]">
           <LoaderCircle className="size-4 animate-spin text-[#D9A066]" /> Thinking…

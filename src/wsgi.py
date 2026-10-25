@@ -12,6 +12,7 @@ from fastapi.responses import JSONResponse, FileResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import Response
+from opentelemetry import trace
 
 
 from src.routes import (
@@ -23,7 +24,7 @@ from src.routes import (
 )
 from src.routes.basemap_routes import basemap_router
 from src.routes.layer_router import layer_router
-from src.routes import client_health_routes, drone_card_routes
+from src.routes import answer_rating_routes, client_health_routes, drone_card_routes
 from src.routes import example_finder_routes
 from src.routes import tower_routes
 from src.routes.attribute_table import attribute_table_router
@@ -54,6 +55,8 @@ def _init_opentelemetry():
     """Initialize OpenTelemetry SDK with OTLP exporter.
 
     Only activates when OTEL_EXPORTER_OTLP_ENDPOINT is set.
+    On the server it points at Tempo (http://tempo:4318, monitoring/tempo.yml): one trace per request (see
+    TraceRequestMiddleware), with the database queries (asyncpg) and outside calls (httpx, requests) inside it.
     Uses environment variables for configuration:
       - OTEL_EXPORTER_OTLP_ENDPOINT: e.g. https://otel.example.com:4318
       - OTEL_EXPORTER_OTLP_HEADERS: e.g. x-api-key=abc123
@@ -91,6 +94,15 @@ def _init_opentelemetry():
         )
         provider.add_span_processor(BatchSpanProcessor(exporter))
         trace.set_tracer_provider(provider)
+
+        # Every database query and every call to an outside service becomes a step inside the request's trace.
+        from opentelemetry.instrumentation.asyncpg import AsyncPGInstrumentor
+        from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor
+        from opentelemetry.instrumentation.requests import RequestsInstrumentor
+
+        AsyncPGInstrumentor().instrument()
+        HTTPXClientInstrumentor().instrument()
+        RequestsInstrumentor().instrument()
 
         logging.getLogger("src").info(
             "OpenTelemetry initialized → %s (service=%s)",
@@ -506,8 +518,47 @@ class CacheControlMiddleware(BaseHTTPMiddleware):
 
 
 app.add_middleware(CacheControlMiddleware)
-# Outermost: verifies the WorkOS session cookie for everything below (no-op unless AUTH_PROVIDER=workos)
+# Verifies the WorkOS session cookie for everything below (no-op unless AUTH_PROVIDER=workos)
 app.add_middleware(WorkOSSessionMiddleware)
+
+# Prometheus's scrape of /metrics every 15 s is not traffic; traced, it would bury the requests people make.
+_UNTRACED_PATHS = frozenset({"/metrics"})
+_http_tracer = trace.get_tracer("ingabe.http")
+
+
+class TraceRequestMiddleware(BaseHTTPMiddleware):
+    """One trace per request (exported to Tempo when OTEL_EXPORTER_OTLP_ENDPOINT is set; a no-op otherwise).
+
+    The span is named after the route template ("GET /api/maps/{map_id}/tree"), never the raw path, so Tempo's
+    per-route numbers (traces_spanmetrics_*, the Routes panels and alarms) stay one series per route. Paths no
+    route matched (the app's pages and static files) are "GET other"."""
+
+    async def dispatch(self, request: Request, call_next) -> Response:
+        if request.url.path in _UNTRACED_PATHS:
+            return await call_next(request)
+        with _http_tracer.start_as_current_span(f"{request.method} other", kind=trace.SpanKind.SERVER) as span:
+            span.set_attribute("http.request.method", request.method)
+            span.set_attribute("url.path", request.url.path[:200])
+            try:
+                response: Response = await call_next(request)
+            except Exception as exc:
+                span.set_status(trace.Status(trace.StatusCode.ERROR, type(exc).__name__))
+                span.record_exception(exc)
+                raise
+            finally:
+                route = request.scope.get("route")
+                template = getattr(route, "path", None)
+                if template:
+                    span.update_name(f"{request.method} {template}")
+                    span.set_attribute("http.route", str(template))
+            span.set_attribute("http.response.status_code", response.status_code)
+            if response.status_code >= 500:
+                span.set_status(trace.Status(trace.StatusCode.ERROR, f"HTTP {response.status_code}"))
+            return response
+
+
+# Outermost: the trace covers everything below, the session check included.
+app.add_middleware(TraceRequestMiddleware)
 
 
 # ---------------------------------------------------------------------------
@@ -555,12 +606,14 @@ async def component_check_results(request: Request):
 async def sage_turn_summary(request: Request, days: int = 7):
     """What Sage did over the last days: per tool, per rule, and the latest turns (src/services/sage_turn_log.py).
     Internal only, like /metrics: the Ingabe Health page's snapshot reads it on the server."""
-    from src.services import sage_turn_log
+    from src.services import sage_answer_ratings, sage_turn_log
 
     if any(h in request.headers for h in _PROXY_HEADERS):
         return Response(status_code=404)
-    return JSONResponse(await sage_turn_log.recent_summary(max(1, min(days, sage_turn_log.RETENTION_DAYS))),
-                        headers={"Cache-Control": "no-store"})
+    days = max(1, min(days, sage_turn_log.RETENTION_DAYS))
+    summary = await sage_turn_log.recent_summary(days)
+    summary["ratings"] = await sage_answer_ratings.recent(days)
+    return JSONResponse(summary, headers={"Cache-Control": "no-store"})
 
 
 @app.get("/metrics")
@@ -670,6 +723,11 @@ app.include_router(
     websocket.router,
     prefix="/api/maps",
     tags=["WebSocket"],
+)
+app.include_router(
+    answer_rating_routes.router,
+    prefix="/api/maps",
+    tags=["Maps"],
 )
 app.include_router(
     client_health_routes.router,

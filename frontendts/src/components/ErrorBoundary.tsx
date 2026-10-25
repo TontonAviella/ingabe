@@ -1,5 +1,6 @@
 import React from 'react';
 import { trackError } from '../lib/analytics';
+import { reportBrowserError } from '../lib/browserErrors';
 
 interface ErrorBoundaryProps {
   children: React.ReactNode;
@@ -26,6 +27,13 @@ export class ErrorBoundary extends React.Component<ErrorBoundaryProps, ErrorBoun
     trackError('react_error_boundary', error, {
       component_stack_count: errorInfo.componentStack?.split('\n').filter(Boolean).length ?? 0,
     });
+    // The screen that crashed: the first component in React's stack.
+    const where =
+      errorInfo.componentStack
+        ?.split('\n')
+        .find((line) => line.trim())
+        ?.trim() ?? '';
+    reportBrowserError('react_crash', error, where);
   }
 
   render() {

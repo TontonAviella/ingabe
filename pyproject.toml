@@ -32,6 +32,9 @@ dependencies = [
     "opentelemetry-api==1.36.0",
     "opentelemetry-exporter-otlp-proto-http==1.36.0",
     "opentelemetry-sdk==1.36.0",
+    "opentelemetry-instrumentation-asyncpg==0.57b0",
+    "opentelemetry-instrumentation-httpx==0.57b0",
+    "opentelemetry-instrumentation-requests==0.57b0",
     "pillow==12.2.0",
     "planetary-computer==1.0.0",
     # Pinned at 2.13.4 (bumped from 2.11.4 in May 2026); the app runs on it.

@@ -14,7 +14,12 @@ Prints {"generated_at", "checks", "alerts", "history", "alarm_rules", "logs", "s
 - logs: per container, error lines in the last 24 hours (count and the latest three), from Loki through Grafana
   (GRAFANA_MCP_TOKEN, the read-only Viewer token in ~/ingabe/.env);
 - sage_tools, sage_rules, sage_turns: what Sage did over 7 days, per tool, per rule and turn by turn (the app's
-  /internal/sage-turns, from the Sage turn log; src/services/sage_turn_log.py).
+  /internal/sage-turns, from the Sage turn log; src/services/sage_turn_log.py);
+- sage_ratings: people's 👍/👎 on Sage's answers over 7 days, each with the turn that wrote it;
+- routes: per page or API route over 24 hours, calls, server errors and time (Tempo's span metrics in Prometheus);
+- slow_queries: the database queries that took the most time since Postgres started (pg_stat_statements, read as
+  the admin over the container's local socket; query texts have their values replaced by $1, $2...);
+- browser_errors: errors in people's browsers over 7 days, grouped by message (Loki, logger src.browser_errors).
 Standard library only; read-only.
 """
 
@@ -23,6 +28,7 @@ from __future__ import annotations
 import json
 import os
 import pathlib
+import subprocess
 import sys
 import time
 import urllib.parse
@@ -46,7 +52,8 @@ CHECK_AREA = {"postgis": "database", "redis": "database", "minio": "database", "
 # The order problems are traced in, bottom up (the same steps as the morning message on Roger's phone).
 STEP_OF = {"server": "1 Server", "containers": "2 Containers", "database": "3 Data stores", "app": "4 Public access",
            "sage": "5 App features", "ai-model": "5 App features", "maps": "5 App features",
-           "components": "5 App features", "dagster": "6 Data jobs", "data": "6 Data jobs", "feeds": "7 Outside data",
+           "components": "5 App features", "requests": "5 App features", "browsers": "5 App features",
+           "dagster": "6 Data jobs", "data": "6 Data jobs", "feeds": "7 Outside data",
            "backup": "8 Backups", "monitoring": "9 Monitoring"}
 
 
@@ -138,6 +145,28 @@ CHECKS = [
      1, 5, True, "MapLibre / deck.gl; Grafana Logs"),
     ("maps", "Tile errors in browsers, last hour", 'sum(increase(frontend_map_events_total{event="tile_error"}[1h])) or vector(0)',
      "count", 1, 5, True, "tile routes and rasterd; Grafana Logs"),
+    ("requests", "Routes with server errors, last hour",
+     'count(sum by (span_name) (increase(traces_spanmetrics_calls_total{span_kind="SPAN_KIND_SERVER",'
+     'status_code="STATUS_CODE_ERROR"}[1h])) >= 1) or vector(0)', "count", 1, 3, True,
+     "Requests by route below; Grafana Requests"),
+    ("requests", "Slowest route, last hour (1 in 20 requests)",
+     'max(histogram_quantile(0.95, sum by (span_name, le) (rate(traces_spanmetrics_latency_bucket{'
+     'span_kind="SPAN_KIND_SERVER",span_name!~".*upload.*"}[1h]))))', "s", 5, 10, True,
+     "Requests by route below; a slow trace in Grafana Requests"),
+    ("browsers", "Errors in people's browsers, last hour", "sum(increase(frontend_errors_total[1h])) or vector(0)",
+     "count", 1, 10, True, "Errors in people's browsers below"),
+    ("browsers", "Screens that crashed, last 24 hours",
+     'sum(increase(frontend_errors_total{kind=~"react_crash|app_init_failed"}[24h])) or vector(0)', "count", 1, None,
+     True, "Errors in people's browsers below"),
+    ("database", "Slowest query on average, last hour",
+     'max(sum by (queryid) (increase(pg_stat_statements_seconds_total{datname="mundidb"}[1h]))'
+     ' / sum by (queryid) (increase(pg_stat_statements_calls_total{datname="mundidb"}[1h])))', "s", 2, 5, True,
+     "Slowest database queries below"),
+    ("sage", "Answers marked wrong (👎), last 7 days",
+     'sum(increase(sage_answer_ratings_total{rating="down"}[7d])) or vector(0)', "count", 1, 3, True,
+     "Sage: rated answers below"),
+    ("monitoring", "Request traces arriving", "(sum(rate(tempo_distributor_spans_received_total[30m])) > bool 0)",
+     "updown", None, None, False, "container mundi-tempo"),
 ]
 
 
@@ -304,9 +333,102 @@ def sage_tables() -> dict[str, list[dict]]:
                 "sage_rules": [{"rule": "(none)", "name": note, "turns": 0}],
                 "sage_turns": [{"started_at": "", "outcome": "unknown", "steps": note}]}
     empty = "no Sage turns recorded in the last 7 days"
+    ratings = (found.get("ratings") or {}).get("rated") or [
+        {"rated_at": "", "rating": "none", "answer": "No answer was rated in the last 7 days"}]
     return {"sage_tools": found.get("tools") or [{"tool": "(none)", "calls": 0, "last_error": empty}],
             "sage_rules": found.get("rules") or [{"rule": "(none)", "name": "No rule stepped in", "turns": 0}],
-            "sage_turns": found.get("turns") or [{"started_at": "", "outcome": "none", "steps": empty}]}
+            "sage_turns": found.get("turns") or [{"started_at": "", "outcome": "none", "steps": empty}],
+            "sage_ratings": ratings}
+
+
+def route_rows() -> list[dict]:
+    """Per route over 24 hours: calls, server errors and time, from the traces (Tempo span metrics)."""
+    base = 'span_kind="SPAN_KIND_SERVER"'
+    try:
+        calls = _get("/api/v1/query", query=f"sum by (span_name) (increase(traces_spanmetrics_calls_total{{{base}}}[24h]))")
+        errors = _get("/api/v1/query", query=f'sum by (span_name) (increase(traces_spanmetrics_calls_total{{{base},'
+                                             f'status_code="STATUS_CODE_ERROR"}}[24h]))')
+        quant = {q: _get("/api/v1/query", query=f"histogram_quantile({q}, sum by (span_name, le) "
+                                                 f"(rate(traces_spanmetrics_latency_bucket{{{base}}}[24h])))")
+                 for q in (0.5, 0.95)}
+    except Exception as e:  # noqa: BLE001 - one row saying so
+        return [{"route": "(routes)", "calls": None, "note": f"could not read the routes: {str(e)[:120]}"}]
+    by = lambda res: {r["metric"].get("span_name", ""): float(r["value"][1]) for r in res}  # noqa: E731
+    c, er, p50, p95 = by(calls), by(errors), by(quant[0.5]), by(quant[0.95])
+    rows = []
+    for route, n in c.items():
+        if n < 0.5:
+            continue
+        e = er.get(route, 0.0)
+        rows.append({"route": route, "calls": round(n), "server_errors": round(e),
+                     "error_share": round(e / n, 3) if n else 0,
+                     "median_s": _num(p50.get(route)), "p95_s": _num(p95.get(route))})
+    rows.sort(key=lambda r: (-r["server_errors"], -(r["p95_s"] or 0)))
+    return rows or [{"route": "(routes)", "calls": None, "note": "no traced requests in the last 24 hours"}]
+
+
+def _num(v: float | None) -> float | None:
+    return None if v is None or v != v or v in (float("inf"), float("-inf")) else round(v, 2)
+
+
+SLOW_QUERIES_SQL = """
+SELECT coalesce(json_agg(q), '[]'::json) FROM (
+  SELECT left(regexp_replace(query, '\\s+', ' ', 'g'), 400) AS query, calls,
+         round((total_exec_time / 1000)::numeric, 1) AS total_s,
+         round(mean_exec_time::numeric, 1) AS mean_ms, round(max_exec_time::numeric, 1) AS max_ms, rows,
+         round((100 * total_exec_time / nullif(sum(total_exec_time) OVER (), 0))::numeric, 1) AS share_pct
+  FROM pg_stat_statements s JOIN pg_database d ON d.oid = s.dbid
+  WHERE d.datname = 'mundidb' AND query NOT ILIKE '%pg_stat_statements%'
+  ORDER BY total_exec_time DESC LIMIT 20) q
+"""
+
+
+def slow_query_rows() -> list[dict]:
+    """The 20 queries that took the most database time since Postgres started (pg_stat_statements)."""
+    try:
+        out = subprocess.run(
+            ["docker", "exec", "-u", "postgres", "ingabe-postgresdb-1", "psql", "-U", "mundi_admin", "-d", "mundidb",
+             "-At", "-c", SLOW_QUERIES_SQL], capture_output=True, text=True, timeout=30, check=True).stdout
+        rows = json.loads(out.strip() or "[]")
+    except Exception as e:  # noqa: BLE001 - one row saying so (e.g. the extension is not created yet)
+        detail = getattr(e, "stderr", "") or str(e)
+        return [{"query": f"could not read the slow queries: {str(detail).strip()[:160]}", "calls": None}]
+    return rows or [{"query": "no queries recorded yet", "calls": None}]
+
+
+def browser_error_rows(now: float) -> list[dict]:
+    """Errors in people's browsers over 7 days, grouped by kind and message (the app logs each one)."""
+    try:
+        streams = _loki("query_range", query='{container="mundi-app"} |= "src.browser_errors"', limit=1000,
+                        direction="backward", start=int((now - 7 * 86400) * 1e9), end=int(now * 1e9))
+    except Exception as e:  # noqa: BLE001 - one row saying so
+        return [{"message": f"could not read the browser errors: {str(e)[:120]}", "kind": "", "count": None}]
+    groups: dict[tuple, dict] = {}
+    for st in streams:
+        for ts, line in st["values"]:
+            try:
+                obj = json.loads(line)
+            except ValueError:
+                continue
+            if obj.get("logger") != "src.browser_errors":
+                continue
+            key = (obj.get("kind", ""), str(obj.get("message", "")).removeprefix(f"browser {obj.get('kind', '')}: "))
+            g = groups.setdefault(key, {"kind": key[0], "message": key[1][:300], "count": 0, "pages": set(),
+                                        "people": set(), "latest_at": "", "source": "", "stack": "", "build": ""})
+            g["count"] += 1
+            g["pages"].add(str(obj.get("page", ""))[:80])
+            g["people"].add(str(obj.get("user_id", "")))
+            at = datetime.fromtimestamp(int(ts) / 1e9, timezone.utc).strftime("%Y-%m-%d %H:%M:%SZ")
+            if at > g["latest_at"]:
+                g.update(latest_at=at, source=str(obj.get("source", ""))[:200], stack=str(obj.get("stack", ""))[:800],
+                         build=str(obj.get("build", "")))
+    rows = []
+    for g in groups.values():
+        g["pages"] = ", ".join(sorted(g["pages"]))[:300]
+        g["people"] = len(g["people"])
+        rows.append(g)
+    rows.sort(key=lambda r: (r["kind"] not in ("react_crash", "app_init_failed"), -r["count"]))
+    return rows or [{"message": "No errors in people's browsers in the last 7 days", "kind": "", "count": 0}]
 
 
 def _get(path: str, **params) -> list:
@@ -404,7 +526,8 @@ def snapshot() -> dict:
         alerts = [{"alert": "none", "area": "", "severity": "none", "summary": "No alarm is firing", "where": "",
                    "since": at}]
     return {"generated_at": at, "checks": checks, "alerts": alerts, "history": history,
-            "alarm_rules": alarm_rules(), "logs": log_rows(now), **sage_tables()}
+            "alarm_rules": alarm_rules(), "logs": log_rows(now), **sage_tables(), "routes": route_rows(),
+            "slow_queries": slow_query_rows(), "browser_errors": browser_error_rows(now)}
 
 
 if __name__ == "__main__":
