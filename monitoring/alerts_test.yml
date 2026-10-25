@@ -287,8 +287,10 @@ tests:
     input_series:
       - series: 'node_filesystem_avail_bytes{job="docker-vm",mountpoint="/",device="/dev/sda1",fstype="ext4"}'
         values: '100e9-0.333e9x300'
-      - series: 'container_last_seen{job="containers",name="mundi-app"}'
+      - series: 'ingabe_container_running{job="docker-vm",name="mundi-app"}'
         values: '1x30 _x300'
+      - series: 'ingabe_container_watch_last_run_seconds{job="docker-vm"}'
+        values: '0+60x300'
       - series: 'pg_stat_activity_count{job="postgres",datname="mundidb",state="active"}'
         values: '85x300'
       - series: 'pg_settings_max_connections{job="postgres"}'
@@ -306,7 +308,7 @@ tests:
         exp_alerts:
           - exp_labels: {area: containers, severity: critical}
             exp_annotations:
-              where: "docker ps on the server; docker logs of the mundi-app container"
+              where: "docker ps -a on the server; docker logs of the mundi-app container"
               summary: "The container for the app itself is not running"
       - eval_time: 30m
         alertname: PostgresConnectionsNearLimit
@@ -319,3 +321,65 @@ tests:
         alertname: DomainExpiresSoon
         exp_alerts: []
 
+  # Review cases: Redis stops while its exporter keeps running (only the exact name counts); a container stuck in a
+  # restart loop; load 40 on 8 cores; then the watcher stops: the container alarms go quiet and one stale alarm fires.
+  - interval: 1m
+    input_series:
+      - series: 'ingabe_container_running{job="docker-vm",name="ingabe-redis-1"}'
+        values: '1x10 0x200'
+      - series: 'ingabe_container_running{job="docker-vm",name="mundi-redis-exporter"}'
+        values: '1x210'
+      - series: 'ingabe_container_started_at_seconds{job="docker-vm",name="mundi-rasterd"}'
+        values: '100 100 100 200 200 300 300 400 400 400x200'
+      - series: 'ingabe_container_watch_last_run_seconds{job="docker-vm"}'
+        values: '0+60x120 7200x90'
+      - series: 'node_load5{job="docker-vm",instance="node-exporter:9100"}'
+        values: '40x60'
+      - series: 'node_cpu_seconds_total{job="docker-vm",cpu="0",mode="idle"}'
+        values: '0+1x60'
+      - series: 'node_cpu_seconds_total{job="docker-vm",cpu="1",mode="idle"}'
+        values: '0+1x60'
+      - series: 'node_cpu_seconds_total{job="docker-vm",cpu="2",mode="idle"}'
+        values: '0+1x60'
+      - series: 'node_cpu_seconds_total{job="docker-vm",cpu="3",mode="idle"}'
+        values: '0+1x60'
+      - series: 'node_cpu_seconds_total{job="docker-vm",cpu="4",mode="idle"}'
+        values: '0+1x60'
+      - series: 'node_cpu_seconds_total{job="docker-vm",cpu="5",mode="idle"}'
+        values: '0+1x60'
+      - series: 'node_cpu_seconds_total{job="docker-vm",cpu="6",mode="idle"}'
+        values: '0+1x60'
+      - series: 'node_cpu_seconds_total{job="docker-vm",cpu="7",mode="idle"}'
+        values: '0+1x60'
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: ContainerMissing_redis
+        exp_alerts:
+          - exp_labels: {area: containers, severity: critical}
+            exp_annotations:
+              where: "docker ps -a on the server; docker logs of the redis container"
+              summary: "The container for Redis (cache and Sage counters) is not running"
+      - eval_time: 15m
+        alertname: ContainerRestarting
+        exp_alerts:
+          - exp_labels: {area: containers, severity: warning, job: docker-vm, name: mundi-rasterd}
+            exp_annotations:
+              where: "docker logs mundi-rasterd on the server (Grafana Logs, container mundi-rasterd)"
+              summary: "Container mundi-rasterd restarted more than twice in the last hour"
+      - eval_time: 45m
+        alertname: CPUOverloaded
+        exp_alerts:
+          - exp_labels: {area: server, severity: warning, job: docker-vm, instance: "node-exporter:9100"}
+            exp_annotations:
+              where: "Grafana Server (CPU); a Dagster run or a stuck process"
+              summary: "The server has had more work than its 8 cores for 30 minutes"
+      - eval_time: 3h
+        alertname: ContainerMissing_redis
+        exp_alerts: []
+      - eval_time: 3h
+        alertname: ContainerWatchStale
+        exp_alerts:
+          - exp_labels: {area: monitoring, severity: warning}
+            exp_annotations:
+              where: "container mundi-container-watch (docker logs); it writes containers.prom to the health-textfile volume"
+              summary: "The container watch has not read Docker for 5 minutes; container alarms are blind"

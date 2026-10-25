@@ -431,25 +431,18 @@ services:
       - "--storage.tsdb.retention.time=30d"
     restart: unless-stopped
 
-  # Every container's health for Prometheus: running, restarts, memory against its limit, out-of-memory kills.
-  # Reads Docker's state read-only; no published port.
-  cadvisor:
-    image: gcr.io/cadvisor/cadvisor:v0.49.1
-    container_name: mundi-cadvisor
-    mem_limit: 256m
-    command:
-      - "--docker_only=true"
-      - "--housekeeping_interval=30s"
-      - "--store_container_labels=false"
-      - "--whitelisted_container_labels=com.docker.compose.service"
-      - "--disable_metrics=advtcp,cpu_topology,cpuset,hugetlb,memory_numa,percpu,perf_event,process,referenced_memory,resctrl,sched,tcp,udp,disk,diskIO"
+  # Every container's state for Prometheus (scripts/container_watch.py): running, restarts, out-of-memory kills,
+  # memory against its limit. Writes a textfile node-exporter serves (cAdvisor sees no containers on Docker 29 with
+  # the containerd image store). Only reads Docker, but the socket gives root-level access: no published port.
+  container-watch:
+    image: python:3.12-alpine
+    container_name: mundi-container-watch
+    mem_limit: 48m
+    command: ["python", "-u", "/app/container_watch.py"]
     volumes:
-      - /:/rootfs:ro
-      - /var/run:/var/run:ro
-      - /sys:/sys:ro
-      - /var/lib/docker/:/var/lib/docker:ro
-    devices:
-      - /dev/kmsg
+      - ./scripts/container_watch.py:/app/container_watch.py:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - health-textfile:/textfile
     restart: unless-stopped
 
   # Redis health for Prometheus: up, memory against its 2 GB limit, evictions, clients.
@@ -560,9 +553,9 @@ services:
       - "--collector.pressure"
       - "--collector.loadavg"
       - "--collector.cpu"
-      # Early warnings: disk busy, network errors, reboots, clock drift, open files, swapping.
+      # Early warnings: disk busy, reboots, clock drift, open files, swapping. (No netdev: without the host's
+      # network namespace it would only see this container's own interface.)
       - "--collector.diskstats"
-      - "--collector.netdev"
       - "--collector.stat"
       - "--collector.timex"
       - "--collector.filefd"
@@ -570,7 +563,7 @@ services:
       - "--collector.filesystem"
       - "--path.rootfs=/host/root"
       - "--collector.filesystem.mount-points-exclude=^/(dev|proc|run|sys|var/lib/docker/.+|snap/.+)($$|/)"
-      # Metrics other containers write as files: the nightly backup (scripts/backup.sh).
+      # Metrics other containers write as files: the nightly backup (scripts/backup.sh), container-watch.
       - "--collector.textfile"
       - "--collector.textfile.directory=/textfile"
     volumes:

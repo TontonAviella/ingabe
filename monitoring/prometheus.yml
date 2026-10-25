@@ -65,12 +65,8 @@ scrape_configs:
     static_configs:
       - targets: ["alertmanager:9093"]
 
-  # Containers (cAdvisor), Redis, MinIO storage, and the monitoring tools themselves.
-  - job_name: "containers"
-    static_configs:
-      - targets: ["cadvisor:8080"]
-    scrape_interval: 30s
-
+  # Redis, MinIO storage, and the monitoring tools themselves. (Container state arrives through node-exporter's
+  # textfile, written by container-watch.)
   - job_name: "redis"
     static_configs:
       - targets: ["redis-exporter:9121"]

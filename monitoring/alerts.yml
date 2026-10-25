@@ -268,7 +268,7 @@ groups:
   - name: monitoring
     rules:
       - alert: MonitoringTargetDown
-        expr: up{job=~"postgres|dagster|docker-vm|public-app|alertmanager|containers|redis|minio|grafana|loki|alloy"} == 0
+        expr: up{job=~"postgres|dagster|docker-vm|public-app|alertmanager|redis|minio|grafana|loki|alloy"} == 0
         for: 5m
         labels:
           severity: warning
@@ -368,7 +368,7 @@ groups:
           where: "Grafana Server; the biggest containers in Grafana Components"
           summary: "Programs are waiting for memory over 10% of the time; the server is slowing down"
       - alert: CPUOverloaded
-        expr: node_load5 > 1.5 * count(node_cpu_seconds_total{mode="idle"})
+        expr: node_load5 > 1.5 * scalar(count(node_cpu_seconds_total{mode="idle"}))
         for: 30m
         labels:
           severity: warning
@@ -421,21 +421,23 @@ groups:
         annotations:
           where: "the container with the most connections (Grafana Components)"
           summary: "The server is close to its limit of open files"
-      - alert: NetworkErrors
-        expr: sum(rate(node_network_receive_errs_total[10m]) + rate(node_network_transmit_errs_total[10m])) > 1
-        for: 30m
-        labels:
-          severity: warning
-          area: server
-        annotations:
-          where: "Contabo network; the server's network card"
-          summary: "The server network is dropping packets with errors"
 
   - name: containers
     rules:
+      # container-watch (scripts/container_watch.py) reads Docker every 30 s. Every rule below is silenced while its
+      # reading is stale, so a stopped watcher raises one ContainerWatchStale alarm, not a burst of false ones.
+      - alert: ContainerWatchStale
+        expr: (time() - max(ingabe_container_watch_last_run_seconds) > 300) or absent(ingabe_container_watch_last_run_seconds)
+        for: 10m
+        labels:
+          severity: warning
+          area: monitoring
+        annotations:
+          where: "container mundi-container-watch (docker logs); it writes containers.prom to the health-textfile volume"
+          summary: "The container watch has not read Docker for 5 minutes; container alarms are blind"
       - alert: ContainerRestarting
-        # The mcp-grafana containers Claude Code starts and stops on demand are left out.
-        expr: changes(container_start_time_seconds{name!~"grafana-mcp.*|"}[1h]) > 2
+        # Each restart (by Docker's restart policy or a recreate) gives a new start time.
+        expr: changes(ingabe_container_started_at_seconds[1h]) > 2 and on() (time() - ingabe_container_watch_last_run_seconds < 300)
         labels:
           severity: warning
           area: containers
@@ -444,91 +446,92 @@ groups:
           summary: "Container {{ $labels.name }} restarted more than twice in the last hour"
       - alert: ContainerNearMemoryLimit
         expr: |
-          container_memory_working_set_bytes{name!=""} / (container_spec_memory_limit_bytes{name!=""} > 0) > 0.9
+          ingabe_container_memory_bytes / (ingabe_container_memory_limit_bytes > 0) > 0.9 and on() (time() - ingabe_container_watch_last_run_seconds < 300)
         for: 15m
         labels:
           severity: warning
           area: containers
         annotations:
-          where: "Grafana Components (memory per container); raise mem_limit in docker-compose.yml or find the leak"
+          where: "Grafana Health (Containers); raise mem_limit in docker-compose.yml or find the leak"
           summary: "Container {{ $labels.name }} uses over 90% of its memory limit; it will be killed when it reaches it"
       - alert: ContainerKilledOutOfMemory
-        expr: increase(container_oom_events_total{name!=""}[30m]) > 0
+        # Docker keeps the out-of-memory flag until the container starts again, so look back 30 minutes.
+        expr: max_over_time(ingabe_container_oom_killed[30m]) == 1 and on() (time() - ingabe_container_watch_last_run_seconds < 300)
         labels:
           severity: critical
           area: containers
         annotations:
-          where: "docker logs {{ $labels.name }}; Grafana Components (memory)"
+          where: "docker logs {{ $labels.name }}; raise its mem_limit in docker-compose.yml"
           summary: "Container {{ $labels.name }} ran out of memory and was killed"
       - alert: ContainerMissing_postgresdb
-        # cAdvisor reports every running container; none whose name contains "postgresdb" for 5 minutes = it is not running.
-        expr: absent(container_last_seen{name=~".*postgresdb.*"})
+        # Absent or not running (exited, restarting, paused) for 5 minutes.
+        expr: absent(ingabe_container_running{name=~".+-postgresdb-[0-9]+"} == 1) and on() (time() - ingabe_container_watch_last_run_seconds < 300)
         for: 5m
         labels:
           severity: critical
           area: containers
         annotations:
-          where: "docker ps on the server; docker logs of the postgresdb container"
+          where: "docker ps -a on the server; docker logs of the postgresdb container"
           summary: "The container for Postgres (the database) is not running"
       - alert: ContainerMissing_redis
-        # cAdvisor reports every running container; none whose name contains "redis" for 5 minutes = it is not running.
-        expr: absent(container_last_seen{name=~".*redis.*"})
+        # Absent or not running (exited, restarting, paused) for 5 minutes.
+        expr: absent(ingabe_container_running{name=~".+-redis-[0-9]+"} == 1) and on() (time() - ingabe_container_watch_last_run_seconds < 300)
         for: 5m
         labels:
           severity: critical
           area: containers
         annotations:
-          where: "docker ps on the server; docker logs of the redis container"
+          where: "docker ps -a on the server; docker logs of the redis container"
           summary: "The container for Redis (cache and Sage counters) is not running"
       - alert: ContainerMissing_minio
-        # cAdvisor reports every running container; none whose name contains "minio" for 5 minutes = it is not running.
-        expr: absent(container_last_seen{name=~".*minio.*"})
+        # Absent or not running (exited, restarting, paused) for 5 minutes.
+        expr: absent(ingabe_container_running{name=~".+-minio-[0-9]+"} == 1) and on() (time() - ingabe_container_watch_last_run_seconds < 300)
         for: 5m
         labels:
           severity: critical
           area: containers
         annotations:
-          where: "docker ps on the server; docker logs of the minio container"
+          where: "docker ps -a on the server; docker logs of the minio container"
           summary: "The container for MinIO (file storage: uploads, drone photos, backups) is not running"
       - alert: ContainerMissing_mundi_app
-        # cAdvisor reports every running container; none whose name contains "mundi-app" for 5 minutes = it is not running.
-        expr: absent(container_last_seen{name=~".*mundi-app.*"})
+        # Absent or not running (exited, restarting, paused) for 5 minutes.
+        expr: absent(ingabe_container_running{name=~"mundi-app"} == 1) and on() (time() - ingabe_container_watch_last_run_seconds < 300)
         for: 5m
         labels:
           severity: critical
           area: containers
         annotations:
-          where: "docker ps on the server; docker logs of the mundi-app container"
+          where: "docker ps -a on the server; docker logs of the mundi-app container"
           summary: "The container for the app itself is not running"
       - alert: ContainerMissing_dagster_daemon
-        # cAdvisor reports every running container; none whose name contains "dagster-daemon" for 5 minutes = it is not running.
-        expr: absent(container_last_seen{name=~".*dagster-daemon.*"})
+        # Absent or not running (exited, restarting, paused) for 5 minutes.
+        expr: absent(ingabe_container_running{name=~"mundi-dagster-daemon"} == 1) and on() (time() - ingabe_container_watch_last_run_seconds < 300)
         for: 5m
         labels:
           severity: warning
           area: containers
         annotations:
-          where: "docker ps on the server; docker logs of the dagster-daemon container"
+          where: "docker ps -a on the server; docker logs of the dagster-daemon container"
           summary: "The container for Dagster (scheduled data jobs) is not running"
       - alert: ContainerMissing_rasterd
-        # cAdvisor reports every running container; none whose name contains "rasterd" for 5 minutes = it is not running.
-        expr: absent(container_last_seen{name=~".*rasterd.*"})
+        # Absent or not running (exited, restarting, paused) for 5 minutes.
+        expr: absent(ingabe_container_running{name=~"mundi-rasterd"} == 1) and on() (time() - ingabe_container_watch_last_run_seconds < 300)
         for: 5m
         labels:
           severity: warning
           area: containers
         annotations:
-          where: "docker ps on the server; docker logs of the rasterd container"
+          where: "docker ps -a on the server; docker logs of the rasterd container"
           summary: "The container for the raster tile server (map images) is not running"
       - alert: ContainerMissing_ollama
-        # cAdvisor reports every running container; none whose name contains "ollama" for 5 minutes = it is not running.
-        expr: absent(container_last_seen{name=~".*ollama.*"})
+        # Absent or not running (exited, restarting, paused) for 5 minutes.
+        expr: absent(ingabe_container_running{name=~".+-ollama-[0-9]+"} == 1) and on() (time() - ingabe_container_watch_last_run_seconds < 300)
         for: 5m
         labels:
           severity: warning
           area: containers
         annotations:
-          where: "docker ps on the server; docker logs of the ollama container"
+          where: "docker ps -a on the server; docker logs of the ollama container"
           summary: "The container for Ollama (Brain search embeddings) is not running"
 
   - name: data-stores
@@ -559,16 +562,6 @@ groups:
         annotations:
           where: "container *redis* on the server"
           summary: "Redis is not answering (sign-in, Sage locks and counters, tile cache)"
-      - alert: RedisMemoryNearLimit
-        # Redis drops old cache entries when full (allkeys-lru), so this is a warning that the cache is too small.
-        expr: redis_memory_used_bytes / (redis_memory_max_bytes > 0) > 0.95
-        for: 30m
-        labels:
-          severity: warning
-          area: database
-        annotations:
-          where: "Redis maxmemory in docker-compose.yml (2 GB); Grafana Database and backups"
-          summary: "Redis has been over 95% of its memory for 30 minutes; older cache entries are being dropped"
       - alert: StorageNotHealthy
         expr: minio_cluster_health_status == 0
         for: 5m

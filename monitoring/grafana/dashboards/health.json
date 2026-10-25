@@ -500,7 +500,7 @@
       "type": "prometheus",
       "uid": "prometheus"
      },
-     "expr": "count(container_last_seen{name!=\"\"})",
+     "expr": "count(ingabe_container_running == 1)",
      "instant": true
     }
    ],
@@ -612,7 +612,7 @@
       "type": "prometheus",
       "uid": "prometheus"
      },
-     "expr": "count(changes(container_start_time_seconds{name!~\"grafana-mcp.*|\"}[1h]) > 2) or vector(0)",
+     "expr": "count(changes(ingabe_container_started_at_seconds[1h]) > 2) or vector(0)",
      "instant": true
     }
    ],
@@ -670,7 +670,7 @@
       "type": "prometheus",
       "uid": "prometheus"
      },
-     "expr": "count(container_memory_working_set_bytes{name!=\"\"} / (container_spec_memory_limit_bytes{name!=\"\"} > 0) > 0.9) or vector(0)",
+     "expr": "count(ingabe_container_memory_bytes / (ingabe_container_memory_limit_bytes > 0) > 0.9) or vector(0)",
      "instant": true
     }
    ],
@@ -958,14 +958,6 @@
        {
         "color": "green",
         "value": null
-       },
-       {
-        "color": "orange",
-        "value": 0.9
-       },
-       {
-        "color": "red",
-        "value": 0.95
        }
       ]
      },
