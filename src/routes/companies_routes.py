@@ -1,8 +1,10 @@
 """Companies page API (/api/admin/companies): Ingabe staff add partner companies and invite their admins.
 
 Each company is a WorkOS organization. Staff add it here with a first admin's
-email; WorkOS emails the invitation; from then on the company's own admins
-manage their people on /settings/organization. Staff are listed in
+email and its industry; WorkOS emails the invitation; from then on the company's
+own admins manage their people on /settings/organization. A partner company's
+people work only in its industry (src/services/industry.py); Ingabe's own
+company (tier 'internal') sees every industry. Staff are listed in
 PLATFORM_ADMIN_EMAILS. Deeper troubleshooting (sign-in logs, branding, sign-in
 methods, paid SSO) stays in the WorkOS dashboard.
 """
@@ -15,8 +17,9 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel
 
-from src.dependencies.session import UserContext, verify_session_required
-from src.services import workos_auth
+from src.database.pool import get_async_db_connection
+from src.dependencies.session import UserContext, provision_organization, verify_session_required
+from src.services import industry, workos_auth
 
 router = APIRouter()
 
@@ -33,12 +36,28 @@ def _require_staff(request: Request) -> Any:
 @router.get("")
 async def list_companies(request: Request, session: UserContext = Depends(verify_session_required)):
     _require_staff(request)
-    return {"companies": await asyncio.to_thread(workos_auth.companies)}
+    found = await asyncio.to_thread(workos_auth.companies)
+    async with get_async_db_connection() as conn:
+        rows = await conn.fetch("SELECT workos_org_id, industry, tier FROM organizations WHERE workos_org_id = ANY($1)",
+                                [c["id"] for c in found])
+    by_org = {r["workos_org_id"]: r for r in rows}
+    for c in found:
+        row = by_org.get(c["id"])
+        # "all": Ingabe's own company; None: a partner company not given an industry yet.
+        c["industry"] = "all" if row and row["tier"] == "internal" else (row["industry"] if row else None)
+    return {"companies": found, "industries": [{"key": k, "label": v["label"]} for k, v in industry.INDUSTRIES.items()]}
 
 
 class NewCompany(BaseModel):
     name: str
     admin_email: str
+    industry: str
+
+
+async def _set_company_industry(workos_org_id: str, name: str, value: str) -> None:
+    async with get_async_db_connection() as conn:
+        org_id = await provision_organization(conn, workos_org_id, name)
+        await industry.save_company_industry(conn, org_id, value)
 
 
 @router.post("")
@@ -49,10 +68,42 @@ async def add_company(body: NewCompany, request: Request, session: UserContext =
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Enter the company name")
     if "@" not in body.admin_email:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Enter the admin's email address")
+    if body.industry not in industry.INDUSTRIES:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Choose the company's industry")
     try:
-        return await asyncio.to_thread(workos_auth.create_partner, body.name, body.admin_email)
+        created = await asyncio.to_thread(workos_auth.create_partner, body.name, body.admin_email)
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+    # Set before anyone signs in, so the company's people only ever see this industry. A company that already existed
+    # (same name: the form was used to invite another admin) keeps its industry: that is changed on its own row.
+    async with get_async_db_connection() as conn:
+        org_id = await provision_organization(conn, created["organization_id"], created["name"])
+        current = await industry.company_industry(conn, org_id)
+        if created["created"] or current is None:
+            await industry.save_company_industry(conn, org_id, body.industry)
+            current = body.industry
+    return {**created, "industry": current, "industry_kept": current != body.industry}
+
+
+class CompanyIndustry(BaseModel):
+    industry: str
+
+
+@router.put("/{organization_id}/industry")
+async def set_company_industry(organization_id: str, body: CompanyIndustry, request: Request,
+                               session: UserContext = Depends(verify_session_required)):
+    """Change a partner company's industry; its people then see only that one."""
+    _require_staff(request)
+    if body.industry not in industry.INDUSTRIES:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Choose one of the industries")
+    try:
+        name = await asyncio.to_thread(workos_auth.organization_name, organization_id)
+    except Exception as e:  # noqa: BLE001 - WorkOS SDK errors: only its 404 means the company does not exist
+        if getattr(e, "status_code", None) == 404:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No such company") from e
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"WorkOS did not answer: {e}") from e
+    await _set_company_industry(organization_id, name, body.industry)
+    return {"organization_id": organization_id, "industry": body.industry}
 
 
 class AdminInvite(BaseModel):

@@ -1,11 +1,15 @@
 """Industries: Ingabe serves agriculture, power grids and telecom towers, and keeps them apart.
 
-The settings:
-- users.industry: the industry a user chose, asked once at sign-in and switched from the sidebar. A switch changes
-  only that user's own view, also for a company's owners and admins (Roger, 2026-10-12).
-- organizations.industry: a company's industry, the default for its members who never chose their own. The industry
-  picker never writes it.
-- The industry a user works in now (current_industry, the one place this is decided): their own choice, else their
+The settings (Roger, 2026-10-25: a partner company works in one industry, and only Ingabe sees all three):
+- organizations.industry: a company's industry. Ingabe staff set it when they add the company (Companies page); a
+  partner company that has none yet takes the first choice one of its people makes at sign-in, once
+  (claim_company_industry).
+- organizations.tier = 'internal': Ingabe's own company. Its people see every industry and switch freely; for them
+  the company's industry is only the default until they choose their own.
+- users.industry: the industry a user chose (asked at sign-in, switched from the sidebar). It counts only where the
+  user may choose: in Ingabe's own company, in a partner company that has no industry yet, or with no company.
+- The industry a user works in now (current_industry, the one place this is decided): a partner company's industry
+  when it has one (locked: no choice, no switch, no other industries shown); else their own choice, else their
   company's; None until anyone chooses, and in the legacy single-user mode. It is copied onto each project they
   create (agriculture when None), and their home lists only its projects, a project shared with them under its own
   industry; with None the home lists every industry. The home also says how many of their projects are in the other
@@ -337,18 +341,45 @@ async def company_industry(conn: Any, org_id: Optional[str]) -> Optional[str]:
 
 
 async def save_company_industry(conn: Any, org_id: str, industry: str) -> bool:
-    """Set the company's industry: the default for its members who never chose their own. The industry picker does
-    not call this (a switch changes only the user's own view). ValueError for an unknown one."""
+    """Set the company's industry (Ingabe staff, on the Companies page): a partner company's people then work only in
+    it; for Ingabe's own company it is only the default. ValueError for an unknown one."""
     check_industry(industry)
     status = await conn.execute("UPDATE organizations SET industry = $2 WHERE id::text = $1", org_id, industry)
     return status.endswith(" 1")
 
 
+async def locked_industry(conn: Any, org_id: Optional[str]) -> Optional[str]:
+    """The one industry a partner company's people work in; None when they may choose: no company, Ingabe's own
+    company (tier 'internal'), or a partner company not given an industry yet."""
+    if not org_id:
+        return None
+    row = await conn.fetchrow("SELECT industry, tier FROM organizations WHERE id::text = $1", org_id)
+    if row is None or row["tier"] == "internal":
+        return None
+    return row["industry"] if row["industry"] in INDUSTRIES else None
+
+
+async def claim_company_industry(conn: Any, org_id: Optional[str], industry: str) -> bool:
+    """A partner company with no industry takes this one (its first person's choice at sign-in), once; True when it
+    did. Ingabe's own company is never locked this way."""
+    if not org_id:
+        return False
+    check_industry(industry)
+    status = await conn.execute(
+        "UPDATE organizations SET industry = $2 WHERE id::text = $1 AND industry IS NULL AND tier <> 'internal'",
+        org_id, industry)
+    return status.endswith(" 1")
+
+
 async def current_industry_and_source(conn: Any, user_id: Optional[str],
                                       org_id: Optional[str]) -> tuple[Optional[str], Optional[str]]:
-    """(industry, source): the industry the user works in now and where it comes from. Their own choice ("you") once
-    they have made one, else their company's industry ("company"), the default for members who never chose; (None,
-    None) when neither has chosen or there is no account (legacy single-user mode)."""
+    """(industry, source): the industry the user works in now and where it comes from. A partner company's industry
+    when it has one ("company", locked); else their own choice ("you"), else their company's industry ("company"),
+    the default for members who never chose; (None, None) when neither has chosen or there is no account (legacy
+    single-user mode)."""
+    locked = await locked_industry(conn, org_id)
+    if locked:
+        return locked, "company"
     own = await industry_of(conn, user_id)
     if own:
         return own, "you"

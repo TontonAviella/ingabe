@@ -35,7 +35,7 @@ import { formatRelativeTime } from '@/lib/utils';
 function IndustryMenu() {
   const { data } = useIndustry();
   const { switchTo, pending } = useSwitchIndustry();
-  if (!data || !data.can_choose || data.industry === null) return null;
+  if (!data || !data.can_choose || data.locked || data.industry === null) return null;
   const current = data.options.find((o) => o.key === data.industry);
   return (
     <SidebarMenuItem>

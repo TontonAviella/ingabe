@@ -8,6 +8,8 @@ import { Input } from '@/components/ui/input';
 // Ingabe staff: every partner company, whether its admin has joined, and the
 // one action each state needs. Companies manage their own people afterwards
 // (Organization members page); deeper checks live in the WorkOS dashboard.
+// Each partner company works in one industry, chosen here: its people see only
+// that one. Ingabe's own company sees all of them (src/services/industry.py).
 
 interface Invitation {
   id: string;
@@ -24,6 +26,52 @@ interface Company {
   active_members: number;
   invitations: Invitation[];
   status: { code: 'active' | 'invited' | 'expired' | 'no_admin'; text: string };
+  // 'all': Ingabe's own company; null: not given one yet (its first person's choice at sign-in sets it).
+  industry: string | null;
+}
+
+interface IndustryOption {
+  key: string;
+  label: string;
+}
+
+const SELECT = 'h-9 rounded-md border border-gray-700 bg-gray-900 px-2 text-sm text-gray-100 focus:border-gray-500 focus:outline-none';
+
+function CompanyIndustry({ company, options, onDone }: { company: Company; options: IndustryOption[]; onDone: () => void }) {
+  const [busy, setBusy] = useState(false);
+  if (company.industry === 'all') {
+    return <span className="rounded bg-gray-800 px-2 py-0.5 text-xs text-gray-300">All industries (Ingabe)</span>;
+  }
+  const change = async (value: string) => {
+    const label = options.find((o) => o.key === value)?.label ?? value;
+    if (company.industry && !window.confirm(`Move ${company.name} to ${label}? Its people will see only ${label} from now on.`)) return;
+    setBusy(true);
+    try {
+      await call(`/${company.id}/industry`, { method: 'PUT', body: JSON.stringify({ industry: value }) });
+      toast.success(`${company.name} now works in ${label}`);
+      onDone();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <select
+      className={SELECT}
+      value={company.industry ?? ''}
+      disabled={busy}
+      onChange={(e) => e.target.value && change(e.target.value)}
+      aria-label={`${company.name}'s industry`}
+    >
+      {!company.industry && <option value="">Industry not set</option>}
+      {options.map((o) => (
+        <option key={o.key} value={o.key}>
+          {o.label}
+        </option>
+      ))}
+    </select>
+  );
 }
 
 const STATUS_STYLE: Record<Company['status']['code'], string> = {
@@ -93,12 +141,16 @@ export default function Companies() {
   const [error, setError] = useState<string | null>(null);
   const [name, setName] = useState('');
   const [adminEmail, setAdminEmail] = useState('');
+  const [newIndustry, setNewIndustry] = useState('');
+  const [industries, setIndustries] = useState<IndustryOption[]>([]);
   const [adding, setAdding] = useState(false);
   const [resending, setResending] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     try {
-      setCompanies((await call<{ companies: Company[] }>('')).companies);
+      const res = await call<{ companies: Company[]; industries: IndustryOption[] }>('');
+      setCompanies(res.companies);
+      setIndustries(res.industries);
       setError(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -116,16 +168,26 @@ export default function Companies() {
     e.preventDefault();
     setAdding(true);
     try {
-      const res = await call<{ name: string; created: boolean; invitation: { resent?: boolean } }>('', {
+      const res = await call<{
+        name: string;
+        created: boolean;
+        invitation: { resent?: boolean };
+        industry: string;
+        industry_kept: boolean;
+      }>('', {
         method: 'POST',
-        body: JSON.stringify({ name: name.trim(), admin_email: adminEmail.trim() }),
+        body: JSON.stringify({ name: name.trim(), admin_email: adminEmail.trim(), industry: newIndustry }),
       });
       const sent = res.invitation?.resent ? 'was already invited: invitation sent again' : 'invitation sent';
+      const kept = res.industry_kept
+        ? `; it keeps its industry (${industries.find((o) => o.key === res.industry)?.label ?? res.industry}): change it on its row`
+        : '';
       toast.success(
-        res.created ? `${res.name} added; ${adminEmail.trim()} ${sent}` : `${res.name} already exists; ${adminEmail.trim()} ${sent}`,
+        res.created ? `${res.name} added; ${adminEmail.trim()} ${sent}` : `${res.name} already exists; ${adminEmail.trim()} ${sent}${kept}`,
       );
       setName('');
       setAdminEmail('');
+      setNewIndustry('');
       await load();
     } catch (err) {
       toast.error(err instanceof Error ? err.message : String(err));
@@ -161,7 +223,8 @@ export default function Companies() {
       <div>
         <h1 className="text-xl font-semibold">Companies</h1>
         <p className="text-sm text-gray-400">
-          Add a company and its first admin. WorkOS emails the invitation; after that the company adds its own people.
+          Add a company, its industry and its first admin. WorkOS emails the invitation; after that the company adds its own people. Its
+          people see only its industry.
         </p>
       </div>
 
@@ -184,7 +247,21 @@ export default function Companies() {
           className="min-w-56 flex-1"
           aria-label="First admin's email"
         />
-        <Button type="submit" disabled={adding || !name.trim() || !adminEmail.trim()}>
+        <select
+          required
+          className={SELECT}
+          value={newIndustry}
+          onChange={(e) => setNewIndustry(e.target.value)}
+          aria-label="The company's industry"
+        >
+          <option value="">Industry…</option>
+          {industries.map((o) => (
+            <option key={o.key} value={o.key}>
+              {o.label}
+            </option>
+          ))}
+        </select>
+        <Button type="submit" disabled={adding || !name.trim() || !adminEmail.trim() || !newIndustry}>
           {adding ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}
           Add company
         </Button>
@@ -205,6 +282,7 @@ export default function Companies() {
                 <div className="flex flex-wrap items-center gap-3">
                   <span className="text-base font-medium">{c.name}</span>
                   <span className={`rounded px-2 py-0.5 text-xs ${STATUS_STYLE[c.status.code]}`}>{c.status.text}</span>
+                  <CompanyIndustry company={c} options={industries} onDone={load} />
                   <span className="ml-auto flex items-center gap-1 text-xs text-gray-500">
                     {c.id}
                     <button

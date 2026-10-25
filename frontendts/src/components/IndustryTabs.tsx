@@ -10,7 +10,7 @@ import { type IndustryKey, useIndustry, useSwitchIndustry } from '@/components/I
 export function IndustryTabs({ counts }: { counts: Partial<Record<IndustryKey, number>> }) {
   const { data } = useIndustry();
   const { switchTo, pending } = useSwitchIndustry();
-  if (!data || !data.can_choose || data.industry === null) return null;
+  if (!data || !data.can_choose || data.locked || data.industry === null) return null;
 
   return (
     <div role="tablist" aria-label="Industry" className="flex flex-wrap justify-center gap-2">

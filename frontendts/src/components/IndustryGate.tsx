@@ -18,6 +18,9 @@ export interface IndustryState {
   // The company the user acts for, and its industry: the default for members who never chose their own.
   company: { name: string; industry: IndustryKey | null } | null;
   can_choose: boolean; // false without an account row (legacy single-user mode): nothing to ask
+  // A partner company's people work only in its industry: no other industry is shown and there is no switch. Only
+  // Ingabe's own company (and someone whose company has no industry yet) chooses.
+  locked: boolean;
   options: { key: IndustryKey; label: string; note: string }[];
 }
 
@@ -57,7 +60,12 @@ export function switchIndustry(queryClient: QueryClient, wanted: IndustryKey): P
     body: JSON.stringify({ industry: wanted }),
   })
     .then(async (res) => {
-      if (!res.ok) throw new Error((await res.json().catch(() => null))?.detail ?? 'Could not switch your industry');
+      if (!res.ok) {
+        // Refused (403: the company works in one industry; 409: a colleague chose first): load the industry again,
+        // so the app shows the company's and a first-choice picker closes on it.
+        if (res.status === 403 || res.status === 409) queryClient.invalidateQueries({ queryKey: INDUSTRY_KEY });
+        throw new Error((await res.json().catch(() => null))?.detail ?? 'Could not switch your industry');
+      }
       const saved = (await res.json()) as IndustryState;
       queryClient.setQueryData(INDUSTRY_KEY, saved);
       queryClient.invalidateQueries({ queryKey: ['projects'] });
@@ -93,7 +101,8 @@ export function useFollowProjectIndustry(projectIndustry: IndustryKey | null | u
   const switched = useRef<string | null>(null);
   useEffect(() => {
     const wanted = projectIndustry ?? 'agriculture';
-    if (!data || !data.can_choose || data.industry === wanted || switched.current === wanted) return;
+    // A partner company's people stay in its industry, even on a map shared from another one.
+    if (!data || !data.can_choose || data.locked || data.industry === wanted || switched.current === wanted) return;
     switched.current = wanted;
     const label = data.options.find((o) => o.key === wanted)?.label ?? wanted;
     const first = !switching.has(wanted); // a second mount joins the first switch and says nothing again

@@ -41,6 +41,7 @@ function industryState(): IndustryState {
     source: world.industry ? 'you' : null,
     company: null,
     can_choose: true,
+    locked: false,
     options: INDUSTRIES,
   };
 }
