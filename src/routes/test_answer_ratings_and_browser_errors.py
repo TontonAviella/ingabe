@@ -13,7 +13,7 @@ from src.services import sage_answer_ratings
 async def _answer(map_id: str, role: str = "assistant") -> tuple[int, int]:
     """A conversation on the map's project with one message; (conversation id, message id)."""
     async with get_async_db_connection() as conn:
-        row = await conn.fetchrow("SELECT project_id, owner_uuid FROM user_mundiai_maps m "
+        row = await conn.fetchrow("SELECT m.project_id, p.owner_uuid FROM user_mundiai_maps m "
                                   "JOIN user_mundiai_projects p ON p.id = m.project_id WHERE m.id = $1", map_id)
         conv = await conn.fetchval("INSERT INTO conversations (project_id, owner_uuid, title) VALUES ($1, $2, $3) "
                                    "RETURNING id", row["project_id"], row["owner_uuid"], f"rating {uuid.uuid4().hex[:6]}")
