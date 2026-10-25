@@ -543,10 +543,26 @@ services:
       # Local stack: anyone on this machine may look. The server sets GRAFANA_ANONYMOUS=false (sign-in only).
       - GF_AUTH_ANONYMOUS_ENABLED=${GRAFANA_ANONYMOUS:-true}
       - GF_AUTH_ANONYMOUS_ORG_ROLE=Viewer
-      # The address people open (the server's private Tailscale address); links in alerts use it.
+      # The address people open (on the server https://grafana.nozalabs.rw, behind Cloudflare Access); links use it.
       - GF_SERVER_ROOT_URL=${GRAFANA_ROOT_URL:-http://localhost:3000}
       - GF_ANALYTICS_REPORTING_ENABLED=false
       - GF_USERS_ALLOW_SIGN_UP=false
+      # On the server, the Cloudflare Access sign-in (one-time email code) is the Grafana sign-in too: Grafana checks the
+      # signed pass Cloudflare adds (signature, this application's AUD, the team issuer) and logs that person in, so
+      # there is no second password. Off on the local stack (GRAFANA_CF_ACCESS_JWT unset).
+      - GF_AUTH_JWT_ENABLED=${GRAFANA_CF_ACCESS_JWT:-false}
+      - GF_AUTH_JWT_HEADER_NAME=Cf-Access-Jwt-Assertion
+      - GF_AUTH_JWT_EMAIL_CLAIM=email
+      - GF_AUTH_JWT_USERNAME_CLAIM=email
+      - GF_AUTH_JWT_JWK_SET_URL=${GRAFANA_CF_ACCESS_CERTS_URL:-}
+      - GF_AUTH_JWT_CACHE_TTL=60m
+      # Fails closed: with no audience configured no Cloudflare pass matches, so JWT sign-in can never accept a pass
+      # issued for another Access application of the same team. (The server binds Grafana to 127.0.0.1 only.)
+      - GF_AUTH_JWT_EXPECT_CLAIMS=${GRAFANA_CF_ACCESS_EXPECT_CLAIMS:-{"aud":["no-audience-configured"]}}
+      - GF_AUTH_JWT_AUTO_SIGN_UP=true
+      # Who is Admin (the rest of the people Cloudflare lets in are Viewers).
+      - GF_AUTH_JWT_ROLE_ATTRIBUTE_PATH=${GRAFANA_CF_ACCESS_ROLE_PATH:-'Viewer'}
+      - GF_AUTH_JWT_ROLE_ATTRIBUTE_STRICT=false
     volumes:
       - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
       - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
