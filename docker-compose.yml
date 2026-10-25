@@ -428,6 +428,40 @@ services:
       - "--storage.tsdb.retention.time=30d"
     restart: unless-stopped
 
+  # Alarms to Roger's phone: Prometheus -> Alertmanager -> alert-notifier -> ntfy (no published ports).
+  alertmanager:
+    image: prom/alertmanager:v0.27.0
+    container_name: mundi-alertmanager
+    mem_limit: 64m
+    command:
+      - "--config.file=/etc/alertmanager/alertmanager.yml"
+      - "--storage.path=/alertmanager"
+    volumes:
+      - ./monitoring/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+      - alertmanager-data:/alertmanager
+    restart: unless-stopped
+
+  # scripts/alert_notifier.py: each alarm as a plain-language push via ntfy, plus a morning check-in (08:00 Kigali).
+  # Pushes only when NTFY_TOPIC (the private channel name) is set in .env.
+  alert-notifier:
+    image: python:3.12-alpine
+    container_name: mundi-alert-notifier
+    mem_limit: 48m
+    command: ["python", "-u", "/app/alert_notifier.py"]
+    environment:
+      - NTFY_TOPIC=${NTFY_TOPIC:-}
+      - NTFY_URL=${NTFY_URL:-https://ntfy.sh}
+      - PROMETHEUS_URL=http://prometheus:9090
+      - GRAFANA_URL=${GRAFANA_ROOT_URL:-http://localhost:3000}
+    volumes:
+      - ./scripts/alert_notifier.py:/app/alert_notifier.py:ro
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/healthz"]
+      interval: 60s
+      timeout: 5s
+      retries: 3
+    restart: unless-stopped
+
   # Checks the app from outside, the way a person reaches it (monitoring/blackbox.yml): the public address
   # through the Cloudflare tunnel, not app:8000. The address is in monitoring/prometheus.yml (job public-app).
   blackbox-exporter:
@@ -611,6 +645,7 @@ services:
     restart: unless-stopped
 
 volumes:
+  alertmanager-data:
   health-textfile:
   loki-data:
   alloy-data:

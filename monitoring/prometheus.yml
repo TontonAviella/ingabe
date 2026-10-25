@@ -8,6 +8,12 @@ global:
 rule_files:
   - /etc/prometheus/alerts.yml
 
+# Firing and fixed alarms go to Alertmanager, which pushes them to Roger's phone (monitoring/alertmanager.yml).
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: ["alertmanager:9093"]
+
 scrape_configs:
   - job_name: "mundi-app"
     metrics_path: /metrics
@@ -53,3 +59,8 @@ scrape_configs:
     static_configs:
       - targets: ["postgres-exporter-dagster:9187"]
     scrape_interval: 30s
+
+  # Alertmanager itself: if it stops, phone alarms stop; MonitoringTargetDown then shows in the morning check.
+  - job_name: "alertmanager"
+    static_configs:
+      - targets: ["alertmanager:9093"]
