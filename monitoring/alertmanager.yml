@@ -1,0 +1,20 @@
+# Alertmanager: sends every alarm from monitoring/alerts.yml to Roger's phone through the alert-notifier service
+# (scripts/alert_notifier.py -> ntfy), when it fires and when it is fixed. Alarms of one kind and area are grouped;
+# one still firing is repeated every 12 hours (critical: every 4 hours) so it is not forgotten.
+route:
+  receiver: phone
+  group_by: [alertname, area]
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 12h
+  routes:
+    - matchers: ['severity="critical"']
+      receiver: phone
+      repeat_interval: 4h
+
+receivers:
+  - name: phone
+    webhook_configs:
+      - url: http://alert-notifier:8080/alertmanager
+        send_resolved: true
+        max_alerts: 10
