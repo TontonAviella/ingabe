@@ -586,6 +586,12 @@ def _preview(card_id: str, here: Here) -> str:
     return "The finder suggests, you decide: what it was measured to do."
 
 
+def general_questions(industry: str) -> dict[str, str]:
+    """Each card's question in an industry's own words (card id -> question), for reading what people ask
+    (asked_questions)."""
+    return dict(ASSETS[industry].cards)
+
+
 def question(asset: Asset, role: Optional[str], card_id: str, seed: int = 0) -> str:
     """A card's question in a role's words (else the industry's), in the wording the seed picks (the first for 0)."""
     words = _ROLE_WORDS.get(asset.industry, {}).get(role or "", {}).get(card_id) or (asset.cards[card_id],)
@@ -1270,7 +1276,8 @@ def photo_questions(here: Here, photo: PhotoFacts, audience: Optional[str]) -> d
                     "on_photo": line, "needs": upcoming.needs if upcoming is not None else None,
                     "lights": _QUESTION_PARTS.get(card["id"])})
     first = [o for o in out if o["status"] in (CHECK, READY)]
-    summary = (f"This photo can answer: {_names([o['question'].rstrip('?').lower() for o in first])}."
+    # Only the question's first letter is lowered: "What will I find" keeps its "I" (and any name its capital).
+    summary = (f"This photo can answer: {_names([o['question'][:1].lower() + o['question'][1:].rstrip('?') for o in first])}."
                if first else "Nothing on this photo is ready to check yet.")
     return {"summary": summary, "questions": out}
 

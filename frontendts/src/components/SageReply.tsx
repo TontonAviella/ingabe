@@ -310,3 +310,73 @@ export function SageReply({
     </section>
   );
 }
+
+/** What a screen outside the map needs to ask Sage on the map's chat and show the answer itself (the photo screen). */
+export interface SageLink {
+  mapId: string;
+  reply?: string;
+  replyMessageId?: number;
+  waiting: boolean;
+  streamingText?: string;
+  actions: { action_id: string; action: string }[];
+  errors: SageError[];
+  send: (text: string) => Promise<void>;
+}
+
+/** Sage's answer to a question asked from another screen: what Sage is doing while it works, then the first answer
+ * written after `since` (the answer that was last when the question was sent), with its sources and 👍/👎. */
+export function SageAnswerHere({ sage, since }: { sage: SageLink; since: number | null | undefined }) {
+  const answered =
+    !sage.waiting &&
+    !sage.streamingText &&
+    sage.actions.length === 0 &&
+    !!sage.reply &&
+    sage.replyMessageId !== undefined &&
+    sage.replyMessageId !== since;
+  const { body: answer, sources } = answered ? splitSources(sage.reply ?? '') : { body: '', sources: [] };
+  return (
+    <section
+      aria-label="Sage's answer"
+      aria-live="polite"
+      className="flex flex-col overflow-hidden rounded-[18px] border border-white/[0.08] bg-[#17110E]/95 text-[#F3EDE6]"
+    >
+      <header className="flex items-center gap-2 px-4 pt-3 pb-1.5">
+        <span className="flex size-6 items-center justify-center rounded-full bg-[#D9A066]/15">
+          <Sparkles className="size-3.5 text-[#D9A066]" />
+        </span>
+        <span className="text-[11px] font-semibold uppercase tracking-[0.08em] text-[#D9A066]">Sage</span>
+        {!answered && <span className="text-[12px] text-[#B8A99B]">{sage.streamingText ? 'writing…' : 'working…'}</span>}
+      </header>
+      {sage.errors.map((error) => (
+        <p
+          key={error.id}
+          className="m-0 mx-4 mb-2 rounded-[14px] border border-[#C2410C]/40 bg-[#C2410C]/10 px-3 py-2 text-[14px] text-[#F3C9B4]"
+        >
+          {error.message}
+        </p>
+      ))}
+      {answered ? (
+        <>
+          <div className="max-h-[40vh] overflow-y-auto px-4 pb-3">
+            <Answer text={answer} />
+          </div>
+          <Sources sources={sources} />
+          {sage.replyMessageId !== undefined && <AnswerRating mapId={sage.mapId} messageId={sage.replyMessageId} />}
+        </>
+      ) : sage.streamingText ? (
+        <div className="max-h-[40vh] overflow-y-auto px-4 pb-3">
+          <Answer text={sage.streamingText} streaming />
+        </div>
+      ) : sage.errors.length === 0 ? (
+        <div className="flex flex-col gap-1.5 px-4 pb-3 text-[14px] text-[#B8A99B]">
+          {sage.actions.map((action) => (
+            <span key={action.action_id}>{action.action}</span>
+          ))}
+          <span className="flex items-center gap-2">
+            <LoaderCircle className="size-4 animate-spin text-[#D9A066]" /> Thinking…
+          </span>
+        </div>
+      ) : null}
+    </section>
+  );
+}

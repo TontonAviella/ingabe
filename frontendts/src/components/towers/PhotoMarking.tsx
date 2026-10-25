@@ -2,12 +2,16 @@ import * as DialogPrimitive from '@radix-ui/react-dialog';
 import { useQueryClient } from '@tanstack/react-query';
 import { ArrowLeft, Check, ChevronLeft, ChevronRight, LoaderCircle, ScanSearch, Trash2, Undo2, X } from 'lucide-react';
 import { useCallback, useEffect, useReducer, useRef, useState } from 'react';
+import { AskSageBox } from '@/components/AskSageBox';
 import { PANEL_FONT } from '@/components/CardAnswer';
 import { useReaderRole } from '@/components/ReportAudienceSelect';
+import { SageAnswerHere, type SageLink } from '@/components/SageReply';
 import { BOX_STYLE, type BoxKind, type CanvasBox, type CanvasTool, PhotoCanvas } from '@/components/towers/PhotoCanvas';
+import { rememberAsked, useOthersAsked } from '@/hooks/useAskedQuestions';
 import { usePhotoCloseLook } from '@/hooks/useCloseLook';
 import {
   photosToCheckNow,
+  towerBase,
   useFindTheRest,
   usePhotoQuestions,
   usePhotoWork,
@@ -402,6 +406,8 @@ function PhotoWorkspace({
   onDirtyChange,
   onNextPhoto,
   nextBusy,
+  sage,
+  photoLabel,
 }: {
   layerId: string;
   photo: InspectionPhoto;
@@ -412,8 +418,21 @@ function PhotoWorkspace({
   onDirtyChange: (dirty: boolean) => void;
   onNextPhoto: () => void;
   nextBusy: boolean;
+  /** The map's Sage chat: a question asked here is answered here (absent where the screen has no chat). */
+  sage?: SageLink;
+  /** How Sage is told which photo the question is about ("photo 2 of 3, taken … in the "…" inspection"). */
+  photoLabel: string;
 }) {
   const work = usePhotoWork(layerId, photo.sha256, scanning);
+  const othersAsked = useOthersAsked(sage ? towerBase(layerId) : null);
+  // The question asked on this photo, and the answer that was Sage's last when it was sent.
+  const [asked, setAsked] = useState<{ question: string; since: number | undefined } | null>(null);
+  const askSage = (question: string) => {
+    if (!sage) return;
+    setAsked({ question, since: sage.replyMessageId });
+    rememberAsked(towerBase(layerId), question);
+    void sage.send(`About ${photoLabel}: ${question}`);
+  };
   const questions = usePhotoQuestions(layerId, photo.sha256, audience);
   const look = usePhotoCloseLook(layerId, photo.sha256);
   const saveMarks = useSaveMarks(layerId, photo.sha256);
@@ -916,6 +935,14 @@ function PhotoWorkspace({
             </li>
           ))}
         </ul>
+        {sage && (
+          <div className="flex flex-col gap-2.5 border-t border-white/[0.07] pt-3">
+            <span className={EYEBROW}>Ask Sage about this photo</span>
+            {asked && <p className="m-0 text-[14.5px] font-semibold leading-snug text-[#F3EDE6]">{asked.question}</p>}
+            {asked && <SageAnswerHere sage={sage} since={asked.since} />}
+            <AskSageBox othersAsked={othersAsked.data?.questions ?? []} onAsk={askSage} busy={sage.waiting || !!sage.streamingText} />
+          </div>
+        )}
       </div>
     );
   } else if (view.kind === 'question' && question) {
@@ -1494,6 +1521,7 @@ export function PhotoMarking({
   startIndex,
   note,
   onClose,
+  sage,
 }: {
   layerId: string;
   layerName: string;
@@ -1506,6 +1534,8 @@ export function PhotoMarking({
   /** A line shown when the screen opens (the server's words when no photo is left to check). */
   note?: string | null;
   onClose: () => void;
+  /** The map's Sage chat, to ask Sage about a photo here. */
+  sage?: SageLink;
 }) {
   const queryClient = useQueryClient();
   const [index, setIndex] = useState(startIndex);
@@ -1619,6 +1649,8 @@ export function PhotoMarking({
               onDirtyChange={setDirty}
               onNextPhoto={nextToCheck}
               nextBusy={searching}
+              sage={sage}
+              photoLabel={`photo ${index + 1} of ${photos.length}${taken ? ` (${taken.replace(/^Taken/, 'taken')})` : ''} in the "${layerName}" inspection`}
             />
           ) : (
             <p className="m-0 p-6 text-[15px] text-[#D8CCBF]">This inspection has no photos.</p>

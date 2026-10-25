@@ -15,6 +15,7 @@ import {
   writeCollapsed,
 } from '@/components/CardAnswer';
 import { useReaderRole } from '@/components/ReportAudienceSelect';
+import type { SageLink } from '@/components/SageReply';
 import { PhotoMarking } from '@/components/towers/PhotoMarking';
 import { photosToCheckNow, useInspectionPhotos, useScan, useTowerCardAnswer, useTowerCards } from '@/hooks/useTowers';
 import type { AnswerItem } from '@/lib/cardAnswer';
@@ -71,6 +72,7 @@ export function TowerCards({
   hiddenLayerIDs,
   historyOpen,
   onAskSage,
+  sage,
 }: {
   map: MLMap | null;
   layers: MapLayer[];
@@ -79,6 +81,8 @@ export function TowerCards({
   historyOpen: boolean;
   /** Sends a question to Sage in the chat. */
   onAskSage: (prompt: string) => void;
+  /** The map's Sage chat, for questions asked on the photo screen (answered there). */
+  sage?: SageLink;
 }) {
   const queryClient = useQueryClient();
   const inspections = useMemo(
@@ -86,7 +90,7 @@ export function TowerCards({
     [layers, hiddenLayerIDs],
   );
   const [layerId, setLayerId] = useState<string | null>(null);
-  const reader = useReaderRole();
+  const reader = useReaderRole(inspections.length > 0);
   const [picked, setPicked] = useState<TowerAudience | null>(null);
   // The role picked here, else the one saved on the account, else the owner's questions.
   const audience: TowerAudience = picked ?? (isTowerAudience(reader.role) ? reader.role : 'owner');
@@ -293,6 +297,7 @@ export function TowerCards({
           startIndex={marking.index}
           note={marking.note}
           onClose={() => setMarking(null)}
+          sage={sage}
         />
       )}
     </>

@@ -473,6 +473,8 @@ def test_the_photo_screen_asks_the_inspections_questions_for_one_photo():
     assert asked["summary"] == "This photo can answer: what is on my tower, against the tenancy contracts."
     night = tower_cards.photo_questions(here(OPEN), replace(photo, taken_at="2026-10-09T19:40:00"), "owner")
     assert {q["id"]: q for q in night["questions"]}["obstruction_light"]["on_photo"].startswith("Taken at 19:40, after dark")
+    technician = tower_cards.photo_questions(here(OPEN), photo, "technician")
+    assert technician["summary"] == "This photo can answer: what equipment will I find up there."  # "I", never "i"
     nothing = tower_cards.photo_questions(here(), photo, "owner")
     assert {q["id"]: q for q in nothing["questions"]}["equipment"]["on_photo"].startswith("No ")
     assert nothing["summary"] == "Nothing on this photo is ready to check yet."

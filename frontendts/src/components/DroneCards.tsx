@@ -1,6 +1,7 @@
 import { Check, ChevronDown, ChevronLeft, FileUp, LoaderCircle, Shuffle } from 'lucide-react';
 import { type ExpressionSpecification, type GeoJSONSource, type MapLayerMouseEvent, type Map as MLMap, Popup } from 'maplibre-gl';
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { AskSageBox } from '@/components/AskSageBox';
 import {
   AnswerBody,
   AnswerDownloads,
@@ -15,6 +16,7 @@ import {
   writeCollapsed,
 } from '@/components/CardAnswer';
 import { useReaderRole } from '@/components/ReportAudienceSelect';
+import { rememberAsked, useOthersAsked } from '@/hooks/useAskedQuestions';
 import {
   type DroneCard,
   type DroneCardAnswer,
@@ -419,6 +421,13 @@ function DeckView({
 }) {
   const [servicesOpen, setServicesOpen] = useState(false);
   const { photo } = deck;
+  const cardsBase = `/api/layer/${encodeURIComponent(layerId)}`;
+  const othersAsked = useOthersAsked(cardsBase);
+  // A question of the reader's own goes to Sage on the map (the answer shows there) and is kept to learn from.
+  const askOwn = (question: string) => {
+    rememberAsked(cardsBase, question);
+    onAskSage(`About the drone photo "${photo.name}": ${question}`);
+  };
   return (
     <div className="flex flex-col gap-4">
       <div className="flex flex-col gap-1">
@@ -475,7 +484,10 @@ function DeckView({
         ))}
       </div>
 
-      <AskSageChips asks={deck.ask_sage} onAsk={onAskSage} label="Ask Sage about this photo" />
+      <div className="flex flex-col gap-2.5">
+        <AskSageChips asks={deck.ask_sage} onAsk={onAskSage} label="Ask Sage about this photo" />
+        <AskSageBox othersAsked={othersAsked.data?.questions ?? []} onAsk={askOwn} />
+      </div>
 
       <div className="flex flex-col gap-2">
         <button
