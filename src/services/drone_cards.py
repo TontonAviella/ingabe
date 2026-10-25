@@ -461,6 +461,11 @@ _CARDS = [
 ]
 _CARD_BY_ID = {card.id: card for card in _CARDS}
 
+
+def general_questions() -> dict[str, str]:
+    """Each card's general question (card id -> question), for reading what people ask (asked_questions)."""
+    return {card.id: card.question for card in _CARDS}
+
 # The questions each role asks, in its own words (the card's answer is the same facts). A role without its own words
 # for a card is asked the card's general question. Every wording must be answerable by the card: no promise of a
 # document, comparison or number the card does not give.

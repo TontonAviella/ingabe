@@ -11,10 +11,12 @@ const KEY = ['user', 'report-audience'];
 
 /** The user's role (src/services/reader_roles.py) in the industry they work in, and saving another. The question
  * panels and the "Answers for" select share it, so a role picked in one is the role in all of them. */
-export function useReaderRole() {
+/** The reader's saved role; `enabled` false asks nothing (a panel with nothing to show). */
+export function useReaderRole(enabled = true) {
   const queryClient = useQueryClient();
   const query = useQuery<ReportAudience>({
     queryKey: KEY,
+    enabled,
     queryFn: async () => {
       const res = await apiFetch('/api/user/report-audience');
       if (!res.ok) throw new Error('Failed to load report audience');

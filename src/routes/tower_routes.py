@@ -15,7 +15,7 @@ import logging
 from dataclasses import dataclass
 from typing import Any, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, Field
 
 from src.database.models import MapLayer
@@ -25,6 +25,7 @@ from src.dependencies.redis_client import get_async_redis
 from src.dependencies.session import UserContext, verify_session_required
 from src.routes.switched_routes import switched_route
 from src.services import (
+    asked_questions,
     card_memory,
     close_look,
     example_finder,
@@ -354,6 +355,36 @@ async def _reading(inspection: _Inspection, session: UserContext, audience: Opti
     here = dataclasses.replace(here, seed=seed or card_memory.daily_seed(reader_id, target), seen=seen,
                                changed=card_memory.changed(before, tower_cards.statuses(here)))
     return role, here, reader_id
+
+
+class AskedQuestion(BaseModel):
+    question: str = Field(min_length=1, max_length=asked_questions.QUESTION_CHARS)
+
+
+@router.post("/towers/layer/{layer_id}/asked", status_code=202, operation_id="record_tower_photo_question")
+async def record_tower_photo_question(body: AskedQuestion, background: BackgroundTasks,
+                                      inspection: _Inspection = Depends(_with_cards),
+                                      session: UserContext = Depends(verify_session_required)) -> dict[str, Any]:
+    """A question the reader asked Sage on an inspection photo, kept to learn what people in this industry ask
+    (asked_questions): read by the model after the reply is sent."""
+    work = inspection.industries[0] or "telecom"
+    user_id, org_id = session.get_user_id(), session.get_org_id()
+    async with async_read_conn("towers.asked_role", user_id=user_id) as conn:
+        role = await reader_roles.role_in(conn, work, None, user_id, org_id)
+    asked_id = await asked_questions.record(user_id=user_id, org_id=org_id, industry=work, role=role,
+                                            layer_id=inspection.layer.layer_id, question=body.question)
+    if asked_id is not None:
+        background.add_task(asked_questions.learn, asked_id)
+    return {"kept": asked_id is not None}
+
+
+@router.get("/towers/layer/{layer_id}/asked", operation_id="get_tower_questions_others_asked")
+async def get_tower_questions_others_asked(inspection: _Inspection = Depends(_with_cards),
+                                           session: UserContext = Depends(verify_session_required)) -> dict[str, Any]:
+    """Questions other people in this industry asked Sage, in general words, a few offered today (asked_questions)."""
+    work = inspection.industries[0] or "telecom"
+    reader = session.get_user_id() or "anonymous"
+    return {"questions": await asked_questions.offered(work, reader, inspection.layer.layer_id)}
 
 
 @router.get("/towers/layer/{layer_id}/photos/{sha256}/questions", operation_id="get_tower_photo_questions")

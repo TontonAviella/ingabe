@@ -166,7 +166,7 @@ import type {
 } from '../lib/types';
 import type { MobileWorkspacePanel } from '../lib/workspacePanels';
 import { toggleMobileWorkspacePanel } from '../lib/workspacePanels';
-import { SageReply } from './SageReply';
+import { type SageLink, SageReply } from './SageReply';
 
 const EMPTY_POINT_CLOUD_LAYERS: MapLayer[] = [];
 
@@ -1713,6 +1713,18 @@ export default function MapLibreMap({
   // override the text box
   const criticalErrors = errors.filter((e) => e.shouldOverrideMessages);
 
+  // The chat as the photo screen sees it: it asks Sage here and shows the answer next to the photo.
+  const sageLink: SageLink = {
+    mapId,
+    reply: lastAssistantMsg,
+    replyMessageId: lastMsg && lastMsg.role === 'assistant' ? lastMsg.id : undefined,
+    waiting: !!lastMsg && (lastMsg.role === 'user' || lastMsg.role === 'tool' || (lastMsg.role === 'assistant' && !lastMsg.content)),
+    streamingText,
+    actions: activeActions,
+    errors: criticalErrors,
+    send: sendMessage,
+  };
+
   // A camera point of a photo inspection shows its photo in the feature panel.
   const selectedPhotoUrl = selectedFeature ? inspectionPhotoUrl(selectedFeature.source, selectedFeature.properties) : null;
 
@@ -1737,6 +1749,7 @@ export default function MapLibreMap({
           hiddenLayerIDs={hiddenLayerIDs}
           historyOpen={mobileWorkspacePanel === 'history'}
           onAskSage={(prompt) => void sendMessage(prompt)}
+          sage={sageLink}
         />
         <CloseLookBubbles
           key={`close-look-${mapInstanceId}`}

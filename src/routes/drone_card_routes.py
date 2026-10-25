@@ -9,14 +9,15 @@ import logging
 import re
 from typing import Any, Optional
 
-from fastapi import APIRouter, Depends, File, HTTPException, Response, UploadFile
-from pydantic import BaseModel
+from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, Response, UploadFile
+from pydantic import BaseModel, Field
 
 from src.database.models import LAYER_TYPE_RASTER, MapLayer
 from src.dependencies.dag import edit_layer, get_layer
 from src.dependencies.redis_client import get_async_redis
 from src.dependencies.session import UserContext, verify_session_required
 from src.services import (
+    asked_questions,
     background_jobs,
     card_memory,
     close_look,
@@ -29,6 +30,7 @@ from src.services import (
     industry,
     photo_context,
     photo_plots,
+    reader_roles,
 )
 from src.services.insurance_engine import resolve_audience
 from src.structures import async_read_conn, get_async_db_connection
@@ -135,6 +137,39 @@ async def get_drone_card_answer(
         raise HTTPException(404, f"No card {card_id}") from None
     await card_memory.remember_opened(get_async_redis(), reader_id, layer.layer_id, card_id, answer.get("status"))
     return answer
+
+
+class AskedQuestion(BaseModel):
+    question: str = Field(min_length=1, max_length=asked_questions.QUESTION_CHARS)
+
+
+@router.post("/layer/{layer_id}/asked", status_code=202, operation_id="record_drone_photo_question")
+async def record_drone_photo_question(
+    body: AskedQuestion,
+    background: BackgroundTasks,
+    layer: MapLayer = Depends(get_layer),
+    session: UserContext = Depends(verify_session_required),
+) -> dict[str, Any]:
+    """A question the reader asked Sage about this photo, kept to learn what people ask (asked_questions): read by
+    the model after the reply is sent."""
+    user_id, org_id = session.get_user_id(), session.get_org_id()
+    async with async_read_conn("drone_cards.asked_role", user_id=user_id) as conn:
+        role = await reader_roles.role_in(conn, "agriculture", None, user_id, org_id)
+    asked_id = await asked_questions.record(user_id=user_id, org_id=org_id, industry="agriculture", role=role,
+                                            layer_id=layer.layer_id, question=body.question)
+    if asked_id is not None:
+        background.add_task(asked_questions.learn, asked_id)
+    return {"kept": asked_id is not None}
+
+
+@router.get("/layer/{layer_id}/asked", operation_id="get_drone_photo_questions_others_asked")
+async def get_drone_photo_questions_others_asked(
+    layer: MapLayer = Depends(get_layer),
+    session: UserContext = Depends(verify_session_required),
+) -> dict[str, Any]:
+    """Questions other people in farming asked Sage, in general words, a few offered today (asked_questions)."""
+    reader = session.get_user_id() or "anonymous"
+    return {"questions": await asked_questions.offered("agriculture", reader, layer.layer_id)}
 
 
 class PlotSource(BaseModel):

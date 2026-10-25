@@ -23,7 +23,9 @@ import { anyJobActive } from '@/lib/towerReview';
 // Requests of the tower inspection screens (src/lib/towerContract.ts has the shapes). Reads need view rights on the
 // layer, writes edit rights; every route answers 404 when towers are off or the project is not a telecom project.
 
-const base = (layerId: string) => `/api/towers/layer/${encodeURIComponent(layerId)}`;
+/** An inspection's API path (cards, photos, questions others asked). */
+export const towerBase = (layerId: string) => `/api/towers/layer/${encodeURIComponent(layerId)}`;
+const base = towerBase;
 const photoBase = (layerId: string, sha256: string) => `${base(layerId)}/photos/${encodeURIComponent(sha256)}`;
 
 // While a find job is in line or running, ask for the photo's work again at this pace.

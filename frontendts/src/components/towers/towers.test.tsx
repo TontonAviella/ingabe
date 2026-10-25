@@ -1,7 +1,9 @@
 import { apiFetch } from '@mundi/ee';
 import type { Map as MLMap } from 'maplibre-gl';
+import { useState } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { AnswerBody } from '@/components/CardAnswer';
+import type { SageLink } from '@/components/SageReply';
 import { PhotoMarking } from '@/components/towers/PhotoMarking';
 import { TowerCards } from '@/components/towers/TowerCards';
 import type { CardAnswerCore } from '@/lib/cardAnswer';
@@ -722,7 +724,7 @@ describe('tower cards panel', () => {
     routes[`GET ${CARDS}?audience=owner`] = () => ({ status: 404, body: { detail: 'Not Found' } });
     routes[`GET ${PHOTOS}`] = () => ({ status: 404, body: { detail: 'Not Found' } });
     const host = mount(panel(layers));
-    await vi.waitFor(() => expect(calls.length).toBe(2));
+    await vi.waitFor(() => expect(calls.length).toBe(3)); // the cards, the photos, the reader's saved role
     await vi.waitFor(() => expect(host).toBeEmptyDOMElement());
   });
 
@@ -734,7 +736,7 @@ describe('tower cards panel', () => {
         }),
     );
     const waiting = mount(panel(layers));
-    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(3));
     expect(waiting).toBeEmptyDOMElement();
     unmountAll();
     fetchMock.mockReset();
@@ -874,5 +876,58 @@ describe('answer places', () => {
     expect(onGoTo).toHaveBeenCalledWith(30.06, -1.94);
     expect(byButton(/^Unplaced/)).toBeNull();
     expect(byText('Unplaced')).not.toBeNull();
+  });
+});
+
+describe('photo screen: asking Sage', () => {
+  // A stand-in for the map's chat: the test plays Sage's reply by changing what the chat shows.
+  let setSage: (change: Partial<SageLink>) => void = () => undefined;
+  const send = vi.fn(async (_text: string) => undefined);
+  function Screen() {
+    const [sage, set] = useState<SageLink>({
+      mapId: 'Mmap1',
+      reply: 'An earlier answer.',
+      replyMessageId: 4,
+      waiting: false,
+      actions: [],
+      errors: [],
+      send,
+    });
+    setSage = (change) => set((now) => ({ ...now, ...change }));
+    return <PhotoMarking layerId={LAYER} layerName="Mast 12" photos={[PHOTO]} startIndex={0} onClose={vi.fn()} sage={sage} />;
+  }
+  function typeInto(input: HTMLInputElement, text: string) {
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set?.call(input, text);
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+  }
+
+  it('sends the question about this photo to Sage, keeps it to learn from, and shows the answer here', async () => {
+    serve();
+    routes[`GET ${photoUrl(SHA)}/questions?audience=owner`] = () => ({
+      status: 200,
+      body: { summary: 'Nothing on this photo is ready to check yet.', questions: [] },
+    });
+    routes[`GET /api/towers/layer/${LAYER}/asked`] = () => ({ status: 200, body: { questions: ['Which antennas need fixing?'] } });
+    routes[`POST /api/towers/layer/${LAYER}/asked`] = () => ({ status: 202, body: { kept: true } });
+    mount(<Screen />);
+
+    await findText('Others asked');
+    expect(byButton('Which antennas need fixing?')).not.toBeNull();
+    const input = await findBy(() => document.querySelector<HTMLInputElement>('input[aria-label="Ask Sage your own question"]'), 'the box');
+    typeInto(input, 'Is the tower leaning?');
+    click(await findButton('Ask Sage'));
+
+    await vi.waitFor(() => expect(send).toHaveBeenCalledTimes(1));
+    const sent = send.mock.calls[0][0];
+    expect(sent.startsWith('About photo 1 of 1 (taken ')).toBe(true);
+    expect(sent.endsWith(' in the "Mast 12" inspection: Is the tower leaning?')).toBe(true);
+    await vi.waitFor(() => expect(called('POST', `/api/towers/layer/${LAYER}/asked`)?.body).toEqual({ question: 'Is the tower leaning?' }));
+    // The earlier answer is not this question's answer: Sage is still thinking.
+    await findText('Thinking…');
+    expect(byText('An earlier answer.')).toBeNull();
+
+    setSage({ waiting: false, reply: '**No lean seen.** The mast looks straight on this photo.', replyMessageId: 5 });
+    await findText('No lean seen.');
+    expect(byText('Thinking…')).toBeNull();
   });
 });
