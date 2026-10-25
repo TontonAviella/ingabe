@@ -287,6 +287,10 @@ class TurnTrace:
             "partner_id": _str_or_none(meta_in.get("partner_id")),
             "steps": [],
         }
+        # The request trace this turn runs in (Tempo), so the Health page can open it: every query and outside call.
+        infra_context = trace.get_current_span().get_span_context()
+        if infra_context.is_valid:
+            self._record["trace_id"] = format(infra_context.trace_id, "032x")
         self._tool_steps: dict[str, dict[str, Any]] = {}
         self._finished = False
         # Only real turns go to the turn log; evals (scripts/eval_sage_routing.py, "sage.eval_case") stay out of it.

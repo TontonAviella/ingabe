@@ -383,3 +383,45 @@ tests:
             exp_annotations:
               where: "container mundi-container-watch (docker logs); it writes containers.prom to the health-textfile volume"
               summary: "The container watch has not read Docker for 5 minutes; container alarms are blind"
+
+  # Traced requests, browsers and ratings: a route fails 4 times in an hour; a screen crashes once; three answers are
+  # marked wrong in a day; Tempo receives nothing for 30 minutes.
+  - interval: 1m
+    input_series:
+      - series: 'traces_spanmetrics_calls_total{span_kind="SPAN_KIND_SERVER",status_code="STATUS_CODE_ERROR",span_name="GET /api/maps/{map_id}/tree",service="ingabe"}'
+        values: '0x10 1 2 3 4x60'
+      - series: 'frontend_errors_total{kind="react_crash"}'
+        values: '0x10 1x60'
+      - series: 'sage_answer_ratings_last_24h{rating="down"}'
+        values: '0x10 1 2 3x60'
+      - series: 'tempo_distributor_spans_received_total{tenant="single-tenant"}'
+        values: '0x80'
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: RouteServerErrors
+        exp_alerts:
+          - exp_labels: {area: requests, severity: warning, span_name: "GET /api/maps/{map_id}/tree"}
+            exp_annotations:
+              where: "Grafana Requests (route GET /api/maps/{map_id}/tree): open one of its failed traces, then its log lines"
+              summary: "GET /api/maps/{map_id}/tree answered with a server error 3 or more times in the last hour"
+      - eval_time: 30m
+        alertname: ScreenCrashedForSomeone
+        exp_alerts:
+          - exp_labels: {area: browsers, severity: warning}
+            exp_annotations:
+              where: "Ingabe Health page, Errors in people's browsers (message, page, file and line); Grafana Logs, logger src.browser_errors"
+              summary: "A screen of the app crashed in someone's browser in the last hour"
+      - eval_time: 30m
+        alertname: SageAnswersDisliked
+        exp_alerts:
+          - exp_labels: {area: sage, severity: warning}
+            exp_annotations:
+              where: "Ingabe Health page, Sage: rated answers (the note, and the steps Sage took)"
+              summary: "3 or more of Sage's answers were marked wrong in the last day"
+      - eval_time: 70m
+        alertname: TracesNotArriving
+        exp_alerts:
+          - exp_labels: {area: monitoring, severity: warning}
+            exp_annotations:
+              where: "container mundi-tempo; OTEL_EXPORTER_OTLP_ENDPOINT=http://tempo:4318 in the server .env, then recreate the app"
+              summary: "No request traces have arrived for 30 minutes; slow and failing requests can't be traced"

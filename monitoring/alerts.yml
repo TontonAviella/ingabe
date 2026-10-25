@@ -268,7 +268,7 @@ groups:
   - name: monitoring
     rules:
       - alert: MonitoringTargetDown
-        expr: up{job=~"postgres|dagster|docker-vm|public-app|alertmanager|redis|minio|grafana|loki|alloy"} == 0
+        expr: up{job=~"postgres|dagster|docker-vm|public-app|alertmanager|redis|minio|grafana|loki|alloy|tempo"} == 0
         for: 5m
         labels:
           severity: warning
@@ -619,4 +619,96 @@ groups:
         annotations:
           where: "containers mundi-alertmanager and mundi-alert-notifier (ntfy.sh reachable?)"
           summary: "Some alarms could not be delivered to your phone in the last hour"
+
+  # Requests by route, from the traces (Tempo's span metrics, monitoring/tempo.yml): which page or API route fails or
+  # is slow, not just "the app has errors".
+  - name: requests
+    rules:
+      - alert: RouteServerErrors
+        expr: |
+          sum by (span_name) (increase(traces_spanmetrics_calls_total{span_kind="SPAN_KIND_SERVER",status_code="STATUS_CODE_ERROR"}[1h])) >= 3
+        labels:
+          severity: warning
+          area: requests
+        annotations:
+          where: "Grafana Requests (route {{ $labels.span_name }}): open one of its failed traces, then its log lines"
+          summary: "{{ $labels.span_name }} answered with a server error 3 or more times in the last hour"
+      - alert: RouteSlow
+        # Uploads are long by nature; everything else people wait for.
+        expr: |
+          histogram_quantile(0.95, sum by (span_name, le) (rate(traces_spanmetrics_latency_bucket{span_kind="SPAN_KIND_SERVER",span_name!~".*upload.*"}[1h]))) > 10
+          and on (span_name) sum by (span_name) (increase(traces_spanmetrics_calls_total{span_kind="SPAN_KIND_SERVER"}[1h])) >= 5
+        for: 15m
+        labels:
+          severity: warning
+          area: requests
+        annotations:
+          where: "Grafana Requests (route {{ $labels.span_name }}): a slow trace shows which query or outside call took the time"
+          summary: "{{ $labels.span_name }}: 1 in 20 requests took over 10 seconds in the last hour"
+      - alert: TracesNotArriving
+        # The public check (blackbox) requests /api/health every minute, so there is always something to trace.
+        expr: (sum(rate(tempo_distributor_spans_received_total[30m])) or vector(0)) == 0
+        for: 30m
+        labels:
+          severity: warning
+          area: monitoring
+        annotations:
+          where: "container mundi-tempo; OTEL_EXPORTER_OTLP_ENDPOINT=http://tempo:4318 in the server .env, then recreate the app"
+          summary: "No request traces have arrived for 30 minutes; slow and failing requests can't be traced"
+
+  # Errors in people's browsers (src/routes/client_health_routes.py /client-error, frontendts/src/lib/browserErrors.ts).
+  - name: browsers
+    rules:
+      - alert: ScreenCrashedForSomeone
+        expr: sum(increase(frontend_errors_total{kind=~"react_crash|app_init_failed"}[1h])) > 0
+        labels:
+          severity: warning
+          area: browsers
+        annotations:
+          where: "Ingabe Health page, Errors in people's browsers (message, page, file and line); Grafana Logs, logger src.browser_errors"
+          summary: "A screen of the app crashed in someone's browser in the last hour"
+      - alert: ManyBrowserErrors
+        expr: sum(increase(frontend_errors_total[1h])) >= 10
+        labels:
+          severity: warning
+          area: browsers
+        annotations:
+          where: "Ingabe Health page, Errors in people's browsers; Grafana Logs, logger src.browser_errors"
+          summary: "10 or more errors in people's browsers in the last hour"
+
+  # Slow database queries (pg_stat_statements through postgres-exporter --collector.stat_statements).
+  - name: database-queries
+    rules:
+      - alert: SlowDatabaseQuery
+        expr: |
+          (sum by (queryid) (increase(pg_stat_statements_seconds_total{datname="mundidb"}[1h]))
+            / sum by (queryid) (increase(pg_stat_statements_calls_total{datname="mundidb"}[1h]))) > 5
+          and sum by (queryid) (increase(pg_stat_statements_calls_total{datname="mundidb"}[1h])) >= 3
+        labels:
+          severity: warning
+          area: database
+        annotations:
+          where: "Ingabe Health page, Slowest database queries (the query text); its traces in Grafana Requests"
+          summary: "A database query took over 5 seconds on average, 3 or more times in the last hour"
+      - alert: SlowQueryTrackingOff
+        expr: absent(pg_stat_statements_calls_total)
+        for: 30m
+        labels:
+          severity: warning
+          area: monitoring
+        annotations:
+          where: "Postgres: shared_preload_libraries=pg_stat_statements (docker-compose.yml) and, as admin, CREATE EXTENSION pg_stat_statements in mundidb"
+          summary: "Slow database queries are not being tracked"
+
+  # People's ratings of Sage's answers (src/services/sage_answer_ratings.py).
+  - name: sage-ratings
+    rules:
+      - alert: SageAnswersDisliked
+        expr: sum(sage_answer_ratings_last_24h{rating="down"}) >= 3
+        labels:
+          severity: warning
+          area: sage
+        annotations:
+          where: "Ingabe Health page, Sage: rated answers (the note, and the steps Sage took)"
+          summary: "3 or more of Sage's answers were marked wrong in the last day"
 

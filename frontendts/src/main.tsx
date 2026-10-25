@@ -4,6 +4,10 @@ import './index.css';
 import { init } from '@mundi/ee';
 import App from './App';
 import { initAnalytics, trackError } from './lib/analytics';
+import { reportBrowserError, watchBrowserErrors } from './lib/browserErrors';
+
+// Errors in this browser go to the Ingabe Health page (see browserErrors.ts).
+watchBrowserErrors();
 
 // After a deploy, the old JS chunk filenames no longer exist on the server.
 // If a user has the tab open during a deploy, lazy imports will fail with
@@ -37,6 +41,7 @@ init()
     // eslint-disable-next-line no-console
     console.error('[EE] init failed', e);
     trackError('app_init_failed', e);
+    reportBrowserError('app_init_failed', e);
     const rootEl = document.getElementById('root')!;
     createRoot(rootEl).render(
       <StrictMode>

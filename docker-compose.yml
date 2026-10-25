@@ -240,6 +240,11 @@ services:
       context: .
       dockerfile: Dockerfile.postgres
     image: mundi-postgres:local
+    # pg_stat_statements: time and calls per query, so slow queries can be found (Health page, Grafana Database).
+    # Once per database, as admin: CREATE EXTENSION pg_stat_statements; GRANT pg_read_all_stats TO mundiuser (the
+    # exporter reads as mundiuser; without it other roles' queries have no queryid and break its scrape).
+    command: ["postgres", "-c", "shared_preload_libraries=pg_stat_statements", "-c", "pg_stat_statements.track=top",
+              "-c", "track_io_timing=on"]
     environment:
       - POSTGRES_DB=${POSTGRES_DB:-mundidb}
       - POSTGRES_USER=${POSTGRES_USER:-mundiuser}
@@ -421,7 +426,7 @@ services:
     image: prom/prometheus:v2.53.0
     container_name: mundi-prometheus
     ports:
-      - "9090:9090"
+      - "127.0.0.1:9090:9090"  # also takes remote writes (Tempo): never on a public interface
     volumes:
       - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - ./monitoring/alerts.yml:/etc/prometheus/alerts.yml:ro
@@ -429,6 +434,8 @@ services:
     command:
       - "--config.file=/etc/prometheus/prometheus.yml"
       - "--storage.tsdb.retention.time=30d"
+      # Tempo writes its per-route numbers here (traces_spanmetrics_*); reachable only on the Docker network.
+      - "--web.enable-remote-write-receiver"
     restart: unless-stopped
 
   # Every container's state for Prometheus (scripts/container_watch.py): running, restarts, out-of-memory kills,
@@ -506,8 +513,9 @@ services:
     image: quay.io/prometheuscommunity/postgres-exporter:v0.15.0
     container_name: mundi-postgres-exporter
     mem_limit: 64m
-    # Custom metrics (pipeline cache freshness); see the file's header.
-    command: ["--extend.query-path=/etc/postgres_exporter/queries.yaml"]
+    # Custom metrics (pipeline cache freshness); see the file's header. stat_statements: time and calls of the
+    # slowest queries (pg_stat_statements), for the SlowDatabaseQuery alarm.
+    command: ["--extend.query-path=/etc/postgres_exporter/queries.yaml", "--collector.stat_statements"]
     volumes:
       - ./monitoring/postgres_exporter_queries.yaml:/etc/postgres_exporter/queries.yaml:ro
     environment:
@@ -571,6 +579,19 @@ services:
       - /sys:/host/sys:ro
       - /:/host/root:ro
       - health-textfile:/textfile:ro
+    restart: unless-stopped
+
+  # Request traces (monitoring/tempo.yml, 7 days kept): the app sends one trace per request when
+  # OTEL_EXPORTER_OTLP_ENDPOINT=http://tempo:4318 (server .env). Per-route numbers go to Prometheus. No published port.
+  tempo:
+    image: grafana/tempo:2.6.1
+    container_name: mundi-tempo
+    mem_limit: 1g
+    user: "0"
+    command: ["-config.file=/etc/tempo.yml"]
+    volumes:
+      - ./monitoring/tempo.yml:/etc/tempo.yml:ro
+      - tempo-data:/var/tempo
     restart: unless-stopped
 
   # Container logs, searchable in Grafana (monitoring/loki.yml, 14 days kept).
@@ -679,6 +700,7 @@ services:
     restart: unless-stopped
 
 volumes:
+  tempo-data:
   alertmanager-data:
   health-textfile:
   loki-data:

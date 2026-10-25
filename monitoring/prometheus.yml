@@ -82,6 +82,11 @@ scrape_configs:
       - targets: ["grafana:3000"]
     scrape_interval: 60s
 
+  - job_name: "tempo"
+    static_configs:
+      - targets: ["tempo:3200"]
+    scrape_interval: 60s
+
   - job_name: "loki"
     static_configs:
       - targets: ["loki:3100"]
