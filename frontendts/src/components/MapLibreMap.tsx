@@ -153,7 +153,7 @@ import { featureFieldRows } from '@/lib/featureFields';
 import { inspectionPhotoUrl } from '@/lib/inspectionPhoto';
 import { createAnalyticsTurnId, track, trackDuration, trackError } from '../lib/analytics';
 import type { ErrorEntry, UploadingFile } from '../lib/frontend-types';
-import { isServerTileFailure, reportMapHealth } from '../lib/mapHealth';
+import { isServerTileFailure, reportMapHealth, stopWatchingGraphics, watchGraphics } from '../lib/mapHealth';
 import type {
   Conversation,
   EphemeralAction,
@@ -839,6 +839,7 @@ export default function MapLibreMap({
 
     // need to nuke in order to re-draw, TODO this can be improved
     if (localMapRef.current) {
+      stopWatchingGraphics(localMapRef.current.getCanvas());
       localMapRef.current.remove();
       localMapRef.current = null;
     }
@@ -862,7 +863,7 @@ export default function MapLibreMap({
 
       const newMap = new MLMap(mapOptions);
       localMapRef.current = newMap;
-      newMap.getCanvas().addEventListener('webglcontextlost', () => reportMapHealth('webgl_lost'));
+      watchGraphics(newMap.getCanvas());
       if (mapRef.current !== undefined) {
         (mapRef as any).current = newMap;
       }
@@ -1142,6 +1143,7 @@ export default function MapLibreMap({
       // Clean up on unmount
       return () => {
         setIsMapReady(false);
+        stopWatchingGraphics(newMap.getCanvas());
         newMap.remove();
         localMapRef.current = null;
         if (mapRef.current !== undefined) {
