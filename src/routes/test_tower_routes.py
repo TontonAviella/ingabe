@@ -131,9 +131,13 @@ async def test_power_grid_marks_pylons_insulators_and_nests_and_has_its_own_card
     assert [p["id"] for p in photos["parts"]] == ["power_pylon", "power_insulator", "power_nest"]
     assert [p["label"] for p in photos["parts"]] == ["Pylon", "Insulator", "Bird nest"]
     assert await _every_route(client, ids["layer"]) == [200, 200, 422, 422, 422, 200, 200]
-    titles = {c["id"]: c["title"] for c in (await client.get(f"{_base(ids['layer'])}/cards")).json()["cards"]}
-    assert titles["equipment"] == "What is on this line?" and titles["defects"] == "Are there bird nests on the line?"
-    assert (await client.get(f"{_base(ids['layer'])}/cards/defects")).json()["question"] == titles["defects"]
+    titles = {c["id"]: c["title"] for c in (await client.get(f"{_base(ids['layer'])}/cards?seed=7")).json()["cards"]}
+    line = tower_cards.ASSETS["power_grid"]
+    # the owner's words for the line's cards (tower_cards.question), never a tower's
+    assert titles["equipment"] == tower_cards.question(line, "owner", "equipment", 7)
+    assert titles["defects"] == tower_cards.question(line, "owner", "defects", 7)
+    assert "tower" not in titles["equipment"].lower() and "bolt" not in titles["defects"].lower()
+    assert (await client.get(f"{_base(ids['layer'])}/cards/defects?seed=7")).json()["question"] == titles["defects"]
     assert switched_on.calls == []
 
 
@@ -440,7 +444,7 @@ async def test_the_cards_follow_the_contract_and_the_reader(client, seeded, swit
         deck = await client.get(f"{_base(ids['layer'])}/cards{query}")
         assert deck.status_code == 200, deck.text
         cards = deck.json()["cards"]
-        assert deck.json()["heading"] == "Tower checks" and all(set(c) == {"id", "title", "status", "preview"} for c in cards)
+        assert deck.json()["heading"] == "Tower checks" and all(set(c) == {"id", "title", "status", "preview", "new"} for c in cards)
         assert {c["id"] for c in cards} == set(tower_cards.CARDS) and cards[-1]["id"] == "learn_review"
         assert cards[0]["id"] == first, (audience, [c["id"] for c in cards])
     answer = (await client.get(f"{_base(ids['layer'])}/cards/equipment?audience=technician")).json()
@@ -585,7 +589,7 @@ async def test_suggestions_get_outlines_a_tap_is_traced_and_a_photo_answers_the_
     asked = await client.get(f"{photo}/questions?audience=technician")
     assert asked.status_code == 200, asked.text
     assert set(asked.json()) == {"summary", "questions"}
-    assert all(set(q) == {"id", "question", "status", "status_label", "on_photo", "needs", "lights"}
-               for q in asked.json()["questions"])
+    assert all(set(q) == {"id", "question", "status", "status_label", "on_photo", "needs", "lights", "new"}
+               and q["new"] is False for q in asked.json()["questions"])
     equipment = next(q for q in asked.json()["questions"] if q["id"] == "equipment")
     assert equipment["status"] == "needs_check" and equipment["on_photo"].endswith("to check on this photo.")
