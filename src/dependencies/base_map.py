@@ -144,10 +144,10 @@ class OpenStreetMapProvider(BaseMapProvider):
                     "paint": {},
                 }
             ],
-            # An empty map opens over Rwanda (Ingabe's country), not at 0°, 0° in the Atlantic; a map with layers
-            # is fitted to them instead (map_service).
-            "center": [29.87, -1.94],
-            "zoom": 7.4,
+            # An empty map opens on the whole world: Ingabe starts in Rwanda but is not limited to it (Roger,
+            # 2026-10-25). A map with layers is fitted to them instead (map_service).
+            "center": [0, 0],
+            "zoom": 2,
             "bearing": 0,
             "pitch": 0,
         }
