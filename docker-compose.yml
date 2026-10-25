@@ -547,6 +547,20 @@ services:
       - GF_SERVER_ROOT_URL=${GRAFANA_ROOT_URL:-http://localhost:3000}
       - GF_ANALYTICS_REPORTING_ENABLED=false
       - GF_USERS_ALLOW_SIGN_UP=false
+      # On the server, the Cloudflare Access sign-in (one-time email code) is the Grafana sign-in too: Grafana checks the
+      # signed pass Cloudflare adds (signature, this application's AUD, the team issuer) and logs that person in, so
+      # there is no second password. Off on the local stack (GRAFANA_CF_ACCESS_JWT unset).
+      - GF_AUTH_JWT_ENABLED=${GRAFANA_CF_ACCESS_JWT:-false}
+      - GF_AUTH_JWT_HEADER_NAME=Cf-Access-Jwt-Assertion
+      - GF_AUTH_JWT_EMAIL_CLAIM=email
+      - GF_AUTH_JWT_USERNAME_CLAIM=email
+      - GF_AUTH_JWT_JWK_SET_URL=${GRAFANA_CF_ACCESS_CERTS_URL:-}
+      - GF_AUTH_JWT_CACHE_TTL=60m
+      - GF_AUTH_JWT_EXPECT_CLAIMS=${GRAFANA_CF_ACCESS_EXPECT_CLAIMS:-{}}
+      - GF_AUTH_JWT_AUTO_SIGN_UP=true
+      # Who is Admin (the rest of the people Cloudflare lets in are Viewers).
+      - GF_AUTH_JWT_ROLE_ATTRIBUTE_PATH=${GRAFANA_CF_ACCESS_ROLE_PATH:-'Viewer'}
+      - GF_AUTH_JWT_ROLE_ATTRIBUTE_STRICT=false
     volumes:
       - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
       - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
