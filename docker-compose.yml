@@ -188,6 +188,9 @@ services:
       - MINIO_ROOT_USER=${MINIO_ROOT_USER:-admin}
       - MINIO_ROOT_PASSWORD=${MINIO_ROOT_PASSWORD:-changeme}
       - MINIO_DEFAULT_BUCKETS=${S3_BUCKET:-test-bucket}
+      # Storage health for Prometheus (/minio/v2/metrics/cluster). Readable without a key, so MinIO's port must stay
+      # private: the server binds it to 127.0.0.1 and the public routes only pass /test-bucket/.
+      - MINIO_PROMETHEUS_AUTH_TYPE=public
     volumes:
       - ./data/minio:/data
     restart: unless-stopped
@@ -428,6 +431,29 @@ services:
       - "--storage.tsdb.retention.time=30d"
     restart: unless-stopped
 
+  # Every container's state for Prometheus (scripts/container_watch.py): running, restarts, out-of-memory kills,
+  # memory against its limit. Writes a textfile node-exporter serves (cAdvisor sees no containers on Docker 29 with
+  # the containerd image store). Only reads Docker, but the socket gives root-level access: no published port.
+  container-watch:
+    image: python:3.12-alpine
+    container_name: mundi-container-watch
+    mem_limit: 48m
+    command: ["python", "-u", "/app/container_watch.py"]
+    volumes:
+      - ./scripts/container_watch.py:/app/container_watch.py:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - health-textfile:/textfile
+    restart: unless-stopped
+
+  # Redis health for Prometheus: up, memory against its 2 GB limit, evictions, clients.
+  redis-exporter:
+    image: oliver006/redis_exporter:v1.62.0
+    container_name: mundi-redis-exporter
+    mem_limit: 32m
+    environment:
+      - REDIS_ADDR=redis://${REDIS_HOST:-redis}:${REDIS_PORT:-6379}
+    restart: unless-stopped
+
   # Alarms to Roger's phone: Prometheus -> Alertmanager -> alert-notifier -> ntfy (no published ports).
   alertmanager:
     image: prom/alertmanager:v0.27.0
@@ -527,10 +553,17 @@ services:
       - "--collector.pressure"
       - "--collector.loadavg"
       - "--collector.cpu"
+      # Early warnings: disk busy, reboots, clock drift, open files, swapping. (No netdev: without the host's
+      # network namespace it would only see this container's own interface.)
+      - "--collector.diskstats"
+      - "--collector.stat"
+      - "--collector.timex"
+      - "--collector.filefd"
+      - "--collector.vmstat"
       - "--collector.filesystem"
       - "--path.rootfs=/host/root"
       - "--collector.filesystem.mount-points-exclude=^/(dev|proc|run|sys|var/lib/docker/.+|snap/.+)($$|/)"
-      # Metrics other containers write as files: the nightly backup (scripts/backup.sh).
+      # Metrics other containers write as files: the nightly backup (scripts/backup.sh), container-watch.
       - "--collector.textfile"
       - "--collector.textfile.directory=/textfile"
     volumes:
@@ -557,7 +590,8 @@ services:
     image: grafana/alloy:v1.10.2
     container_name: mundi-alloy
     mem_limit: 256m
-    command: ["run", "--storage.path=/var/lib/alloy/data", "/etc/alloy/config.alloy"]
+    # Its own health on :12345 inside the Docker network (Prometheus reads it).
+    command: ["run", "--storage.path=/var/lib/alloy/data", "--server.http.listen-addr=0.0.0.0:12345", "/etc/alloy/config.alloy"]
     volumes:
       - ./monitoring/alloy.alloy:/etc/alloy/config.alloy:ro
       - /var/run/docker.sock:/var/run/docker.sock:ro

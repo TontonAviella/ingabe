@@ -64,3 +64,30 @@ scrape_configs:
   - job_name: "alertmanager"
     static_configs:
       - targets: ["alertmanager:9093"]
+
+  # Redis, MinIO storage, and the monitoring tools themselves. (Container state arrives through node-exporter's
+  # textfile, written by container-watch.)
+  - job_name: "redis"
+    static_configs:
+      - targets: ["redis-exporter:9121"]
+
+  - job_name: "minio"
+    metrics_path: /minio/v2/metrics/cluster
+    static_configs:
+      - targets: ["minio:9000"]
+    scrape_interval: 60s
+
+  - job_name: "grafana"
+    static_configs:
+      - targets: ["grafana:3000"]
+    scrape_interval: 60s
+
+  - job_name: "loki"
+    static_configs:
+      - targets: ["loki:3100"]
+    scrape_interval: 60s
+
+  - job_name: "alloy"
+    static_configs:
+      - targets: ["alloy:12345"]
+    scrape_interval: 60s

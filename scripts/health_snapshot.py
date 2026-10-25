@@ -25,6 +25,17 @@ PROM = os.environ.get("PROMETHEUS_URL", "http://127.0.0.1:9090")
 # The app's component self-tests with their details (internal only; the app listens on 127.0.0.1:8000 here).
 APP = os.environ.get("APP_URL", "http://127.0.0.1:8000")
 TIER_AREA = {"core": "components", "ai": "ai-model", "feed": "feeds"}
+# Component checks that belong to an earlier step than "app features": the data stores and sign-in.
+CHECK_AREA = {"postgis": "database", "redis": "database", "minio": "database", "workos": "app"}
+# The order problems are traced in, bottom up (the same steps as the morning message on Roger's phone).
+STEP_OF = {"server": "1 Server", "containers": "2 Containers", "database": "3 Data stores", "app": "4 Public access",
+           "sage": "5 App features", "ai-model": "5 App features", "maps": "5 App features",
+           "components": "5 App features", "dagster": "6 Data jobs", "data": "6 Data jobs", "feeds": "7 Outside data",
+           "backup": "8 Backups", "monitoring": "9 Monitoring"}
+
+
+def step_of(area: str) -> str:
+    return STEP_OF.get(area, "9 Monitoring")
 
 # (area, check, PromQL, unit, warn at, bad at, higher is worse, where to look)
 CHECKS = [
@@ -70,6 +81,39 @@ CHECKS = [
     ("server", "Memory available", "min(node_memory_MemAvailable_bytes) / 1e9", "GB", 4, 2, False, "Grafana Server"),
     ("monitoring", "Monitoring sources not answering", "count(up == 0) or vector(0)", "count", None, 1, True,
      "Grafana Server (What Prometheus reads)"),
+    ("server", "Disk full in (forecast from the last day)",
+     '(max(node_filesystem_avail_bytes{mountpoint="/"}) / clamp_min(-deriv(max(node_filesystem_avail_bytes{mountpoint="/"})[24h:10m]), 1)) / 86400',
+     "days", 30, 7, False, "docker builder prune; MinIO photos; Loki logs"),
+    ("server", "CPU taken by the hosting company (steal)", 'avg(rate(node_cpu_seconds_total{mode="steal"}[10m]))', "share",
+     0.05, 0.1, True, "Contabo (oversold host)"),
+    ("server", "Server restarts, last 24 hours", "changes(max(node_boot_time_seconds)[24h:5m]) or vector(0)", "count", 1, None,
+     True, "Contabo control panel"),
+    ("server", "Clock synchronised", "min(node_timex_sync_status)", "updown", None, None, False, "timedatectl on the server"),
+    ("containers", "Containers running", 'count(ingabe_container_running == 1)', "count", None, None, True, "docker ps"),
+    ("containers", "Essential containers not running",
+     'count(ALERTS{alertname=~"ContainerMissing.*",alertstate="firing"}) or vector(0)', "count", None, 1, True,
+     "docker ps; the alarm names which one"),
+    ("containers", "Containers restarting (more than twice an hour)",
+     'count(changes(ingabe_container_started_at_seconds[1h]) > 2) or vector(0)', "count", None, 1, True,
+     "docker logs of that container"),
+    ("containers", "Containers near their memory limit",
+     'count(ingabe_container_memory_bytes / (ingabe_container_memory_limit_bytes > 0) > 0.9) or vector(0)',
+     "count", 1, None, True, "Grafana Components (memory)"),
+    ("database", "Postgres connections used", 'sum(pg_stat_activity_count{job="postgres"}) / max(pg_settings_max_connections{job="postgres"})',
+     "share", 0.6, 0.8, True, "the app pool, Dagster, Grafana"),
+    ("database", "Redis", "min(redis_up)", "updown", None, None, False, "container redis"),
+    ("database", "Redis memory used", "max(redis_memory_used_bytes / (redis_memory_max_bytes > 0))", "share", None, None, True,
+     "Redis maxmemory (2 GB)"),
+    ("database", "File storage (MinIO)", "min(minio_cluster_health_status)", "updown", None, None, False, "container minio"),
+    ("app", "HTTPS certificate days left", '(min(probe_ssl_earliest_cert_expiry{job="public-app"}) - time()) / 86400', "days",
+     30, 14, False, "Cloudflare SSL/TLS"),
+    ("app", "Domain nozalabs.rw days left", "vector(1820620800 - time()) / 86400", "days", 90, 60, False,
+     "the .rw registrar (AOS); update monitoring/alerts.yml after renewing"),
+    ("monitoring", "Logs arriving in Grafana (lines a minute)", "sum(rate(loki_distributor_lines_received_total[15m])) * 60",
+     "count", None, 0, False, "containers mundi-alloy, mundi-loki"),
+    ("monitoring", "Alarms that failed to reach your phone, last 24 hours",
+     "sum(increase(alertmanager_notifications_failed_total[24h])) or vector(0)", "count", None, 1, True,
+     "containers mundi-alertmanager, mundi-alert-notifier"),
     ("maps", "Maps opened by people, last 24 hours",
      'sum(increase(frontend_map_events_total{event="map_load"}[24h])) or vector(0)', "count", None, None, True,
      "Grafana Components (maps)"),
@@ -97,7 +141,8 @@ def component_rows() -> list[dict]:
         status = "ok" if not fails else "warn" if fails == 1 or r.get("tier") == "feed" else "bad"
         if age_min > 90:
             status = "unknown"
-        rows.append({"area": TIER_AREA.get(r.get("tier", ""), "components"), "check": r.get("component", name),
+        area = CHECK_AREA.get(name) or TIER_AREA.get(r.get("tier", ""), "components")
+        rows.append({"area": area, "check": r.get("component", name),
                      "status": status, "value": f'{r.get("detail", "")} ({r.get("seconds", 0):.1f} s)',
                      "where": f"check {name}; checked {age_min:.0f} min ago"})
     return rows
@@ -136,6 +181,8 @@ def _show(value: float | None, unit: str) -> str:
         return f"{value:.0%}"
     if unit == "count":
         return f"{value:.0f}"
+    if unit == "days" and value > 365:
+        return "over a year"
     if unit == "s":
         return f"{value:.1f} s" if value < 120 else f"{value / 60:.1f} min"
     return f"{value:.1f} {unit}"
@@ -185,6 +232,12 @@ def snapshot() -> dict:
     at = datetime.fromtimestamp(now, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     for c in checks:
         c["checked_at"] = at
+        c["step"] = step_of(c["area"])
+    checks.sort(key=lambda c: c["step"])
+    for a in alerts:
+        a["step"] = step_of(a["area"])
+    for h in history:
+        h["step"] = step_of(h["area"])
     if not alerts:  # the Health page reads an empty file as a failed load; one row says nothing is firing
         alerts = [{"alert": "none", "area": "", "severity": "none", "summary": "No alarm is firing", "where": "",
                    "since": at}]

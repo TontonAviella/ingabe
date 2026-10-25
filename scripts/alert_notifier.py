@@ -34,9 +34,25 @@ GRAFANA_URL = os.environ.get("GRAFANA_URL", "https://grafana.nozalabs.rw").rstri
 DAILY_HOUR_UTC = int(os.environ.get("DAILY_HOUR_UTC", "6"))
 KIGALI = timezone(timedelta(hours=2))
 
+# The order problems are traced in, bottom up: the morning check reports every step, ✓ or what is wrong.
+STEPS = [
+    ("1 Server", ["server"]),
+    ("2 Containers", ["containers"]),
+    ("3 Data stores", ["database"]),
+    ("4 Public access", ["app"]),
+    ("5 App features", ["sage", "ai-model", "maps", "components"]),
+    ("6 Data jobs", ["dagster", "data"]),
+    ("7 Outside data", ["feeds"]),
+    ("8 Backups", ["backup"]),
+    ("9 Monitoring", ["monitoring"]),
+]
+
 # What an alarm in each area means for the people using Ingabe (alerts.yml labels every rule with an area).
 AREA = {
-    "app": ("Live app", "People may not be able to open gis.nozalabs.rw."),
+    "server": ("Server", "The Contabo server is short of disk, memory or CPU, or will be soon."),
+    "containers": ("Containers", "A part of the system has stopped, keeps restarting or is running out of memory."),
+    "app": ("Public access", "People may not be able to open gis.nozalabs.rw."),
+    "feeds": ("Outside data", "An outside data source (satellite, rain, weather) is not answering; answers using it may be missing."),
     "sage": ("Sage", "Sage may fail or be slow to answer people."),
     "ai-model": ("AI model", "Sage cannot answer without its AI model."),
     "components": ("Components", "A part of the app is not doing its job; features that use it may fail."),
@@ -44,8 +60,7 @@ AREA = {
     "dagster": ("Data jobs", "Scheduled data updates (NDVI, drought, weather, land cover) are not running."),
     "data": ("Data freshness", "Sage is answering from data that is getting old."),
     "backup": ("Backups", "Last night's copy of the database is missing or bad."),
-    "database": ("Database", "The app cannot read or save data."),
-    "server": ("Server", "The server is running short of disk or memory."),
+    "database": ("Data stores", "The database, cache or file storage is failing or nearly full."),
     "monitoring": ("Monitoring", "Part of the monitoring is blind, so problems there would go unseen."),
 }
 
@@ -136,14 +151,21 @@ def daily_summary() -> dict:
         return {"title": "Morning check: monitoring problem", "priority": 4, "tags": ["rotating_light"],
                 "message": f"Could not read the monitoring on the server ({str(e)[:120]}). "
                            'Open Claude Code and say "the morning check could not read Prometheus".'}
+    lines = []
+    for step, areas in STEPS:
+        wrong = sorted({a["annotations"].get("summary", a["labels"].get("alertname", "")) for a in firing
+                        if a["labels"].get("area") in areas})
+        known = {x for _, xs in STEPS for x in xs}
+        if step.startswith("9"):  # anything with an area outside the steps is reported under monitoring
+            wrong += sorted({a["annotations"].get("summary", "") for a in firing if a["labels"].get("area") not in known})
+        lines.append(f"{step} ✓" if not wrong else f"{step} ✗ " + "; ".join(wrong[:3]))
+    footer = (f"{rules} alarms watching; {ok_checks}/{len(checks)} parts did their job; site answers in {speed}.")
     if not firing:
         return {"title": "Morning check: all clear", "priority": 2, "tags": ["sunny"],
-                "message": f"Nothing is wrong. {rules} alarms are watching; {ok_checks} of {len(checks)} parts of the "
-                           f"app did their job at the last check; the site answers in {speed}."}
-    names = sorted({f"{AREA.get(a['labels'].get('area', ''), (a['labels'].get('area', '?'),))[0]}: "
-                    f"{a['annotations'].get('summary', a['labels'].get('alertname'))}" for a in firing})
+                "message": "\n".join(lines) + "\n" + footer}
     return {"title": f"Morning check: {len(firing)} problem{'s' if len(firing) != 1 else ''}", "priority": 4,
-            "tags": ["warning"], "message": "\n".join(names[:8]) + "\nSee the Health page; Claude Code can fix them."}
+            "tags": ["warning"],
+            "message": "\n".join(lines) + "\n" + footer + "\nSee the Health page; Claude Code can fix them."}
 
 
 def _daily_loop() -> None:

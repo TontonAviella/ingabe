@@ -103,12 +103,16 @@ def test_the_morning_check_says_all_clear_or_lists_problems(monkeypatch):
     monkeypatch.setattr(notifier.urllib.request, "urlopen", fake_urlopen)
     clear = notifier.daily_summary()
     assert clear["title"] == "Morning check: all clear"
-    assert "31 alarms are watching; 19 of 19 parts" in clear["message"] and "0.3 s" in clear["message"]
+    lines = clear["message"].splitlines()
+    assert lines[:9] == ["1 Server ✓", "2 Containers ✓", "3 Data stores ✓", "4 Public access ✓", "5 App features ✓",
+                         "6 Data jobs ✓", "7 Outside data ✓", "8 Backups ✓", "9 Monitoring ✓"]
+    assert "31 alarms watching; 19/19 parts did their job" in lines[9] and "0.3 s" in lines[9]
     state["alerts"] = [{"state": "firing", "labels": {"area": "sage", "alertname": "SageSlow"},
                         "annotations": {"summary": "1 in 10 Sage answers took over 2 minutes"}}]
     problem = notifier.daily_summary()
     assert problem["title"] == "Morning check: 1 problem"
-    assert "Sage: 1 in 10 Sage answers took over 2 minutes" in problem["message"]
+    assert "5 App features ✗ 1 in 10 Sage answers took over 2 minutes" in problem["message"].splitlines()
+    assert "1 Server ✓" in problem["message"].splitlines()
 
 
 def test_the_morning_check_reports_when_monitoring_is_unreadable(monkeypatch):
@@ -118,3 +122,10 @@ def test_the_morning_check_reports_when_monitoring_is_unreadable(monkeypatch):
     monkeypatch.setattr(notifier.urllib.request, "urlopen", broken)
     msg = notifier.daily_summary()
     assert msg["title"] == "Morning check: monitoring problem" and "prometheus down" in msg["message"]
+
+
+def test_new_areas_read_plainly():
+    [msg] = notifier.format_group(_payload(alertname="DiskFullWithin7Days", area="server", severity="warning"))
+    assert msg["title"] == "Needs a look: Server" and "will be soon" in msg["message"]
+    [msg] = notifier.format_group(_payload(alertname="ContainerKilledOutOfMemory", area="containers"))
+    assert msg["title"] == "RED: Containers"

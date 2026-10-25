@@ -1,7 +1,7 @@
 {
  "uid": "ingabe-health",
  "title": "Ingabe Health",
- "description": "What is down and where: every firing alert, then one tile per area.",
+ "description": "What is down and where, in the order problems are traced: 1 server, 2 containers, 3 data stores, 4 public access, 5 app features, 6 data jobs, 7 outside data, 8 backups, 9 monitoring.",
  "tags": [
   "ingabe-health",
   "overview"
@@ -19,8 +19,8 @@
   {
    "id": 1,
    "type": "table",
-   "title": "Firing now (area, what, where to look)",
-   "description": "Every Prometheus alert firing now. 'where' is in the alert's annotations (Prometheus :9090/alerts).",
+   "title": "Firing now, by step (where to look is in each alarm)",
+   "description": "",
    "datasource": {
     "type": "prometheus",
     "uid": "prometheus"
@@ -29,7 +29,7 @@
     "x": 0,
     "y": 0,
     "w": 24,
-    "h": 8
+    "h": 7
    },
    "targets": [
     {
@@ -55,7 +55,7 @@
        "instance": true
       },
       "renameByName": {
-       "alertname": "Alert",
+       "alertname": "Alarm",
        "area": "Area",
        "severity": "Severity",
        "job": "Job"
@@ -72,67 +72,22 @@
    }
   },
   {
-   "id": 99,
-   "type": "stat",
-   "title": "Components failing",
-   "description": "",
-   "datasource": {
-    "type": "prometheus",
-    "uid": "prometheus"
-   },
+   "id": 2,
+   "type": "row",
+   "title": "1 Server (Contabo)",
+   "collapsed": false,
+   "panels": [],
    "gridPos": {
     "x": 0,
-    "y": 28,
-    "w": 6,
-    "h": 4
-   },
-   "targets": [
-    {
-     "refId": "A",
-     "datasource": {
-      "type": "prometheus",
-      "uid": "prometheus"
-     },
-     "expr": "count(component_check_ok == 0) or vector(0)",
-     "instant": true
-    }
-   ],
-   "fieldConfig": {
-    "defaults": {
-     "unit": "none",
-     "decimals": 0,
-     "mappings": [],
-     "thresholds": {
-      "mode": "absolute",
-      "steps": [
-       {
-        "color": "green",
-        "value": null
-       },
-       {
-        "color": "red",
-        "value": 1
-       }
-      ]
-     }
-    },
-    "overrides": []
-   },
-   "options": {
-    "colorMode": "background",
-    "graphMode": "none",
-    "reduceOptions": {
-     "calcs": [
-      "lastNotNull"
-     ]
-    },
-    "textMode": "value_and_name"
+    "y": 7,
+    "w": 24,
+    "h": 1
    }
   },
   {
-   "id": 2,
+   "id": 3,
    "type": "stat",
-   "title": "Live app (from outside)",
+   "title": "Disk used",
    "description": "",
    "datasource": {
     "type": "prometheus",
@@ -151,7 +106,317 @@
       "type": "prometheus",
       "uid": "prometheus"
      },
-     "expr": "min(probe_success{job=\"public-app\"})",
+     "expr": "1 - node_filesystem_avail_bytes{mountpoint=\"/\"} / node_filesystem_size_bytes{mountpoint=\"/\"}",
+     "instant": true
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "percentunit",
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "green",
+        "value": null
+       },
+       {
+        "color": "orange",
+        "value": 0.75
+       },
+       {
+        "color": "red",
+        "value": 0.85
+       }
+      ]
+     },
+     "mappings": [],
+     "decimals": 0
+    },
+    "overrides": []
+   },
+   "options": {
+    "colorMode": "background",
+    "graphMode": "none",
+    "reduceOptions": {
+     "calcs": [
+      "lastNotNull"
+     ]
+    },
+    "textMode": "value_and_name"
+   }
+  },
+  {
+   "id": 4,
+   "type": "stat",
+   "title": "Disk full in (days)",
+   "description": "",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prometheus"
+   },
+   "gridPos": {
+    "x": 4,
+    "y": 8,
+    "w": 4,
+    "h": 4
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus"
+     },
+     "expr": "(max(node_filesystem_avail_bytes{mountpoint=\"/\"}) / clamp_min(-deriv(max(node_filesystem_avail_bytes{mountpoint=\"/\"})[24h:10m]), 1)) / 86400",
+     "instant": true
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "none",
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "red",
+        "value": null
+       },
+       {
+        "color": "orange",
+        "value": 30
+       },
+       {
+        "color": "green",
+        "value": 7
+       }
+      ]
+     },
+     "mappings": [],
+     "decimals": 0
+    },
+    "overrides": []
+   },
+   "options": {
+    "colorMode": "background",
+    "graphMode": "none",
+    "reduceOptions": {
+     "calcs": [
+      "lastNotNull"
+     ]
+    },
+    "textMode": "value_and_name"
+   }
+  },
+  {
+   "id": 5,
+   "type": "stat",
+   "title": "Memory available",
+   "description": "",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prometheus"
+   },
+   "gridPos": {
+    "x": 8,
+    "y": 8,
+    "w": 4,
+    "h": 4
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus"
+     },
+     "expr": "node_memory_MemAvailable_bytes",
+     "instant": true
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "bytes",
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "red",
+        "value": null
+       },
+       {
+        "color": "orange",
+        "value": 4000000000.0
+       },
+       {
+        "color": "green",
+        "value": 2000000000.0
+       }
+      ]
+     },
+     "mappings": [],
+     "decimals": 1
+    },
+    "overrides": []
+   },
+   "options": {
+    "colorMode": "background",
+    "graphMode": "none",
+    "reduceOptions": {
+     "calcs": [
+      "lastNotNull"
+     ]
+    },
+    "textMode": "value_and_name"
+   }
+  },
+  {
+   "id": 6,
+   "type": "stat",
+   "title": "CPU load (5 min, 8 cores)",
+   "description": "",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prometheus"
+   },
+   "gridPos": {
+    "x": 12,
+    "y": 8,
+    "w": 4,
+    "h": 4
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus"
+     },
+     "expr": "node_load5",
+     "instant": true
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "none",
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "green",
+        "value": null
+       },
+       {
+        "color": "orange",
+        "value": 8
+       },
+       {
+        "color": "red",
+        "value": 12
+       }
+      ]
+     },
+     "mappings": [],
+     "decimals": 1
+    },
+    "overrides": []
+   },
+   "options": {
+    "colorMode": "background",
+    "graphMode": "none",
+    "reduceOptions": {
+     "calcs": [
+      "lastNotNull"
+     ]
+    },
+    "textMode": "value_and_name"
+   }
+  },
+  {
+   "id": 7,
+   "type": "stat",
+   "title": "CPU taken by host",
+   "description": "",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prometheus"
+   },
+   "gridPos": {
+    "x": 16,
+    "y": 8,
+    "w": 4,
+    "h": 4
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus"
+     },
+     "expr": "avg(rate(node_cpu_seconds_total{mode=\"steal\"}[10m]))",
+     "instant": true
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "percentunit",
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "green",
+        "value": null
+       },
+       {
+        "color": "orange",
+        "value": 0.05
+       },
+       {
+        "color": "red",
+        "value": 0.1
+       }
+      ]
+     },
+     "mappings": [],
+     "decimals": 1
+    },
+    "overrides": []
+   },
+   "options": {
+    "colorMode": "background",
+    "graphMode": "none",
+    "reduceOptions": {
+     "calcs": [
+      "lastNotNull"
+     ]
+    },
+    "textMode": "value_and_name"
+   }
+  },
+  {
+   "id": 8,
+   "type": "stat",
+   "title": "Clock synced",
+   "description": "",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prometheus"
+   },
+   "gridPos": {
+    "x": 20,
+    "y": 8,
+    "w": 4,
+    "h": 4
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus"
+     },
+     "expr": "min(node_timex_sync_status)",
      "instant": true
     }
    ],
@@ -201,80 +466,31 @@
    }
   },
   {
-   "id": 3,
-   "type": "stat",
-   "title": "App answer time",
-   "description": "",
-   "datasource": {
-    "type": "prometheus",
-    "uid": "prometheus"
-   },
+   "id": 9,
+   "type": "row",
+   "title": "2 Containers",
+   "collapsed": false,
+   "panels": [],
    "gridPos": {
-    "x": 4,
-    "y": 8,
-    "w": 4,
-    "h": 4
-   },
-   "targets": [
-    {
-     "refId": "A",
-     "datasource": {
-      "type": "prometheus",
-      "uid": "prometheus"
-     },
-     "expr": "max(probe_duration_seconds{job=\"public-app\"})",
-     "instant": true
-    }
-   ],
-   "fieldConfig": {
-    "defaults": {
-     "unit": "s",
-     "thresholds": {
-      "mode": "absolute",
-      "steps": [
-       {
-        "color": "green",
-        "value": null
-       },
-       {
-        "color": "orange",
-        "value": 1.5
-       },
-       {
-        "color": "red",
-        "value": 3
-       }
-      ]
-     },
-     "mappings": [],
-     "decimals": 2
-    },
-    "overrides": []
-   },
-   "options": {
-    "colorMode": "background",
-    "graphMode": "none",
-    "reduceOptions": {
-     "calcs": [
-      "lastNotNull"
-     ]
-    },
-    "textMode": "value_and_name"
+    "x": 0,
+    "y": 12,
+    "w": 24,
+    "h": 1
    }
   },
   {
-   "id": 4,
+   "id": 10,
    "type": "stat",
-   "title": "Sage turns failed (1h)",
+   "title": "Containers running",
    "description": "",
    "datasource": {
     "type": "prometheus",
     "uid": "prometheus"
    },
    "gridPos": {
-    "x": 8,
-    "y": 8,
-    "w": 4,
+    "x": 0,
+    "y": 13,
+    "w": 6,
     "h": 4
    },
    "targets": [
@@ -284,7 +500,7 @@
       "type": "prometheus",
       "uid": "prometheus"
      },
-     "expr": "((sum(increase(sage_turns_total{outcome=\"failed\"}[1h])) or vector(0)) + (sum(increase(sage_llm_errors_total{stage=\"final\",kind!=\"context\"}[1h])) or vector(0)))",
+     "expr": "count(ingabe_container_running == 1)",
      "instant": true
     }
    ],
@@ -297,14 +513,6 @@
        {
         "color": "green",
         "value": null
-       },
-       {
-        "color": "orange",
-        "value": 1
-       },
-       {
-        "color": "red",
-        "value": 3
        }
       ]
      },
@@ -325,9 +533,67 @@
    }
   },
   {
-   "id": 5,
+   "id": 11,
    "type": "stat",
-   "title": "AI model errors (1h)",
+   "title": "Essential missing",
+   "description": "",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prometheus"
+   },
+   "gridPos": {
+    "x": 6,
+    "y": 13,
+    "w": 6,
+    "h": 4
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus"
+     },
+     "expr": "count(ALERTS{alertname=~\"ContainerMissing.*\",alertstate=\"firing\"}) or vector(0)",
+     "instant": true
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "none",
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "green",
+        "value": null
+       },
+       {
+        "color": "red",
+        "value": 1
+       }
+      ]
+     },
+     "mappings": [],
+     "decimals": 0
+    },
+    "overrides": []
+   },
+   "options": {
+    "colorMode": "background",
+    "graphMode": "none",
+    "reduceOptions": {
+     "calcs": [
+      "lastNotNull"
+     ]
+    },
+    "textMode": "value_and_name"
+   }
+  },
+  {
+   "id": 12,
+   "type": "stat",
+   "title": "Restarting (1h)",
    "description": "",
    "datasource": {
     "type": "prometheus",
@@ -335,8 +601,8 @@
    },
    "gridPos": {
     "x": 12,
-    "y": 8,
-    "w": 4,
+    "y": 13,
+    "w": 6,
     "h": 4
    },
    "targets": [
@@ -346,7 +612,7 @@
       "type": "prometheus",
       "uid": "prometheus"
      },
-     "expr": "sum(increase(sage_llm_errors_total[1h])) or vector(0)",
+     "expr": "count(changes(ingabe_container_started_at_seconds[1h]) > 2) or vector(0)",
      "instant": true
     }
    ],
@@ -361,12 +627,8 @@
         "value": null
        },
        {
-        "color": "orange",
-        "value": 1
-       },
-       {
         "color": "red",
-        "value": 5
+        "value": 1
        }
       ]
      },
@@ -387,18 +649,18 @@
    }
   },
   {
-   "id": 6,
+   "id": 13,
    "type": "stat",
-   "title": "Days of AI credit left",
+   "title": "Near memory limit",
    "description": "",
    "datasource": {
     "type": "prometheus",
     "uid": "prometheus"
    },
    "gridPos": {
-    "x": 16,
-    "y": 8,
-    "w": 4,
+    "x": 18,
+    "y": 13,
+    "w": 6,
     "h": 4
    },
    "targets": [
@@ -408,7 +670,7 @@
       "type": "prometheus",
       "uid": "prometheus"
      },
-     "expr": "(sage_llm_credit_expires_timestamp_seconds - time()) / 86400",
+     "expr": "count(ingabe_container_memory_bytes / (ingabe_container_memory_limit_bytes > 0) > 0.9) or vector(0)",
      "instant": true
     }
    ],
@@ -419,21 +681,17 @@
       "mode": "absolute",
       "steps": [
        {
-        "color": "red",
+        "color": "green",
         "value": null
        },
        {
         "color": "orange",
-        "value": 14
-       },
-       {
-        "color": "green",
-        "value": 7
+        "value": 1
        }
       ]
      },
      "mappings": [],
-     "decimals": 1
+     "decimals": 0
     },
     "overrides": []
    },
@@ -449,7 +707,20 @@
    }
   },
   {
-   "id": 7,
+   "id": 14,
+   "type": "row",
+   "title": "3 Data stores",
+   "collapsed": false,
+   "panels": [],
+   "gridPos": {
+    "x": 0,
+    "y": 17,
+    "w": 24,
+    "h": 1
+   }
+  },
+  {
+   "id": 15,
    "type": "stat",
    "title": "Postgres",
    "description": "",
@@ -458,8 +729,8 @@
     "uid": "prometheus"
    },
    "gridPos": {
-    "x": 20,
-    "y": 8,
+    "x": 0,
+    "y": 18,
     "w": 4,
     "h": 4
    },
@@ -520,9 +791,280 @@
    }
   },
   {
-   "id": 8,
+   "id": 16,
    "type": "stat",
-   "title": "Dagster scheduler heartbeat",
+   "title": "Postgres connections",
+   "description": "",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prometheus"
+   },
+   "gridPos": {
+    "x": 4,
+    "y": 18,
+    "w": 4,
+    "h": 4
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus"
+     },
+     "expr": "sum(pg_stat_activity_count{job=\"postgres\"}) / max(pg_settings_max_connections{job=\"postgres\"})",
+     "instant": true
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "percentunit",
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "green",
+        "value": null
+       },
+       {
+        "color": "orange",
+        "value": 0.6
+       },
+       {
+        "color": "red",
+        "value": 0.8
+       }
+      ]
+     },
+     "mappings": [],
+     "decimals": 0
+    },
+    "overrides": []
+   },
+   "options": {
+    "colorMode": "background",
+    "graphMode": "none",
+    "reduceOptions": {
+     "calcs": [
+      "lastNotNull"
+     ]
+    },
+    "textMode": "value_and_name"
+   }
+  },
+  {
+   "id": 17,
+   "type": "stat",
+   "title": "Redis",
+   "description": "",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prometheus"
+   },
+   "gridPos": {
+    "x": 8,
+    "y": 18,
+    "w": 4,
+    "h": 4
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus"
+     },
+     "expr": "min(redis_up)",
+     "instant": true
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "none",
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "red",
+        "value": null
+       },
+       {
+        "color": "green",
+        "value": 1
+       }
+      ]
+     },
+     "mappings": [
+      {
+       "type": "value",
+       "options": {
+        "0": {
+         "text": "DOWN",
+         "color": "red"
+        },
+        "1": {
+         "text": "UP",
+         "color": "green"
+        }
+       }
+      }
+     ]
+    },
+    "overrides": []
+   },
+   "options": {
+    "colorMode": "background",
+    "graphMode": "none",
+    "reduceOptions": {
+     "calcs": [
+      "lastNotNull"
+     ]
+    },
+    "textMode": "value_and_name"
+   }
+  },
+  {
+   "id": 18,
+   "type": "stat",
+   "title": "Redis memory",
+   "description": "",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prometheus"
+   },
+   "gridPos": {
+    "x": 12,
+    "y": 18,
+    "w": 4,
+    "h": 4
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus"
+     },
+     "expr": "max(redis_memory_used_bytes / (redis_memory_max_bytes > 0))",
+     "instant": true
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "percentunit",
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "green",
+        "value": null
+       }
+      ]
+     },
+     "mappings": [],
+     "decimals": 0
+    },
+    "overrides": []
+   },
+   "options": {
+    "colorMode": "background",
+    "graphMode": "none",
+    "reduceOptions": {
+     "calcs": [
+      "lastNotNull"
+     ]
+    },
+    "textMode": "value_and_name"
+   }
+  },
+  {
+   "id": 19,
+   "type": "stat",
+   "title": "MinIO storage",
+   "description": "",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prometheus"
+   },
+   "gridPos": {
+    "x": 16,
+    "y": 18,
+    "w": 4,
+    "h": 4
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus"
+     },
+     "expr": "min(minio_cluster_health_status)",
+     "instant": true
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "none",
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "red",
+        "value": null
+       },
+       {
+        "color": "green",
+        "value": 1
+       }
+      ]
+     },
+     "mappings": [
+      {
+       "type": "value",
+       "options": {
+        "0": {
+         "text": "DOWN",
+         "color": "red"
+        },
+        "1": {
+         "text": "UP",
+         "color": "green"
+        }
+       }
+      }
+     ]
+    },
+    "overrides": []
+   },
+   "options": {
+    "colorMode": "background",
+    "graphMode": "none",
+    "reduceOptions": {
+     "calcs": [
+      "lastNotNull"
+     ]
+    },
+    "textMode": "value_and_name"
+   }
+  },
+  {
+   "id": 20,
+   "type": "row",
+   "title": "4 Public access",
+   "collapsed": false,
+   "panels": [],
+   "gridPos": {
+    "x": 0,
+    "y": 22,
+    "w": 24,
+    "h": 1
+   }
+  },
+  {
+   "id": 21,
+   "type": "stat",
+   "title": "Live app (outside)",
    "description": "",
    "datasource": {
     "type": "prometheus",
@@ -530,8 +1072,535 @@
    },
    "gridPos": {
     "x": 0,
-    "y": 12,
-    "w": 4,
+    "y": 23,
+    "w": 6,
+    "h": 4
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus"
+     },
+     "expr": "min(probe_success{job=\"public-app\"})",
+     "instant": true
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "none",
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "red",
+        "value": null
+       },
+       {
+        "color": "green",
+        "value": 1
+       }
+      ]
+     },
+     "mappings": [
+      {
+       "type": "value",
+       "options": {
+        "0": {
+         "text": "DOWN",
+         "color": "red"
+        },
+        "1": {
+         "text": "UP",
+         "color": "green"
+        }
+       }
+      }
+     ]
+    },
+    "overrides": []
+   },
+   "options": {
+    "colorMode": "background",
+    "graphMode": "none",
+    "reduceOptions": {
+     "calcs": [
+      "lastNotNull"
+     ]
+    },
+    "textMode": "value_and_name"
+   }
+  },
+  {
+   "id": 22,
+   "type": "stat",
+   "title": "Answer time",
+   "description": "",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prometheus"
+   },
+   "gridPos": {
+    "x": 6,
+    "y": 23,
+    "w": 6,
+    "h": 4
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus"
+     },
+     "expr": "max(probe_duration_seconds{job=\"public-app\"})",
+     "instant": true
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "s",
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "green",
+        "value": null
+       },
+       {
+        "color": "orange",
+        "value": 1.5
+       },
+       {
+        "color": "red",
+        "value": 3
+       }
+      ]
+     },
+     "mappings": [],
+     "decimals": 2
+    },
+    "overrides": []
+   },
+   "options": {
+    "colorMode": "background",
+    "graphMode": "none",
+    "reduceOptions": {
+     "calcs": [
+      "lastNotNull"
+     ]
+    },
+    "textMode": "value_and_name"
+   }
+  },
+  {
+   "id": 23,
+   "type": "stat",
+   "title": "Certificate days left",
+   "description": "",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prometheus"
+   },
+   "gridPos": {
+    "x": 12,
+    "y": 23,
+    "w": 6,
+    "h": 4
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus"
+     },
+     "expr": "(min(probe_ssl_earliest_cert_expiry{job=\"public-app\"}) - time()) / 86400",
+     "instant": true
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "none",
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "red",
+        "value": null
+       },
+       {
+        "color": "orange",
+        "value": 30
+       },
+       {
+        "color": "green",
+        "value": 14
+       }
+      ]
+     },
+     "mappings": [],
+     "decimals": 0
+    },
+    "overrides": []
+   },
+   "options": {
+    "colorMode": "background",
+    "graphMode": "none",
+    "reduceOptions": {
+     "calcs": [
+      "lastNotNull"
+     ]
+    },
+    "textMode": "value_and_name"
+   }
+  },
+  {
+   "id": 24,
+   "type": "stat",
+   "title": "Domain days left",
+   "description": "",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prometheus"
+   },
+   "gridPos": {
+    "x": 18,
+    "y": 23,
+    "w": 6,
+    "h": 4
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus"
+     },
+     "expr": "vector(1820620800 - time()) / 86400",
+     "instant": true
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "none",
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "red",
+        "value": null
+       },
+       {
+        "color": "orange",
+        "value": 90
+       },
+       {
+        "color": "green",
+        "value": 60
+       }
+      ]
+     },
+     "mappings": [],
+     "decimals": 0
+    },
+    "overrides": []
+   },
+   "options": {
+    "colorMode": "background",
+    "graphMode": "none",
+    "reduceOptions": {
+     "calcs": [
+      "lastNotNull"
+     ]
+    },
+    "textMode": "value_and_name"
+   }
+  },
+  {
+   "id": 25,
+   "type": "row",
+   "title": "5 App features",
+   "collapsed": false,
+   "panels": [],
+   "gridPos": {
+    "x": 0,
+    "y": 27,
+    "w": 24,
+    "h": 1
+   }
+  },
+  {
+   "id": 26,
+   "type": "stat",
+   "title": "Sage turns failed (1h)",
+   "description": "",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prometheus"
+   },
+   "gridPos": {
+    "x": 0,
+    "y": 28,
+    "w": 6,
+    "h": 4
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus"
+     },
+     "expr": "(sum(increase(sage_turns_total{outcome=\"failed\"}[1h])) or vector(0)) + (sum(increase(sage_llm_errors_total{stage=\"final\",kind!=\"context\"}[1h])) or vector(0))",
+     "instant": true
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "none",
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "green",
+        "value": null
+       },
+       {
+        "color": "orange",
+        "value": 1
+       },
+       {
+        "color": "red",
+        "value": 3
+       }
+      ]
+     },
+     "mappings": [],
+     "decimals": 0
+    },
+    "overrides": []
+   },
+   "options": {
+    "colorMode": "background",
+    "graphMode": "none",
+    "reduceOptions": {
+     "calcs": [
+      "lastNotNull"
+     ]
+    },
+    "textMode": "value_and_name"
+   }
+  },
+  {
+   "id": 27,
+   "type": "stat",
+   "title": "AI credit days left",
+   "description": "",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prometheus"
+   },
+   "gridPos": {
+    "x": 6,
+    "y": 28,
+    "w": 6,
+    "h": 4
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus"
+     },
+     "expr": "(sage_llm_credit_expires_timestamp_seconds - time()) / 86400",
+     "instant": true
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "none",
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "red",
+        "value": null
+       },
+       {
+        "color": "orange",
+        "value": 14
+       },
+       {
+        "color": "green",
+        "value": 7
+       }
+      ]
+     },
+     "mappings": [],
+     "decimals": 1
+    },
+    "overrides": []
+   },
+   "options": {
+    "colorMode": "background",
+    "graphMode": "none",
+    "reduceOptions": {
+     "calcs": [
+      "lastNotNull"
+     ]
+    },
+    "textMode": "value_and_name"
+   }
+  },
+  {
+   "id": 28,
+   "type": "stat",
+   "title": "Components failing",
+   "description": "",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prometheus"
+   },
+   "gridPos": {
+    "x": 12,
+    "y": 28,
+    "w": 6,
+    "h": 4
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus"
+     },
+     "expr": "count(component_check_ok{tier=~\"core|ai\"} == 0) or vector(0)",
+     "instant": true
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "none",
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "green",
+        "value": null
+       },
+       {
+        "color": "red",
+        "value": 1
+       }
+      ]
+     },
+     "mappings": [],
+     "decimals": 0
+    },
+    "overrides": []
+   },
+   "options": {
+    "colorMode": "background",
+    "graphMode": "none",
+    "reduceOptions": {
+     "calcs": [
+      "lastNotNull"
+     ]
+    },
+    "textMode": "value_and_name"
+   }
+  },
+  {
+   "id": 29,
+   "type": "stat",
+   "title": "Map errors in browsers (1h)",
+   "description": "",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prometheus"
+   },
+   "gridPos": {
+    "x": 18,
+    "y": 28,
+    "w": 6,
+    "h": 4
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus"
+     },
+     "expr": "sum(increase(frontend_map_events_total{event=~\"map_error|deck_error|webgl_lost\"}[1h])) or vector(0)",
+     "instant": true
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "none",
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "green",
+        "value": null
+       },
+       {
+        "color": "orange",
+        "value": 1
+       },
+       {
+        "color": "red",
+        "value": 5
+       }
+      ]
+     },
+     "mappings": [],
+     "decimals": 0
+    },
+    "overrides": []
+   },
+   "options": {
+    "colorMode": "background",
+    "graphMode": "none",
+    "reduceOptions": {
+     "calcs": [
+      "lastNotNull"
+     ]
+    },
+    "textMode": "value_and_name"
+   }
+  },
+  {
+   "id": 30,
+   "type": "row",
+   "title": "6 Data jobs",
+   "collapsed": false,
+   "panels": [],
+   "gridPos": {
+    "x": 0,
+    "y": 32,
+    "w": 24,
+    "h": 1
+   }
+  },
+  {
+   "id": 31,
+   "type": "stat",
+   "title": "Scheduler heartbeat",
+   "description": "",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prometheus"
+   },
+   "gridPos": {
+    "x": 0,
+    "y": 33,
+    "w": 8,
     "h": 4
    },
    "targets": [
@@ -582,18 +1651,18 @@
    }
   },
   {
-   "id": 9,
+   "id": 32,
    "type": "stat",
-   "title": "Dagster jobs failing",
+   "title": "Jobs failing",
    "description": "",
    "datasource": {
     "type": "prometheus",
     "uid": "prometheus"
    },
    "gridPos": {
-    "x": 4,
-    "y": 12,
-    "w": 4,
+    "x": 8,
+    "y": 33,
+    "w": 8,
     "h": 4
    },
    "targets": [
@@ -640,7 +1709,278 @@
    }
   },
   {
-   "id": 10,
+   "id": 33,
+   "type": "stat",
+   "title": "Stalest data (days)",
+   "description": "",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prometheus"
+   },
+   "gridPos": {
+    "x": 16,
+    "y": 33,
+    "w": 8,
+    "h": 4
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus"
+     },
+     "expr": "max(pipeline_cache_age_seconds / 86400)",
+     "instant": true
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "d",
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "green",
+        "value": null
+       },
+       {
+        "color": "orange",
+        "value": 7
+       },
+       {
+        "color": "red",
+        "value": 9
+       }
+      ]
+     },
+     "mappings": [],
+     "decimals": 1
+    },
+    "overrides": []
+   },
+   "options": {
+    "colorMode": "background",
+    "graphMode": "none",
+    "reduceOptions": {
+     "calcs": [
+      "lastNotNull"
+     ]
+    },
+    "textMode": "value_and_name"
+   }
+  },
+  {
+   "id": 34,
+   "type": "row",
+   "title": "7 Outside data",
+   "collapsed": false,
+   "panels": [],
+   "gridPos": {
+    "x": 0,
+    "y": 37,
+    "w": 24,
+    "h": 1
+   }
+  },
+  {
+   "id": 35,
+   "type": "stat",
+   "title": "Feeds failing",
+   "description": "",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prometheus"
+   },
+   "gridPos": {
+    "x": 0,
+    "y": 38,
+    "w": 12,
+    "h": 4
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus"
+     },
+     "expr": "count(component_check_ok{tier=\"feed\"} == 0) or vector(0)",
+     "instant": true
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "none",
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "green",
+        "value": null
+       },
+       {
+        "color": "orange",
+        "value": 1
+       }
+      ]
+     },
+     "mappings": [],
+     "decimals": 0
+    },
+    "overrides": []
+   },
+   "options": {
+    "colorMode": "background",
+    "graphMode": "none",
+    "reduceOptions": {
+     "calcs": [
+      "lastNotNull"
+     ]
+    },
+    "textMode": "value_and_name"
+   }
+  },
+  {
+   "id": 36,
+   "type": "stat",
+   "title": "Feeds checked",
+   "description": "",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prometheus"
+   },
+   "gridPos": {
+    "x": 12,
+    "y": 38,
+    "w": 12,
+    "h": 4
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus"
+     },
+     "expr": "count(component_check_ok{tier=\"feed\"})",
+     "instant": true
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "none",
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "green",
+        "value": null
+       }
+      ]
+     },
+     "mappings": [],
+     "decimals": 0
+    },
+    "overrides": []
+   },
+   "options": {
+    "colorMode": "background",
+    "graphMode": "none",
+    "reduceOptions": {
+     "calcs": [
+      "lastNotNull"
+     ]
+    },
+    "textMode": "value_and_name"
+   }
+  },
+  {
+   "id": 37,
+   "type": "row",
+   "title": "8 Backups",
+   "collapsed": false,
+   "panels": [],
+   "gridPos": {
+    "x": 0,
+    "y": 42,
+    "w": 24,
+    "h": 1
+   }
+  },
+  {
+   "id": 38,
+   "type": "stat",
+   "title": "Last backup run",
+   "description": "",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prometheus"
+   },
+   "gridPos": {
+    "x": 0,
+    "y": 43,
+    "w": 8,
+    "h": 4
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus"
+     },
+     "expr": "backup_last_run_success",
+     "instant": true
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "none",
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "red",
+        "value": null
+       },
+       {
+        "color": "green",
+        "value": 1
+       }
+      ]
+     },
+     "mappings": [
+      {
+       "type": "value",
+       "options": {
+        "0": {
+         "text": "FAILED",
+         "color": "red"
+        },
+        "1": {
+         "text": "OK",
+         "color": "green"
+        }
+       }
+      }
+     ]
+    },
+    "overrides": []
+   },
+   "options": {
+    "colorMode": "background",
+    "graphMode": "none",
+    "reduceOptions": {
+     "calcs": [
+      "lastNotNull"
+     ]
+    },
+    "textMode": "value_and_name"
+   }
+  },
+  {
+   "id": 39,
    "type": "stat",
    "title": "Hours since good backup",
    "description": "",
@@ -650,8 +1990,8 @@
    },
    "gridPos": {
     "x": 8,
-    "y": 12,
-    "w": 4,
+    "y": 43,
+    "w": 8,
     "h": 4
    },
    "targets": [
@@ -702,18 +2042,18 @@
    }
   },
   {
-   "id": 11,
+   "id": 40,
    "type": "stat",
-   "title": "Stalest data cache",
+   "title": "Backup size",
    "description": "",
    "datasource": {
     "type": "prometheus",
     "uid": "prometheus"
    },
    "gridPos": {
-    "x": 12,
-    "y": 12,
-    "w": 4,
+    "x": 16,
+    "y": 43,
+    "w": 8,
     "h": 4
    },
    "targets": [
@@ -723,27 +2063,19 @@
       "type": "prometheus",
       "uid": "prometheus"
      },
-     "expr": "max(pipeline_cache_age_seconds) / 86400",
+     "expr": "backup_last_size_bytes",
      "instant": true
     }
    ],
    "fieldConfig": {
     "defaults": {
-     "unit": "d",
+     "unit": "bytes",
      "thresholds": {
       "mode": "absolute",
       "steps": [
        {
         "color": "green",
         "value": null
-       },
-       {
-        "color": "orange",
-        "value": 7
-       },
-       {
-        "color": "red",
-        "value": 9
        }
       ]
      },
@@ -764,18 +2096,31 @@
    }
   },
   {
-   "id": 12,
+   "id": 41,
+   "type": "row",
+   "title": "9 Monitoring",
+   "collapsed": false,
+   "panels": [],
+   "gridPos": {
+    "x": 0,
+    "y": 47,
+    "w": 24,
+    "h": 1
+   }
+  },
+  {
+   "id": 42,
    "type": "stat",
-   "title": "Disk used",
+   "title": "Sources not answering",
    "description": "",
    "datasource": {
     "type": "prometheus",
     "uid": "prometheus"
    },
    "gridPos": {
-    "x": 16,
-    "y": 12,
-    "w": 4,
+    "x": 0,
+    "y": 48,
+    "w": 6,
     "h": 4
    },
    "targets": [
@@ -785,13 +2130,13 @@
       "type": "prometheus",
       "uid": "prometheus"
      },
-     "expr": "1 - node_filesystem_avail_bytes{mountpoint=\"/\"} / node_filesystem_size_bytes{mountpoint=\"/\"}",
+     "expr": "count(up == 0) or vector(0)",
      "instant": true
     }
    ],
    "fieldConfig": {
     "defaults": {
-     "unit": "percentunit",
+     "unit": "none",
      "thresholds": {
       "mode": "absolute",
       "steps": [
@@ -800,12 +2145,8 @@
         "value": null
        },
        {
-        "color": "orange",
-        "value": 0.75
-       },
-       {
         "color": "red",
-        "value": 0.85
+        "value": 1
        }
       ]
      },
@@ -826,18 +2167,18 @@
    }
   },
   {
-   "id": 13,
+   "id": 43,
    "type": "stat",
-   "title": "Memory available",
+   "title": "Logs arriving (lines/min)",
    "description": "",
    "datasource": {
     "type": "prometheus",
     "uid": "prometheus"
    },
    "gridPos": {
-    "x": 20,
-    "y": 12,
-    "w": 4,
+    "x": 6,
+    "y": 48,
+    "w": 6,
     "h": 4
    },
    "targets": [
@@ -847,13 +2188,13 @@
       "type": "prometheus",
       "uid": "prometheus"
      },
-     "expr": "node_memory_MemAvailable_bytes",
+     "expr": "sum(rate(loki_distributor_lines_received_total[15m])) * 60",
      "instant": true
     }
    ],
    "fieldConfig": {
     "defaults": {
-     "unit": "bytes",
+     "unit": "none",
      "thresholds": {
       "mode": "absolute",
       "steps": [
@@ -862,17 +2203,13 @@
         "value": null
        },
        {
-        "color": "orange",
-        "value": 4000000000.0
-       },
-       {
         "color": "green",
-        "value": 2000000000.0
+        "value": 1
        }
       ]
      },
      "mappings": [],
-     "decimals": 1
+     "decimals": 0
     },
     "overrides": []
    },
@@ -888,7 +2225,119 @@
    }
   },
   {
-   "id": 14,
+   "id": 44,
+   "type": "stat",
+   "title": "Phone alarm failures (24h)",
+   "description": "",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prometheus"
+   },
+   "gridPos": {
+    "x": 12,
+    "y": 48,
+    "w": 6,
+    "h": 4
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus"
+     },
+     "expr": "sum(increase(alertmanager_notifications_failed_total[24h])) or vector(0)",
+     "instant": true
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "none",
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "green",
+        "value": null
+       },
+       {
+        "color": "red",
+        "value": 1
+       }
+      ]
+     },
+     "mappings": [],
+     "decimals": 0
+    },
+    "overrides": []
+   },
+   "options": {
+    "colorMode": "background",
+    "graphMode": "none",
+    "reduceOptions": {
+     "calcs": [
+      "lastNotNull"
+     ]
+    },
+    "textMode": "value_and_name"
+   }
+  },
+  {
+   "id": 45,
+   "type": "stat",
+   "title": "Alarm rules",
+   "description": "",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prometheus"
+   },
+   "gridPos": {
+    "x": 18,
+    "y": 48,
+    "w": 6,
+    "h": 4
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus"
+     },
+     "expr": "count(prometheus_rule_group_rules) or vector(0)",
+     "instant": true
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "none",
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "green",
+        "value": null
+       }
+      ]
+     },
+     "mappings": [],
+     "decimals": 0
+    },
+    "overrides": []
+   },
+   "options": {
+    "colorMode": "background",
+    "graphMode": "none",
+    "reduceOptions": {
+     "calcs": [
+      "lastNotNull"
+     ]
+    },
+    "textMode": "value_and_name"
+   }
+  },
+  {
+   "id": 46,
    "type": "logs",
    "title": "Errors in any container (last hour)",
    "description": "",
@@ -898,7 +2347,7 @@
    },
    "gridPos": {
     "x": 0,
-    "y": 16,
+    "y": 52,
     "w": 24,
     "h": 12
    },
@@ -917,7 +2366,7 @@
       "type": "loki",
       "uid": "loki"
      },
-     "expr": "{container!=\"mundi-app\", container=~\".+\"} |~ \"(?i)\\\\b(error|fatal|panic|exception)\\\\b\" !~ \"level=info\""
+     "expr": "{container!=\"mundi-app\", container=~\".+\"} |~ \"(?i)\\\\b(error|fatal|panic|exception)\\\\b\""
     }
    ],
    "options": {
