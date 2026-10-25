@@ -556,7 +556,9 @@ services:
       - GF_AUTH_JWT_USERNAME_CLAIM=email
       - GF_AUTH_JWT_JWK_SET_URL=${GRAFANA_CF_ACCESS_CERTS_URL:-}
       - GF_AUTH_JWT_CACHE_TTL=60m
-      - GF_AUTH_JWT_EXPECT_CLAIMS=${GRAFANA_CF_ACCESS_EXPECT_CLAIMS:-{}}
+      # Fails closed: with no audience configured no Cloudflare pass matches, so JWT sign-in can never accept a pass
+      # issued for another Access application of the same team. (The server binds Grafana to 127.0.0.1 only.)
+      - GF_AUTH_JWT_EXPECT_CLAIMS=${GRAFANA_CF_ACCESS_EXPECT_CLAIMS:-{"aud":["no-audience-configured"]}}
       - GF_AUTH_JWT_AUTO_SIGN_UP=true
       # Who is Admin (the rest of the people Cloudflare lets in are Viewers).
       - GF_AUTH_JWT_ROLE_ATTRIBUTE_PATH=${GRAFANA_CF_ACCESS_ROLE_PATH:-'Viewer'}
