@@ -54,7 +54,7 @@ from src.dependencies.postgres_connection import (
     PostgresConfigurationError,
 )
 from src.dependencies.dag import get_project, edit_project
-from src.services import industry, project_people
+from src.services import industry, project_people, workos_auth
 from src.services.map_service import (
     generate_id,
     get_map_style_internal,
@@ -951,11 +951,21 @@ class ProjectPerson(BaseModel):
     role: Optional[str] = None  # editor or viewer; None for the owner
 
 
+class ProjectGuest(BaseModel):
+    id: int
+    email: str
+    role: str  # editor or viewer
+    status: str  # invited (not signed in yet) or active
+    expires_at: str  # when their access ends (ISO)
+
+
 class ProjectPeopleResponse(BaseModel):
     owner: ProjectPerson
     people: List[ProjectPerson]  # the people it is shared with
     can_share: bool  # the signed-in user owns it (and sign-in is on)
     colleagues: List[ProjectPerson] = []  # who the owner may share with; empty for everyone else
+    guests: List[ProjectGuest] = []  # people outside the organization with this project only, for a time; owner only
+    guest_days: List[int] = list(project_people.GUEST_DAYS)
 
 
 class ShareRequest(BaseModel):
@@ -971,6 +981,7 @@ async def _people_response(conn, project: MundiProject, session: UserContext, li
         can_share=can_share,
         colleagues=[ProjectPerson(**c) for c in await project_people.colleagues(conn, session.get_user_id())]
         if can_share else [],
+        guests=[ProjectGuest(**g) for g in listed.get("guests", [])] if can_share else [],
     )
 
 
@@ -1024,6 +1035,62 @@ async def unshare_project(
             raise HTTPException(status.HTTP_403_FORBIDDEN, "Only the project's owner can change who has it")
         capture_for_session("backend_project_unshared", session, {"project_id": project.id})
         return await _people_response(conn, project, session, listed)
+
+
+class GuestRequest(BaseModel):
+    email: str
+    role: project_people.Role = "viewer"
+    days: int = 7
+
+
+@project_router.post("/{project_id}/guests", response_model=ProjectPeopleResponse, operation_id="invite_project_guest")
+async def invite_project_guest(
+    body: GuestRequest,
+    project: MundiProject = Depends(get_project),
+    session: UserContext = Depends(verify_session_required),
+):
+    """Shares this one project with anyone by email for 1, 7 or 30 days (a guest; src/services/project_people.py):
+    the address gets an invitation and opens the project by signing in with it. Inviting again renews the time and
+    changes the role. Owner only."""
+    _require_owner(project, session, "share")
+    async with get_async_db_connection(user_id=session.get_user_id()) as conn:
+        try:
+            guest = await project_people.invite_guest(conn, project.id, session.get_user_id(), body.email,
+                                                      body.role, body.days)
+        except project_people.NotOwner:
+            raise HTTPException(status.HTTP_403_FORBIDDEN, "Only the project's owner can share it")
+        except ValueError as e:  # NotGuest or days
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, str(e))
+        if not guest["signed_in"]:
+            invitation = await asyncio.to_thread(workos_auth.invite_guest, guest["email"], body.days)
+            if invitation:
+                await project_people.note_invitation(conn, guest["id"], invitation)
+        capture_for_session("backend_project_guest_invited", session,
+                            {"project_id": project.id, "role": body.role, "days": body.days})
+        return await _people_response(conn, project, session, await project_people.people(conn, project.id))
+
+
+@project_router.delete(
+    "/{project_id}/guests/{guest_id}", response_model=ProjectPeopleResponse, operation_id="remove_project_guest"
+)
+async def remove_project_guest(
+    guest_id: int,
+    project: MundiProject = Depends(get_project),
+    session: UserContext = Depends(verify_session_required),
+):
+    """Ends a guest's access to this project now. Owner only."""
+    _require_owner(project, session, "change who has")
+    async with get_async_db_connection(user_id=session.get_user_id()) as conn:
+        try:
+            invitation = await project_people.remove_guest(conn, project.id, session.get_user_id(), guest_id)
+        except project_people.NotOwner:
+            raise HTTPException(status.HTTP_403_FORBIDDEN, "Only the project's owner can change who has it")
+        except LookupError:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "No such guest on this project")
+        if invitation:
+            await asyncio.to_thread(workos_auth.revoke_guest_invitation, invitation)
+        capture_for_session("backend_project_guest_removed", session, {"project_id": project.id})
+        return await _people_response(conn, project, session, await project_people.people(conn, project.id))
 
 
 @project_router.get("/embed/v1/{project_id}.html", response_class=HTMLResponse)

@@ -66,7 +66,7 @@ describe('sharing a project', () => {
     const put = fetchMock.mock.calls.find(([, init]) => init?.method === 'PUT');
     expect(JSON.parse(String(put?.[1]?.body))).toEqual({ email: 'arnold@example.rw', role: 'editor' });
     expect(vi.mocked(toast).mock.calls[0][0]).toBe('Shared with arnold@example.rw.');
-    await findText('It is shared with everyone in your organization.');
+    await findText('Everyone in your organization already has it.');
   });
 
   it('someone it is shared with sees who has it but cannot change it', async () => {
@@ -82,7 +82,8 @@ describe('sharing a project', () => {
   it('says to invite people first when nobody else is in the organization', async () => {
     fetchMock.mockResolvedValue(json({ owner: OWNER, people: [], can_share: true, colleagues: [] }));
     await openShare();
-    await findText(/Invite people from People in the sidebar, then share/);
+    await findText('Nobody else is in your organization yet.');
+    expect(byText(/Someone outside your organization/)).not.toBeNull(); // a guest can still be invited
   });
 
   it('shows the server refusal', async () => {
@@ -97,5 +98,39 @@ describe('sharing a project', () => {
     click(submit());
     await vi.waitFor(() => expect(vi.mocked(toast.error)).toHaveBeenCalled());
     expect(vi.mocked(toast.error).mock.calls[0][0]).toContain('Invite them from People first');
+  });
+
+  it('the owner invites a guest for this project only, for a chosen time, and can end it', async () => {
+    const calls: { method: string; url: string; body: unknown }[] = [];
+    let people: ProjectPeople = { owner: OWNER, people: [], can_share: true, colleagues: [], guests: [], guest_days: [1, 7, 30] };
+    fetchMock.mockImplementation(async (url, init) => {
+      const method = init?.method ?? 'GET';
+      calls.push({ method, url: String(url), body: init?.body ? JSON.parse(String(init.body)) : undefined });
+      if (method === 'POST') {
+        people = {
+          ...people,
+          guests: [{ id: 9, email: 'client@example.com', role: 'viewer', status: 'invited', expires_at: '2026-11-25T08:00:00Z' }],
+        };
+      }
+      if (method === 'DELETE') people = { ...people, guests: [] };
+      return json(people);
+    });
+    await openShare();
+    await findText(/Someone outside your organization/);
+    const input = document.querySelector('input[aria-label="Guest\'s email"]') as HTMLInputElement;
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set?.call(input, 'Client@Example.com');
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    choose('How long', '30');
+    click(await findButton('Invite'));
+    await findText(/Invited, not signed in yet/);
+    expect(calls.find((c) => c.method === 'POST')).toEqual({
+      method: 'POST',
+      url: '/api/projects/P1/guests',
+      body: { email: 'Client@Example.com', role: 'viewer', days: 30 },
+    });
+    expect(byText(/can view until/)).not.toBeNull();
+    click(await findButton("End client@example.com's access now"));
+    await vi.waitFor(() => expect(calls.some((c) => c.method === 'DELETE' && c.url === '/api/projects/P1/guests/9')).toBe(true));
+    await vi.waitFor(() => expect(byText(/Invited, not signed in yet/)).toBeNull());
   });
 });
