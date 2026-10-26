@@ -477,78 +477,83 @@ async def _ensure_rwanda_postgis_connection(
 redis = get_redis_client()
 
 
-async def label_conversation_inline(conversation_id: int):
-    """Generate a title for a conversation using OpenAI"""
+PENDING_TITLE = "title pending"  # a new chat's title until Sage names it
+_TITLE_CHARS = 80
+_naming_tasks: set[asyncio.Task] = set()  # kept so a naming task is not collected before it finishes
+
+_TITLE_PROMPT = ("Name this conversation in 3 to 6 plain words, in sentence case (only the first word and names "
+                 "capitalised), the way a chat list shows it, e.g. 'Rainfall deficit for Gatsibo maize'. "
+                 "Return only the name: no quotes, no full stop.")
+
+
+def _clean_title(raw: str) -> str:
+    title = " ".join(raw.strip().strip('"\'*').split())
+    return title.rstrip(".")[:_TITLE_CHARS]
+
+
+async def label_conversation_inline(conversation_id: int) -> Optional[str]:
+    """Name a chat from its first messages with Sage's model, if it still has no name; the name, or None.
+
+    Off from the first commit until 2026-10-26 (every chat read "title pending"); it also sent a temperature, which
+    Claude Haiku 5.5 refuses. The database connection is not held while the model answers."""
     try:
         async with async_conn("label_conversation") as conn:
             messages = await conn.fetch(
-                """
-                SELECT message_json
-                FROM chat_completion_messages
-                WHERE conversation_id = $1
-                ORDER BY created_at ASC
-                LIMIT 5
-                """,
+                "SELECT message_json FROM chat_completion_messages WHERE conversation_id = $1 "
+                "ORDER BY created_at ASC LIMIT 5",
                 conversation_id,
             )
+        conversation_content = []
+        for msg in messages:
+            message_data = json.loads(msg["message_json"])
+            role = message_data.get("role", "")
+            content = message_data.get("content", "")
+            if content and role in ["user", "assistant"]:
+                conversation_content.append(f"{role}: {str(content)[:200]}")
+        if not conversation_content:
+            return None
 
-            if not messages:
-                return
+        request = Request({"type": "http", "method": "POST", "headers": []})
+        openai_client, title_model = get_chat_client_for_model(request)
+        title_messages = [
+            {"role": "system", "content": _TITLE_PROMPT},
+            {"role": "user", "content": "Conversation:\n" + "\n".join(conversation_content)},
+        ]
 
-            conversation_content = []
-            for msg in messages:
-                message_data = json.loads(msg["message_json"])
-                role = message_data.get("role", "")
-                content = message_data.get("content", "")
-                if content and role in ["user", "assistant"]:
-                    conversation_content.append(f"{role}: {content[:200]}")
+        async def name_it() -> dict:
+            response = await openai_client.chat.completions.create(
+                model=title_model,
+                messages=title_messages,
+                # Thinking models spend tokens on reasoning before the title: with 20 Luna returned no title at
+                # all; with 150 it used about 70 (CODING_STANDARDS lesson).
+                max_tokens=150,
+                extra_body=usage_extra_body(openai_client.base_url),
+            )
+            llm_cache.record("chat_title", response.usage, title_model)
+            return {"title": response.choices[0].message.content or ""}
 
-            if not conversation_content:
-                return
+        # Chats that start the same way (an Ask Sage question from a card) get their title for free.
+        named, _ = await llm_cache.answer("chat_title", llm_cache.key_of(title_model, title_messages), name_it)
+        title = _clean_title(named["title"])
+        if not title:
+            return None
+        async with async_conn("label_conversation") as conn:
+            await conn.execute(
+                "UPDATE conversations SET title = $1 WHERE id = $2 AND title = $3",
+                title, conversation_id, PENDING_TITLE,
+            )
+        logger.info("Named conversation %s: %s", conversation_id, title)
+        return title
+    except Exception as e:  # noqa: BLE001 - a chat without a name still works; it reads "New chat"
+        logger.warning("Error naming conversation %s: %s", conversation_id, e)
+        return None
 
-            content_summary = "\n".join(conversation_content)
 
-            request = Request({"type": "http", "method": "POST", "headers": []})
-            openai_client, title_model = get_chat_client_for_model(request)
-
-            title_messages = [
-                {
-                    "role": "system",
-                    "content": "Generate a short, descriptive title (3-6 words) for this conversation. The title should capture the main topic or request. Only return the title, nothing else.",
-                },
-                {"role": "user", "content": f"Conversation:\n{content_summary}"},
-            ]
-
-            async def name_it() -> dict:
-                response = await openai_client.chat.completions.create(
-                    model=title_model,
-                    messages=title_messages,
-                    # Thinking models (Nemotron, GPT-6 Luna) spend tokens on reasoning before the title:
-                    # with 20 Luna returned no title at all; with 150 it used about 70 (CODING_STANDARDS lesson).
-                    max_tokens=150,
-                    temperature=0.3,
-                    extra_body=usage_extra_body(openai_client.base_url),
-                )
-                llm_cache.record("chat_title", response.usage, title_model)
-                return {"title": response.choices[0].message.content or ""}
-
-            # Chats that start the same way (an Ask Sage question from a card) get their title for free.
-            named, _ = await llm_cache.answer("chat_title", llm_cache.key_of(title_model, title_messages), name_it)
-            title = named["title"].strip()
-            if title and len(title) > 0:
-                await conn.execute(
-                    """
-                    UPDATE conversations
-                    SET title = $1, updated_at = CURRENT_TIMESTAMP
-                    WHERE id = $2
-                    """,
-                    title,
-                    conversation_id,
-                )
-                logger.info("Generated title for conversation %s: %s", conversation_id, title)
-
-    except Exception as e:
-        logger.warning("Error labeling conversation %s: %s", conversation_id, e)
+def name_conversation_later(conversation_id: int) -> None:
+    """Name a chat in the background, after the answer it needs (the turn does not wait for it)."""
+    task = asyncio.create_task(label_conversation_inline(conversation_id))
+    _naming_tasks.add(task)
+    task.add_done_callback(_naming_tasks.discard)
 
 
 # Create router
@@ -2988,9 +2993,9 @@ async def process_chat_interaction_task(
                     )
                     break
 
-        # Label the conversation if it still has the default "title pending"
-        # if conversation.title == "title pending":
-        #     await label_conversation_inline(conversation.id)
+        # Name the chat once Sage has answered in it (in the background; the list shows "New chat" until then).
+        if conversation.title == PENDING_TITLE:
+            name_conversation_later(conversation.id)
 
     # Unlock the conversation when processing is complete
     try:
