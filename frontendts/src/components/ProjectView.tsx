@@ -89,6 +89,11 @@ export default function ProjectView() {
     enabled: isReady && !!project,
     retry: 5,
     retryDelay: (attempt) => 1000 * attempt,
+    // Sage names a chat a few seconds after its first answer: look again while a recent chat is still unnamed.
+    refetchInterval: (query) =>
+      (query.state.data ?? []).some((c) => c.title === 'title pending' && Date.now() - new Date(c.updated_at).getTime() < 10 * 60 * 1000)
+        ? 5000
+        : false,
   });
   const conversationsEnabled = !conversationsError;
   const effectiveConversationId = conversationsEnabled ? conversationId : null;

@@ -51,8 +51,9 @@ const MARKDOWN: Components = {
   ),
 };
 
-/** The reply's markdown: the first line larger, the points with caramel dots. */
-function Answer({ text, streaming }: { text: string; streaming?: boolean }) {
+/** The reply's markdown: the first line larger, the points with caramel dots. Also how an answer reads in the chats
+ * panel (VersionVisualization). */
+export function Answer({ text, streaming }: { text: string; streaming?: boolean }) {
   return (
     <div className="text-[15px] leading-[1.5] text-[#E8DED4] [&>p:first-child]:text-[16.5px] [&>p:first-child]:leading-snug [&>p:first-child]:text-[#F3EDE6] [&>p:first-child]:font-semibold">
       <ReactMarkdown remarkPlugins={[remarkGfm]} components={MARKDOWN}>

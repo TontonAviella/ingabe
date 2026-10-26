@@ -42,17 +42,28 @@ export function useReaderRole(enabled = true) {
 /** "Answers for: Farmer / Cooperative / Agronomist / …" — the user's role in the industry they work in: the
  * questions they are asked and the words Sage's reports use. Saved on the account; the partner's default applies
  * until the user picks one. */
-export function ReportAudienceSelect() {
+export function ReportAudienceSelect({ label = 'Answers for', compact = false }: { label?: string; compact?: boolean } = {}) {
   const { data, save } = useReaderRole();
 
   if (!data) return null;
   const hint =
     data.source === 'user' ? 'Your choice' : data.source === 'partner' ? "Your organisation's default" : 'Default — pick who you are';
   return (
-    <label className="flex items-center gap-2 px-3 pb-2 text-xs text-gray-300" title={hint}>
-      <span>Answers for</span>
+    <label
+      className={
+        compact
+          ? 'flex items-center justify-between gap-2 px-2.5 pt-2 text-[12.5px] text-[#B8A99B]'
+          : 'flex items-center gap-2 px-3 pb-2 text-xs text-gray-300'
+      }
+      title={hint}
+    >
+      <span>{label}</span>
       <select
-        className="rounded bg-gray-800 px-1.5 py-0.5 text-gray-100 border border-gray-600 disabled:opacity-60"
+        className={
+          compact
+            ? 'rounded-[7px] border border-white/[0.07] bg-[#221813] px-1.5 py-0.5 text-[#F3EDE6] disabled:opacity-60'
+            : 'rounded bg-gray-800 px-1.5 py-0.5 text-gray-100 border border-gray-600 disabled:opacity-60'
+        }
         value={data.audience}
         disabled={save.isPending}
         onChange={(e) => save.mutate(e.target.value)}

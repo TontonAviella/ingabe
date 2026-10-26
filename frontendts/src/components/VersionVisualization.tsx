@@ -1,19 +1,21 @@
 'use client';
 
 import {
+  ArrowLeft,
   Brain,
   Brush,
   ChevronDown,
+  ChevronRight,
   ChevronUp,
   CloudDownload,
   Edit3,
   MapPlus,
-  MessageCirclePlus,
   Minus,
+  Plus,
+  Search,
   SquareTerminal,
   TextSearch,
   Upload,
-  User,
   Wrench,
   ZoomIn,
 } from 'lucide-react';
@@ -22,9 +24,9 @@ import ReactMarkdown from 'react-markdown';
 import SyntaxHighlighter from 'react-syntax-highlighter';
 import { dark } from 'react-syntax-highlighter/dist/esm/styles/hljs';
 import remarkGfm from 'remark-gfm';
+import { PANEL_FONT } from '@/components/CardAnswer';
 import { ReportAudienceSelect } from '@/components/ReportAudienceSelect';
-import { Button } from '@/components/ui/button';
-import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
+import { Answer } from '@/components/SageReply';
 import {
   Conversation,
   EphemeralAction,
@@ -99,10 +101,14 @@ function MessageItem({
     <>
       <div
         key={msgIndex}
-        className={`text-halfway-sm-xs ${message.role === 'user' ? 'rounded bg-gray-700 text-right py-0.5 px-2 max-w-3/4 ml-auto' : ''}`}
+        className={`text-halfway-sm-xs ${message.role === 'user' ? 'rounded-[14px] bg-[#221813] py-1.5 px-3 max-w-[85%] ml-auto' : 'px-0.5'}`}
       >
-        <div className="flex-1 min-w-0 text-white [&_img]:border [&_img]:border-[#aaa] [&_img]:rounded-md [&_img]:my-2 [&_img]:block [&_img]:mx-auto [&_img]:max-w-[360px] [&_img]:h-auto [&_pre]:max-w-80 [&_pre]:overflow-x-scroll [&_pre]:my-4 [&_pre]:bg-gray-900 [&_pre]:border-gray-500 [&_pre]:border [&_pre]:rounded">
-          <ReactMarkdown remarkPlugins={[remarkGfm]}>{message.content}</ReactMarkdown>
+        <div className="flex-1 min-w-0 text-[14px] text-[#F3EDE6] [&_pre]:max-w-80 [&_pre]:overflow-x-scroll [&_pre]:my-4 [&_pre]:bg-gray-900 [&_pre]:border-gray-500 [&_pre]:border [&_pre]:rounded">
+          {message.role === 'assistant' && message.content ? (
+            <Answer text={message.content} />
+          ) : (
+            <ReactMarkdown remarkPlugins={[remarkGfm]}>{message.content}</ReactMarkdown>
+          )}
         </div>
       </div>
       {message.tool_calls && message.tool_calls.length > 0 && (
@@ -182,6 +188,17 @@ interface VersionVisualizationProps {
   farmControls?: boolean; // the report-view selector; agriculture projects only
 }
 
+// The chats panel: like a chat app's sidebar. With no chat open, "New chat", a search and the recent chats, newest
+// first, one line each, with the map's changes folded away below. With a chat open, its messages as a plain
+// conversation; the map edits made along the way are one quiet line each (Roger, 2026-10-26: the old timeline of
+// avatars and the "Type message and hit enter to chat" button looked unprofessional).
+
+const PENDING_TITLE = 'title pending';
+const chatName = (c: Conversation | undefined) => (c?.title && c.title !== PENDING_TITLE ? c.title : 'New chat');
+const PANEL = 'bg-[#17110E] text-[#F3EDE6]';
+const ROW =
+  'flex w-full items-center gap-2.5 rounded-[9px] px-2.5 py-2 text-left text-[14px] cursor-pointer hover:bg-white/[0.06] focus-visible:outline-2 focus-visible:outline-[#D9A066]';
+
 export default function VersionVisualization({
   mapTree,
   conversationId,
@@ -192,9 +209,10 @@ export default function VersionVisualization({
   conversationsEnabled = true,
   farmControls = true,
 }: VersionVisualizationProps) {
-  const [isExpanded, setIsExpanded] = useState(false);
   const [expandedToolCalls, setExpandedToolCalls] = useState<string[]>([]);
   const [expandedEditGroups, setExpandedEditGroups] = useState<string[]>([]);
+  const [search, setSearch] = useState('');
+  const [changesOpen, setChangesOpen] = useState(false);
 
   // Helper function to get messages for a specific map_id
   const getMessagesForMap = useCallback(
@@ -204,7 +222,6 @@ export default function VersionVisualization({
       return node.messages
         .filter((msg) => msg.role !== 'system')
         .sort((a, b) => {
-          // Sort by created_at timestamp if available, otherwise maintain original order
           if (a.created_at && b.created_at) {
             return new Date(a.created_at).getTime() - new Date(b.created_at).getTime();
           }
@@ -214,95 +231,46 @@ export default function VersionVisualization({
     [mapTree],
   );
 
-  const getEditIcon = useCallback((node: MapNode) => {
-    if (!node.diff_from_previous) return null;
-
+  // One plain line per map change: "Added X", "Removed Y", "Changed Z".
+  const describeEdit = useCallback((node: MapNode) => {
+    if (!node.diff_from_previous) return { icon: <MapPlus className="size-3.5" />, text: 'Created the map' };
     const { added_layers, removed_layers } = node.diff_from_previous;
+    const names = (layers: { name: string }[]) => layers.map((l) => l.name).join(', ');
     if (added_layers.length > 0 && removed_layers.length > 0) {
-      return <Edit3 className="w-4 h-4" />;
+      return { icon: <Edit3 className="size-3.5" />, text: `Changed ${names(added_layers)}` };
     }
-    if (added_layers.length > 0) {
-      return <Upload className="w-3 h-3 inline-block mb-0.5" />;
-    }
-    if (removed_layers.length > 0) {
-      return <Minus className="w-4 h-4" />;
-    }
-    return <Edit3 className="w-4 h-4" />;
+    if (added_layers.length > 0) return { icon: <Upload className="size-3.5" />, text: `Added ${names(added_layers)}` };
+    if (removed_layers.length > 0) return { icon: <Minus className="size-3.5" />, text: `Removed ${names(removed_layers)}` };
+    return { icon: <Edit3 className="size-3.5" />, text: 'Changed the layers' };
   }, []);
 
-  const getEditDescription = useCallback((node: MapNode) => {
-    if (!node.diff_from_previous) return 'Created map';
-
-    const { added_layers, removed_layers } = node.diff_from_previous;
-    const parts = [];
-
-    if (added_layers.length > 0) {
-      parts.push(`${added_layers.map((layer) => layer.name).join(', ')}`);
-    }
-    if (removed_layers.length > 0) {
-      parts.push(`${removed_layers.map((layer) => layer.name).join(', ')}`);
-    }
-
-    return parts.length > 0 ? parts.join(', ') : 'Layer changes';
-  }, []);
-
-  const getNodePresentation = useCallback(
-    (node: MapNode) => {
-      const editor: string = node.fork_reason == 'ai_edit' ? 'Sage' : 'You';
-      const icon: React.ReactNode =
-        node.fork_reason == 'ai_edit' ? <Brain className="w-4 h-4 text-black" /> : <User className="w-4 h-4 text-black" />;
-      const color: string = node.map_id === currentMapId ? 'bg-green-400' : 'bg-gray-300';
-      const textColor: string = node.map_id === currentMapId ? 'text-green-400' : 'text-gray-300';
-      return { editor, icon, color, textColor };
-    },
-    [currentMapId],
-  );
-
-  // Do not early-return here to avoid conditional hooks; below render paths handle null mapTree gracefully
-
-  // Build grouped display items where runs of map nodes with no messages are collapsed
-  const MIN_GROUP_SIZE = 3; // collapse only when there are 3 or more consecutive edits with no messages
-
+  // Runs of 3 or more map changes with no messages fold into "N map changes".
+  const MIN_GROUP_SIZE = 3;
   type DisplayItem = { type: 'node'; node: MapNode } | { type: 'group'; id: string; nodes: MapNode[] };
-
   const displayItems: DisplayItem[] = useMemo(() => {
     if (!mapTree) return [];
     const items: DisplayItem[] = [];
     const nodes = mapTree.tree;
-
     let i = 0;
     while (i < nodes.length) {
-      const node = nodes[i];
-      const messages = getMessagesForMap(node.map_id);
-      if (messages.length === 0) {
-        // Start of a potential group
+      if (getMessagesForMap(nodes[i].map_id).length === 0) {
         let j = i;
-        while (j < nodes.length) {
-          const hasMsgs = getMessagesForMap(nodes[j].map_id).length > 0;
-          if (hasMsgs) break;
-          j++;
-        }
-        const runLength = j - i;
-        if (runLength >= MIN_GROUP_SIZE) {
+        while (j < nodes.length && getMessagesForMap(nodes[j].map_id).length === 0) j++;
+        if (j - i >= MIN_GROUP_SIZE) {
           const groupNodes = nodes.slice(i, j);
           const groupId = `conv-${conversationId ?? 'new'}-group-${groupNodes[0].map_id}-${groupNodes[groupNodes.length - 1].map_id}`;
           items.push({ type: 'group', id: groupId, nodes: groupNodes });
           i = j;
           continue;
         }
-        // Not enough to form group, push nodes individually
-        items.push({ type: 'node', node });
-        i++;
-      } else {
-        items.push({ type: 'node', node });
-        i++;
       }
+      items.push({ type: 'node', node: nodes[i] });
+      i++;
     }
     return items;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mapTree, getMessagesForMap, conversationId]);
 
-  // Auto-expand any group that contains the current map id so it remains visible
+  // Keep the group holding the map on screen open.
   useEffect(() => {
     if (!currentMapId) return;
     const containing = displayItems.find((it) => it.type === 'group' && it.nodes.some((n) => n.map_id === currentMapId)) as
@@ -317,226 +285,168 @@ export default function VersionVisualization({
     setExpandedEditGroups((prev) => (prev.includes(groupId) ? prev.filter((id) => id !== groupId) : [...prev, groupId]));
   };
 
-  // Renderer for a single map node (edit + its messages)
-  const renderMapNode = (node: MapNode) => {
+  const editLine = (node: MapNode) => {
+    const { icon, text } = describeEdit(node);
+    const bySage = node.fork_reason === 'ai_edit';
+    const here = node.map_id === currentMapId;
     return (
-      <div key={node.map_id} className="relative">
-        {/* Map edit node */}
-        <div className="flex items-center gap-4">
-          {/* Left side - Edit indicator */}
-          <div className="flex-4 flex justify-between text-halfway-sm-xs">
-            <div className="flex items-baseline">
-              <span className="text-gray-400 text-halfway-sm-xs" title={new Date(node.created_on).toLocaleString()}>
-                <span className="text-gray-200">{node.fork_reason == 'ai_edit' ? 'Sage, ' : 'You, '}</span>
-                {formatShortRelativeTime(node.created_on)}
-              </span>
-            </div>
-            <div className="flex items-baseline">
-              <div className={`${getNodePresentation(node).textColor}`}>{getEditIcon(node)}</div>
-              <div className="text-halfway-sm-xs ml-1">
-                <div className="dark:text-gray-200 text-ellipsis overflow-hidden">{getEditDescription(node)}</div>
-              </div>
-            </div>
-          </div>
-
-          {/* Center - Timeline dot */}
-          <div className="relative z-10 flex flex-col items-center">
-            <div className={`flex items-center justify-center w-6 h-6 rounded-full ${getNodePresentation(node).color}`}>
-              {getNodePresentation(node).icon}
-            </div>
-          </div>
-        </div>
-
-        {/* Messages associated with this map_id */}
-        <div className="flex">
-          {/* Left side - Messages */}
-          <div className="flex flex-col space-y-1 py-2 flex-4">
-            {(() => {
-              const messages = getMessagesForMap(node.map_id);
-              const toolResponses = messages.filter((msg) => msg.role === 'tool' && msg.tool_response).map((msg) => msg.tool_response!);
-
-              return messages.map((msg, msgIndex) => (
-                <MessageItem
-                  key={`message-${node.map_id}-${msgIndex}`}
-                  message={msg}
-                  msgIndex={msgIndex}
-                  expandedToolCalls={expandedToolCalls}
-                  setExpandedToolCalls={setExpandedToolCalls}
-                  toolResponses={toolResponses}
-                />
-              ));
-            })()}
-          </div>
-
-          {/* Center - connecting line space */}
-          <div className="w-6 flex justify-center">
-            <div className={`relative w-0.25 h-full min-h-4 ${getNodePresentation(node).color}`}></div>
-          </div>
-        </div>
+      <div
+        key={`edit-${node.map_id}`}
+        className={`grid grid-cols-[16px_minmax(0,1fr)_auto] items-baseline gap-2 rounded-[8px] px-2.5 py-1.5 text-[13px] ${here ? 'text-[#F3EDE6]' : 'text-[#B8A99B]'}`}
+        title={new Date(node.created_on).toLocaleString()}
+      >
+        <span className="text-[#8E7F73]">{icon}</span>
+        <span className="truncate">
+          {text}
+          {bySage && <span className="text-[#D9A066]"> · Sage</span>}
+        </span>
+        <span className="text-[12px] text-[#8E7F73]">{formatShortRelativeTime(node.created_on)}</span>
       </div>
     );
   };
 
-  return conversationsEnabled ? (
-    <div className="z-30 max-h-screen h-full w-full bg-white dark:bg-gray-800 shadow-md flex flex-col text-halfway-sm-xs">
-      <div className="flex-1 overflow-auto p-2">
-        <div className="mb-4 bg-gray-700 rounded-md">
-          <div className="p-2 flex items-center justify-between">
-            <div
-              className="flex items-center gap-2 cursor-pointer hover:bg-gray-600 p-1 rounded w-fit group"
-              onClick={() => setIsExpanded(!isExpanded)}
-            >
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <div className="flex items-center gap-2">
-                    <h4 className="text-md font-semibold text-gray-100">Previous chats</h4>
-                    <div className="text-gray-500 group-hover:text-gray-300">
-                      {isExpanded ? <ChevronUp className="w-4.5 h-4.5" /> : <ChevronDown className="w-4.5 h-4.5" />}
-                    </div>
-                  </div>
-                </TooltipTrigger>
-                <TooltipContent>
-                  <p>
-                    {isExpanded ? 'Hide' : 'Show'} {conversations.length} previous chat{conversations.length > 1 ? 's' : ''}
-                  </p>
-                </TooltipContent>
-              </Tooltip>
-            </div>
-            <div
-              className={`p-1 ${conversationId === null ? 'text-gray-600 cursor-not-allowed' : 'text-gray-500 hover:text-gray-300 cursor-pointer'}`}
-              onClick={conversationId === null ? undefined : () => setConversationId(null)}
-            >
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <MessageCirclePlus className="w-4.5 h-4.5" />
-                </TooltipTrigger>
-                <TooltipContent>
-                  <p>{conversationId === null ? 'You are in a new chat' : 'Start a new chat'}</p>
-                </TooltipContent>
-              </Tooltip>
-            </div>
-          </div>
-          {/* Farmer, insurer, agronomist, scientist: report views for agriculture projects only (audit R1-28). */}
-          {farmControls && <ReportAudienceSelect />}
-          {isExpanded && (
-            <div className="space-y-1 max-h-32 overflow-y-auto pb-2">
-              {conversations.map((conversation) => (
-                <div
-                  key={conversation.id}
-                  className={`text-halfway-sm-xs py-1 px-2 cursor-pointer group ${
-                    conversation.id === conversationId
-                      ? 'bg-blue-100 dark:bg-blue-900 text-blue-800 dark:text-blue-200'
-                      : 'hover:bg-gray-600 text-gray-300 hover:text-gray-100'
-                  }`}
-                  onClick={() => setConversationId(conversation.id)}
-                >
-                  <div className="flex items-center justify-between min-w-0">
-                    <span className="font-medium shrink text-ellipsis overflow-hidden whitespace-nowrap min-w-0">{conversation.title}</span>
-                    <div className="shrink-0 text-gray-400">
-                      <span className="group-hover:hidden">{formatShortRelativeTime(conversation.updated_at)}</span>
-                      <span className="hidden group-hover:inline">{conversation.message_count} messages</span>
-                    </div>
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-
-        <div className="relative">
-          {displayItems.map((item) => {
-            if (item.type === 'node') {
-              return renderMapNode(item.node);
-            }
-            const { id, nodes } = item;
-            const isOpen = expandedEditGroups.includes(id);
-            const count = nodes.length;
-            return (
-              <div key={id} className="relative">
-                {/* Collapsed/Expanded group header */}
-                <div className="flex items-center gap-4">
-                  {/* Left side - Group indicator */}
-                  <div className="flex-4 flex justify-between text-halfway-sm-xs">
-                    <div className="flex items-center gap-2">
-                      <button
-                        className={`flex items-center gap-2 text-gray-300 hover:text-gray-100 cursor-pointer`}
-                        onClick={() => toggleGroup(id)}
-                        title={isOpen ? 'Collapse edits' : 'Expand edits'}
-                      >
-                        {isOpen ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
-                        <Edit3 className="w-4 h-4" />
-                        <span className="whitespace-nowrap">
-                          {count} {isOpen ? 'visible' : 'hidden'} edits
-                        </span>
-                      </button>
-                    </div>
-                    <div />
-                  </div>
-
-                  {/* Center - Group timeline dot */}
-                  <div className="relative z-10 flex flex-col items-center">
-                    <div className={`flex items-center justify-center w-6 h-6 rounded-full bg-gray-300`}>
-                      <Edit3 className="w-4 h-4 text-black" />
-                    </div>
-                  </div>
-                </div>
-
-                {/* Center - connecting line space under header */}
-                <div className="flex">
-                  <div className="flex flex-col space-y-1 py-2 flex-4"></div>
-                  <div className="w-6 flex justify-center">
-                    <div className={`relative w-0.25 h-full min-h-4 bg-gray-300`}></div>
-                  </div>
-                </div>
-
-                {/* Expanded content */}
-                {isOpen && nodes.map((n) => renderMapNode(n))}
-              </div>
-            );
-          })}
-
-          {activeActions.length > 0 && (
-            <div className="relative">
-              {/* Map edit node */}
-              <div className="flex items-center gap-4">
-                <div className="flex-4 flex justify-end items-center">
-                  {activeActions.length > 0 ? (
-                    <div className="text-halfway-sm-xs text-gray-400 whitespace-nowrap">
-                      <span className="text-gray-300 text-right">Sage is thinking...</span>
-                    </div>
-                  ) : null}
-                </div>
-
-                {/* Center - Timeline dot */}
-                <div className="relative z-10 flex flex-col items-center">
-                  <div className={`flex items-center justify-center w-6 h-6 rounded-full bg-green-400`}>
-                    <Brain className="w-4 h-4 text-black animate-spin" />
-                  </div>
-                </div>
-              </div>
-            </div>
-          )}
-        </div>
-
-        {/* New Chat Button */}
-        <div className="mt-4 flex justify-center">
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <Button
-                onClick={() => setConversationId(null)}
-                variant="default"
-                // disabled={conversationId === null}
-                className={conversationId === null ? 'cursor-not-allowed text-sm' : 'cursor-pointer'}
-              >
-                {conversationId === null ? 'Type message and hit enter to chat' : 'New Chat'}
-              </Button>
-            </TooltipTrigger>
-            <TooltipContent>
-              <p>{conversationId === null ? 'You are already in a new chat' : 'Start a new chat'}</p>
-            </TooltipContent>
-          </Tooltip>
-        </div>
+  const nodeWithMessages = (node: MapNode) => {
+    const messages = getMessagesForMap(node.map_id);
+    const toolResponses = messages.filter((msg) => msg.role === 'tool' && msg.tool_response).map((msg) => msg.tool_response!);
+    return (
+      <div key={node.map_id} className="flex flex-col gap-1.5">
+        {node.diff_from_previous && editLine(node)}
+        {messages.map((msg, msgIndex) => (
+          <MessageItem
+            key={`message-${node.map_id}-${msgIndex}`}
+            message={msg}
+            msgIndex={msgIndex}
+            expandedToolCalls={expandedToolCalls}
+            setExpandedToolCalls={setExpandedToolCalls}
+            toolResponses={toolResponses}
+          />
+        ))}
       </div>
+    );
+  };
+
+  const changesFolded = (id: string, nodes: MapNode[]) => {
+    const open = expandedEditGroups.includes(id);
+    return (
+      <div key={id}>
+        <button type="button" className={`${ROW} text-[13px] text-[#B8A99B]`} onClick={() => toggleGroup(id)} aria-expanded={open}>
+          <ChevronRight className={`size-3.5 transition-transform ${open ? 'rotate-90' : ''}`} />
+          {nodes.length} map changes
+        </button>
+        {open && <div className="pl-3">{nodes.map((n) => editLine(n))}</div>}
+      </div>
+    );
+  };
+
+  if (!conversationsEnabled) return null;
+
+  const current = conversations.find((c) => c.id === conversationId);
+  const query = search.trim().toLowerCase();
+  const recent = conversations.filter((c) => chatName(c).toLowerCase().includes(query));
+  const working = activeActions.length > 0;
+
+  return (
+    <div className={`z-30 max-h-screen h-full w-full flex flex-col ${PANEL}`} style={{ fontFamily: PANEL_FONT }}>
+      {conversationId === null ? (
+        <>
+          <div className="flex flex-col gap-1 px-2.5 pt-3 pb-1">
+            <button type="button" className={ROW} onClick={() => setConversationId(null)} title="Ask Sage below to start a chat">
+              <Plus className="size-4 text-[#D9A066]" />
+              New chat
+            </button>
+            <label className="flex items-center gap-2.5 rounded-[9px] bg-[#221813] px-2.5 py-1.5">
+              <Search className="size-4 text-[#B8A99B]" />
+              <input
+                id="chat-search"
+                type="search"
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                placeholder="Search chats"
+                aria-label="Search chats"
+                className="min-w-0 flex-1 bg-transparent text-[14px] text-[#F3EDE6] placeholder:text-[#8E7F73] outline-none"
+              />
+            </label>
+            {/* Farmer, insurer, agronomist, scientist: report views for agriculture projects only (audit R1-28). */}
+            {farmControls && <ReportAudienceSelect label="Answers written for" compact />}
+          </div>
+          <div className="px-5 pt-3 pb-1.5 text-[12px] font-semibold text-[#8E7F73]">Recents</div>
+          <div className="min-h-0 flex-1 overflow-y-auto px-2.5" role="list" aria-label="Recent chats">
+            {recent.length === 0 && (
+              <p className="m-0 px-2.5 py-2 text-[13px] text-[#8E7F73]">
+                {conversations.length === 0 ? 'No chats yet. Ask Sage below to start one.' : 'No chat matches.'}
+              </p>
+            )}
+            {recent.map((c) => (
+              <button
+                key={c.id}
+                type="button"
+                role="listitem"
+                className={`${ROW} group justify-between`}
+                onClick={() => setConversationId(c.id)}
+                title={`${c.message_count} messages`}
+              >
+                <span className="min-w-0 truncate">{chatName(c)}</span>
+                <span className="shrink-0 text-[12px] text-[#8E7F73] opacity-0 group-hover:opacity-100 group-focus-visible:opacity-100">
+                  {formatShortRelativeTime(c.updated_at)}
+                </span>
+              </button>
+            ))}
+          </div>
+          {mapTree && mapTree.tree.length > 0 && (
+            <div className="border-t border-white/[0.07] px-2.5 pt-1.5 pb-3">
+              <button
+                type="button"
+                className={`${ROW} text-[13px] text-[#B8A99B]`}
+                onClick={() => setChangesOpen((v) => !v)}
+                aria-expanded={changesOpen}
+              >
+                <ChevronRight className={`size-3.5 transition-transform ${changesOpen ? 'rotate-90' : ''}`} />
+                Map changes
+                <span className="ml-auto text-[12px] text-[#8E7F73]">{mapTree.tree.length}</span>
+              </button>
+              {changesOpen && <div className="max-h-56 overflow-y-auto pl-3">{[...mapTree.tree].reverse().map((n) => editLine(n))}</div>}
+            </div>
+          )}
+        </>
+      ) : (
+        <>
+          <div className="flex items-center gap-1 border-b border-white/[0.07] px-2 py-2">
+            <button
+              type="button"
+              className="flex size-8 shrink-0 items-center justify-center rounded-[8px] text-[#B8A99B] hover:bg-white/[0.06] hover:text-[#F3EDE6] cursor-pointer"
+              onClick={() => setConversationId(null)}
+              aria-label="All chats"
+              title="All chats"
+            >
+              <ArrowLeft className="size-4" />
+            </button>
+            <span className="min-w-0 flex-1 truncate text-[14px] font-semibold">{chatName(current)}</span>
+            <button
+              type="button"
+              className="flex size-8 shrink-0 items-center justify-center rounded-[8px] text-[#D9A066] hover:bg-white/[0.06] cursor-pointer"
+              onClick={() => setConversationId(null)}
+              aria-label="New chat"
+              title="New chat"
+            >
+              <Plus className="size-4" />
+            </button>
+          </div>
+          <div className="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto px-3 py-3">
+            {displayItems.map((item) =>
+              item.type === 'group'
+                ? changesFolded(item.id, item.nodes)
+                : getMessagesForMap(item.node.map_id).length > 0
+                  ? nodeWithMessages(item.node)
+                  : editLine(item.node),
+            )}
+            {working && (
+              <div className="flex items-center gap-2 px-2.5 py-1.5 text-[13px] text-[#B8A99B]">
+                <Brain className="size-4 animate-pulse text-[#D9A066]" /> Sage is working…
+              </div>
+            )}
+          </div>
+        </>
+      )}
     </div>
-  ) : null;
+  );
 }
