@@ -86,3 +86,34 @@ def raster_source_minzoom(metadata: dict[str, Any] | None, bounds: Sequence[Any]
     zoom = math.ceil(math.log2((target_pixels * WEB_MERCATOR_CIRCUMFERENCE_M) / denominator))
     cap = _env_int("RASTER_SOURCE_MINZOOM_MAX") or 18
     return max(0, min(cap, _clamp_zoom(zoom)))
+
+
+def default_raster_maxzoom() -> int:
+    """The deepest zoom a user raster's tiles are asked for when its own sharpness does not call for more
+    (RASTER_SOURCE_MAXZOOM, default 20: interactive speed)."""
+    value = _env_int("RASTER_SOURCE_MAXZOOM")
+    return _clamp_zoom(20 if value is None else value)
+
+
+def raster_source_maxzoom(metadata: dict[str, Any] | None, bounds: Sequence[Any] | None) -> int:
+    """The deepest zoom MapLibre asks a raster's tiles for: deep enough to show its own pixels, never past 22.
+
+    A 3 cm drone photo needs zoom 22 (about 3.7 cm per screen pixel near the equator); at the default 20 (about
+    15 cm) the map stretches coarse tiles and the photo looks blurred (Roger, 2026-10-26, Cyampirita at 3.2 cm).
+    Rasters coarser than the default keep the default, so nothing else changes."""
+    default = default_raster_maxzoom()
+    metadata = metadata or {}
+    try:
+        width_px = int(metadata.get("width") or 0)
+        west, south, east, north = [float(v) for v in bounds] if bounds and len(bounds) == 4 else (0, 0, 0, 0)
+    except (TypeError, ValueError):
+        return default
+    lon_span = abs(east - west)
+    if width_px <= 0 or lon_span <= 0.0:
+        return default
+    cos_lat = max(0.01, math.cos(math.radians((south + north) / 2.0)))
+    metres_per_pixel = lon_span * 111_320.0 * cos_lat / width_px
+    if metres_per_pixel <= 0.0:
+        return default
+    native = math.ceil(math.log2(WEB_MERCATOR_CIRCUMFERENCE_M * cos_lat / (256.0 * metres_per_pixel)))
+    return max(default, _clamp_zoom(native))

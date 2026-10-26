@@ -33,7 +33,7 @@ from src.upload.models import InternalLayerUploadResponse
 from src.dependencies.base_map import BaseMapProvider
 from src.postgis_tiles import MVT_LAYER_NAME
 from src.database.models import LAYER_TYPE_RASTER, LAYER_TYPE_VECTOR, LAYER_TYPE_POINT_CLOUD, LAYER_TYPE_POSTGIS
-from src.services.raster_zoom import raster_source_minzoom
+from src.services.raster_zoom import raster_source_maxzoom, raster_source_minzoom
 from src.services import raster_display
 from src.services.remote_cog_layer import build_remote_cog_maplibre_layer
 from src.upload.pmtiles import postgis_layer_pmtiles_key
@@ -626,23 +626,17 @@ async def get_map_style_internal(
             if cache_param:
                 tile_url += f"?{cache_param}"
 
-            try:
-                raster_source_maxzoom = int(os.environ.get("RASTER_SOURCE_MAXZOOM", "20"))
-            except ValueError:
-                raster_source_maxzoom = 20
-            raster_source_maxzoom = max(0, min(22, raster_source_maxzoom))
-
-            # Keep per-source bounds so MapLibre only requests tiles inside the
-            # COG footprint. Default maxzoom favors interactive speed; raise
-            # RASTER_SOURCE_MAXZOOM for inspection-grade native drone pixels.
+            # Keep per-source bounds so MapLibre only requests tiles inside the COG footprint, and ask for tiles
+            # as deep as the raster's own pixels (a 3 cm drone photo: zoom 22), or it is shown blurred.
             _b = layer.get("bounds")
             raster_minzoom = raster_source_minzoom(metadata, _b)
+            raster_maxzoom = raster_source_maxzoom(metadata, _b)
             raster_source: dict = {
                 "type": "raster",
                 "tiles": [tile_url],
                 "tileSize": 256,
                 "minzoom": raster_minzoom,
-                "maxzoom": raster_source_maxzoom,
+                "maxzoom": raster_maxzoom,
             }
             if _b and len(_b) == 4:
                 # DB column is [west, south, east, north] in WGS84.
