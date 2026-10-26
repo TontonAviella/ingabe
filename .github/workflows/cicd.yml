@@ -23,7 +23,9 @@ permissions:
 
 jobs:
   build-and-test:
-    runs-on: ubuntu-latest
+    # Pinned: ubuntu-latest became 26.04 on 2026-10-26 and Playwright 1.58 cannot install Chromium there
+    # ("Playwright does not support chromium on ubuntu26.04-x64"). Move on when Playwright supports it.
+    runs-on: ubuntu-24.04
     # The job's fresh Postgres container creates this database, and the tests
     # and the E2E app use it. conftest.py refuses to run on `mundidb` (the
     # live local database) with no override, so this command copied to a
