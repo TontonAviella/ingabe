@@ -177,3 +177,54 @@ async def test_the_cells_of_a_shared_sector_name_ask_which_sector() -> None:
     assert sorted(c["district"] for c in which["candidates"]) == [DA, DB]
     assert da["status"] == "success" and da["feature_count"] == 1
     assert [(r["cell_name"], r["district_name"]) for r in rows] == [(CSAME, DA)]
+
+
+# resolve_admin_geometry: the geometry Sage's reports read rain and greenness over. Roger, 2026-10-26: a
+# report for Kanyangese cell (Gatsibo) looked the cell up by name alone, and Rwamagana has a Kanyangese too.
+
+@pytest.fixture
+def _empty_geometry_cache(monkeypatch):
+    from collections import OrderedDict
+
+    from src.services import admin_boundaries
+
+    monkeypatch.setattr(admin_boundaries, "_cache", OrderedDict())
+
+
+def _west(geometry: dict) -> float:
+    return min(x for ring in geometry["coordinates"] for x, _ in ring)
+
+
+@pytest.mark.asyncio
+async def test_a_shared_cell_name_alone_gives_no_geometry(_empty_geometry_cache) -> None:
+    from src.services.admin_boundaries import resolve_admin_geometry
+
+    async with seeded() as conn:
+        result = await resolve_admin_geometry(cell=CSAME, conn=conn)
+    assert result["status"] == "ambiguous" and "geometry" not in result
+    assert sorted(c["sector"] for c in result["candidates"]) == sorted([ONLY, SHARED])
+
+
+@pytest.mark.asyncio
+async def test_a_cell_with_its_sector_and_district_is_that_cell_and_the_cache_keeps_them_apart(
+    _empty_geometry_cache,
+) -> None:
+    from src.services.admin_boundaries import resolve_admin_geometry
+
+    async with seeded() as conn:
+        in_only = await resolve_admin_geometry(district=DA, sector=ONLY, cell=CSAME, conn=conn)
+        in_shared = await resolve_admin_geometry(district=DA, sector=SHARED, cell=CSAME, conn=conn)
+        again = await resolve_admin_geometry(district=DA, sector=ONLY, cell=CSAME, conn=conn)
+    assert in_only["status"] == in_shared["status"] == again["status"] == "success"
+    assert _west(in_only["geometry"]) == pytest.approx(30.0)  # the CSAME of ONLY sector (square 0)
+    assert _west(in_shared["geometry"]) == pytest.approx(30.02)  # the CSAME of SHARED sector (square 1)
+    assert again["geometry"] == in_only["geometry"]
+
+
+@pytest.mark.asyncio
+async def test_a_place_not_where_the_parents_say_is_not_found(_empty_geometry_cache) -> None:
+    from src.services.admin_boundaries import resolve_admin_geometry
+
+    async with seeded() as conn:
+        result = await resolve_admin_geometry(district=DB, cell=CSAME, conn=conn)
+    assert result["status"] == "not_found" and "geometry" not in result
