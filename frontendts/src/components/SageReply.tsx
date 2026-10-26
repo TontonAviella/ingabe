@@ -173,6 +173,7 @@ export function SageReply({
   onCancel,
   onDismissError,
   actionIcon,
+  centered = false,
 }: {
   reply?: string;
   /** The answer's id, for 👍/👎 (absent while it is still being written). */
@@ -187,6 +188,8 @@ export function SageReply({
   onCancel: () => void;
   onDismissError: (id: string) => void;
   actionIcon: (action: string) => ReactNode;
+  /** The chats panel is hidden: centre on the whole map instead of the space left of the panel. */
+  centered?: boolean;
 }) {
   const [expanded, setExpanded] = useState(false);
   const [overflows, setOverflows] = useState(false);
@@ -217,7 +220,7 @@ export function SageReply({
     <section
       aria-label="Sage's answer"
       aria-live="polite"
-      className="z-30 absolute bottom-[100px] left-1/2 xl:left-3/5 -translate-x-1/2 w-[calc(100%-1rem)] sm:w-4/5 max-w-[34rem] flex flex-col overflow-hidden rounded-[22px] border border-white/[0.08] bg-[#17110E]/95 text-[#F3EDE6] shadow-[0_18px_48px_rgba(0,0,0,0.5)] backdrop-blur-xl"
+      className={`z-30 absolute bottom-[100px] left-1/2 ${centered ? '' : 'xl:left-3/5'} -translate-x-1/2 w-[calc(100%-1rem)] sm:w-4/5 max-w-[34rem] flex flex-col overflow-hidden rounded-[22px] border border-white/[0.08] bg-[#17110E]/95 text-[#F3EDE6] shadow-[0_18px_48px_rgba(0,0,0,0.5)] backdrop-blur-xl`}
       style={{ fontFamily: "-apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Helvetica Neue', system-ui, sans-serif" }}
     >
       <header className="flex items-center justify-between gap-3 px-4 pt-3 pb-1.5">

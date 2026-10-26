@@ -1,5 +1,7 @@
 'use client';
 
+import { apiFetch } from '@mundi/ee';
+import { useMutation, useQueryClient } from '@tanstack/react-query';
 import {
   ArrowLeft,
   Brain,
@@ -11,10 +13,12 @@ import {
   Edit3,
   MapPlus,
   Minus,
+  PanelRightClose,
   Plus,
   Search,
   SquareTerminal,
   TextSearch,
+  Trash2,
   Upload,
   Wrench,
   ZoomIn,
@@ -186,6 +190,8 @@ interface VersionVisualizationProps {
   activeActions: EphemeralAction[];
   conversationsEnabled?: boolean;
   farmControls?: boolean; // the report-view selector; agriculture projects only
+  /** Hide the panel so the map has the whole width (wide screens; the map shows a "Chats" button to bring it back). */
+  onClose?: () => void;
 }
 
 // The chats panel: like a chat app's sidebar. With no chat open, "New chat", a search and the recent chats, newest
@@ -208,7 +214,22 @@ export default function VersionVisualization({
   activeActions,
   conversationsEnabled = true,
   farmControls = true,
+  onClose,
 }: VersionVisualizationProps) {
+  const queryClient = useQueryClient();
+  const [confirmDelete, setConfirmDelete] = useState<number | null>(null);
+  const deleteChat = useMutation({
+    mutationFn: async (id: number) => {
+      const res = await apiFetch(`/api/conversations/${id}`, { method: 'DELETE' });
+      if (!res.ok && res.status !== 404) throw new Error('The chat could not be deleted. Try again.');
+      return id;
+    },
+    onSuccess: (id) => {
+      setConfirmDelete(null);
+      if (id === conversationId) setConversationId(null);
+      queryClient.invalidateQueries({ predicate: (q) => q.queryKey[0] === 'project' && q.queryKey[2] === 'conversations' });
+    },
+  });
   const [expandedToolCalls, setExpandedToolCalls] = useState<string[]>([]);
   const [expandedEditGroups, setExpandedEditGroups] = useState<string[]>([]);
   const [search, setSearch] = useState('');
@@ -350,10 +371,13 @@ export default function VersionVisualization({
       {conversationId === null ? (
         <>
           <div className="flex flex-col gap-1 px-2.5 pt-3 pb-1">
-            <button type="button" className={ROW} onClick={() => setConversationId(null)} title="Ask Sage below to start a chat">
-              <Plus className="size-4 text-[#D9A066]" />
-              New chat
-            </button>
+            <div className="flex items-center gap-1">
+              <button type="button" className={ROW} onClick={() => setConversationId(null)} title="Ask Sage below to start a chat">
+                <Plus className="size-4 text-[#D9A066]" />
+                New chat
+              </button>
+              {onClose && <CloseButton onClose={onClose} />}
+            </div>
             <label className="flex items-center gap-2.5 rounded-[9px] bg-[#221813] px-2.5 py-1.5">
               <Search className="size-4 text-[#B8A99B]" />
               <input
@@ -376,21 +400,52 @@ export default function VersionVisualization({
                 {conversations.length === 0 ? 'No chats yet. Ask Sage below to start one.' : 'No chat matches.'}
               </p>
             )}
-            {recent.map((c) => (
-              <button
-                key={c.id}
-                type="button"
-                role="listitem"
-                className={`${ROW} group justify-between`}
-                onClick={() => setConversationId(c.id)}
-                title={`${c.message_count} messages`}
-              >
-                <span className="min-w-0 truncate">{chatName(c)}</span>
-                <span className="shrink-0 text-[12px] text-[#8E7F73] opacity-0 group-hover:opacity-100 group-focus-visible:opacity-100">
-                  {formatShortRelativeTime(c.updated_at)}
-                </span>
-              </button>
-            ))}
+            {recent.map((c) =>
+              confirmDelete === c.id ? (
+                <div key={c.id} role="listitem" className="flex flex-col gap-2 rounded-[9px] bg-white/[0.06] px-2.5 py-2 text-[13.5px]">
+                  <span className="truncate">Delete “{chatName(c)}”?</span>
+                  <span className="flex gap-2">
+                    <button
+                      type="button"
+                      disabled={deleteChat.isPending}
+                      onClick={() => deleteChat.mutate(c.id)}
+                      className="rounded-full bg-[#B23A2E] px-3 py-1 text-[12.5px] font-semibold text-white hover:bg-[#C9473A] disabled:opacity-60 cursor-pointer"
+                    >
+                      {deleteChat.isPending ? 'Deleting…' : 'Delete'}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setConfirmDelete(null)}
+                      className="rounded-full px-3 py-1 text-[12.5px] font-semibold text-[#B8A99B] hover:bg-white/[0.06] cursor-pointer"
+                    >
+                      Cancel
+                    </button>
+                  </span>
+                  {deleteChat.isError && <span className="text-[12.5px] text-[#F08A7E]">{(deleteChat.error as Error).message}</span>}
+                </div>
+              ) : (
+                <div key={c.id} role="listitem" className="group relative">
+                  <button
+                    type="button"
+                    className={`${ROW} justify-between pr-9`}
+                    onClick={() => setConversationId(c.id)}
+                    title={`${c.message_count} messages`}
+                  >
+                    <span className="min-w-0 truncate">{chatName(c)}</span>
+                    <span className="shrink-0 text-[12px] text-[#8E7F73] group-hover:hidden">{formatShortRelativeTime(c.updated_at)}</span>
+                  </button>
+                  <button
+                    type="button"
+                    aria-label={`Delete “${chatName(c)}”`}
+                    title="Delete chat"
+                    onClick={() => setConfirmDelete(c.id)}
+                    className="absolute right-1.5 top-1/2 hidden size-7 -translate-y-1/2 items-center justify-center rounded-[7px] text-[#B8A99B] hover:bg-white/[0.08] hover:text-[#F08A7E] group-hover:flex focus-visible:flex cursor-pointer"
+                  >
+                    <Trash2 className="size-4" />
+                  </button>
+                </div>
+              ),
+            )}
           </div>
           {mapTree && mapTree.tree.length > 0 && (
             <div className="border-t border-white/[0.07] px-2.5 pt-1.5 pb-3">
@@ -430,6 +485,7 @@ export default function VersionVisualization({
             >
               <Plus className="size-4" />
             </button>
+            {onClose && <CloseButton onClose={onClose} />}
           </div>
           <div className="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto px-3 py-3">
             {displayItems.map((item) =>
@@ -448,5 +504,20 @@ export default function VersionVisualization({
         </>
       )}
     </div>
+  );
+}
+
+/** Hide the chats panel (wide screens only; on a phone the panel already has its own close button). */
+function CloseButton({ onClose }: { onClose: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onClose}
+      aria-label="Hide chats"
+      title="Hide chats"
+      className="hidden size-8 shrink-0 items-center justify-center rounded-[8px] text-[#B8A99B] hover:bg-white/[0.06] hover:text-[#F3EDE6] xl:flex cursor-pointer"
+    >
+      <PanelRightClose className="size-4" />
+    </button>
   );
 }
