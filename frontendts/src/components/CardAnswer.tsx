@@ -339,6 +339,72 @@ export function writeCollapsed(key: string, collapsed: boolean) {
   }
 }
 
+/** A question the hidden panel shows on its button, so the reader sees what is waiting before opening it. */
+export type PanelTeaser = { id: string; text: string };
+
+const TEASER_SECONDS = 6;
+const TEASER_ROUNDS = 3;
+
+/** The button that brings a hidden panel back. It says what is waiting (collapsedLabel) and shows one real question at
+ * a time (teasers), changing every few seconds for a few rounds and then holding still, so it catches the eye when the
+ * map opens without nagging all day. A click opens the question it shows. */
+function CollapsedPanelButton({
+  label,
+  teasers,
+  onTeaser,
+  onOpen,
+  className,
+}: {
+  label: string;
+  teasers: PanelTeaser[];
+  onTeaser?: (id: string) => void;
+  onOpen: () => void;
+  className: string;
+}) {
+  const [shown, setShown] = useState(0);
+  const [paused, setPaused] = useState(false);
+  const rounds = teasers.length > 1 ? teasers.length * TEASER_ROUNDS : 0;
+
+  useEffect(() => {
+    if (paused || shown >= rounds - 1) return;
+    if (window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) return;
+    const timer = window.setTimeout(() => setShown((n) => n + 1), TEASER_SECONDS * 1000);
+    return () => window.clearTimeout(timer);
+  }, [paused, shown, rounds]);
+
+  const teaser = teasers.length ? teasers[shown % teasers.length] : null;
+  return (
+    <button
+      type="button"
+      onClick={() => (teaser && onTeaser ? onTeaser(teaser.id) : onOpen())}
+      onMouseEnter={() => setPaused(true)}
+      onMouseLeave={() => setPaused(false)}
+      onFocus={() => setPaused(true)}
+      onBlur={() => setPaused(false)}
+      aria-label={teaser ? `${label}: ${teaser.text}` : label}
+      style={{ fontFamily: PANEL_FONT }}
+      className={`${className} group flex items-center gap-3 max-w-[min(340px,calc(100%-2rem))] min-h-11 py-2 pl-3.5 pr-2.5 rounded-[20px] bg-[#110C0A]/90 backdrop-blur-xl border border-[#D9A066]/40 text-left text-[#F3EDE6] shadow-[0_10px_28px_rgba(0,0,0,0.45)] hover:border-[#D9A066]/80 cursor-pointer`}
+    >
+      <span className="relative flex size-2.5 shrink-0" aria-hidden="true">
+        <span className="absolute inline-flex size-full rounded-full bg-[#D9A066] opacity-70 motion-safe:[animation:ping_1s_cubic-bezier(0,0,0.2,1)_3_forwards]" />
+        <span className="relative inline-flex size-2.5 rounded-full bg-[#D9A066]" />
+      </span>
+      <span className="flex min-w-0 flex-col">
+        <span className="text-[11.5px] font-bold uppercase tracking-[0.07em] text-[#D9A066]">{label}</span>
+        {teaser && (
+          <span
+            key={teaser.id}
+            className="line-clamp-2 text-[14px] font-semibold leading-snug motion-safe:animate-in motion-safe:fade-in motion-safe:duration-500"
+          >
+            {teaser.text}
+          </span>
+        )}
+      </span>
+      <ChevronRight className="size-4 shrink-0 text-[#D9A066] transition-transform group-hover:translate-x-0.5" aria-hidden="true" />
+    </button>
+  );
+}
+
 /** The panel over the map that holds a deck of cards, or the button that brings it back when hidden. */
 export function CardsPanel({
   ariaLabel,
@@ -346,38 +412,49 @@ export function CardsPanel({
   hideLabel,
   collapsed,
   collapsedLabel,
+  teasers = [],
+  onTeaser,
   onCollapsedChange,
   historyOpen,
+  belowChatsButton = false,
   children,
 }: {
   ariaLabel: string;
   heading: string;
   hideLabel: string;
   collapsed: boolean;
-  /** The button's words while the panel is hidden. */
+  /** What is waiting, on the button while the panel is hidden ("4 answers ready"). */
   collapsedLabel: string;
+  /** Questions the hidden panel's button shows one at a time; clicking it calls onTeaser with the one shown. */
+  teasers?: PanelTeaser[];
+  onTeaser?: (id: string) => void;
   onCollapsedChange: (collapsed: boolean) => void;
   /** "Previous chats" is open; below xl it covers the right side of the map, so the panel steps aside. */
   historyOpen: boolean;
+  /** The chats panel is hidden and its "Chats" button holds the top-right corner on wide screens, so the panel sits
+   * below it there, as it does on narrow screens (below the chat-history button). */
+  belowChatsButton?: boolean;
   children: React.ReactNode;
 }) {
+  // Full class names, so Tailwind finds them in the source.
+  const buttonTop = belowChatsButton ? 'top-16' : 'top-16 xl:top-4';
+  const panelTop = belowChatsButton ? 'sm:top-16' : 'sm:top-16 xl:top-4 xl:max-h-[calc(100%-280px)]';
   if (collapsed) {
     return (
-      <button
-        type="button"
-        onClick={() => onCollapsedChange(false)}
-        style={{ fontFamily: PANEL_FONT }}
-        className={`absolute top-16 right-4 sm:right-14 xl:top-4 z-30 min-h-11 px-4 rounded-full bg-[#110C0A]/85 backdrop-blur-xl border border-white/10 text-[14px] font-semibold text-[#F3EDE6] shadow-lg cursor-pointer ${historyOpen ? 'max-xl:hidden' : ''}`}
-      >
-        {collapsedLabel}
-      </button>
+      <CollapsedPanelButton
+        label={collapsedLabel}
+        teasers={teasers}
+        onTeaser={onTeaser}
+        onOpen={() => onCollapsedChange(false)}
+        className={`absolute ${buttonTop} right-4 sm:right-14 z-30 ${historyOpen ? 'max-xl:hidden' : ''}`}
+      />
     );
   }
   return (
     <section
       aria-label={ariaLabel}
       style={{ fontFamily: PANEL_FONT }}
-      className={`absolute z-30 inset-x-2 bottom-[100px] max-h-[52vh] sm:inset-auto sm:bottom-auto sm:top-16 xl:top-4 sm:right-14 sm:w-[372px] sm:max-h-[calc(100%-328px)] xl:max-h-[calc(100%-280px)] flex flex-col rounded-[26px] bg-[#110C0A]/[0.9] backdrop-blur-2xl border border-white/[0.09] shadow-2xl text-[#F3EDE6] ${historyOpen ? 'max-xl:hidden' : ''}`}
+      className={`absolute z-30 inset-x-2 bottom-[100px] max-h-[52vh] sm:inset-auto sm:bottom-auto ${panelTop} sm:right-14 sm:w-[372px] sm:max-h-[calc(100%-328px)] flex flex-col rounded-[26px] bg-[#110C0A]/[0.9] backdrop-blur-2xl border border-white/[0.09] shadow-2xl text-[#F3EDE6] ${historyOpen ? 'max-xl:hidden' : ''}`}
     >
       <div className="flex items-center justify-between px-5 pt-4 pb-1">
         <span className="text-[12px] font-semibold uppercase tracking-[0.08em] text-[#D9A066]">{heading}</span>

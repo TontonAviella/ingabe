@@ -71,6 +71,7 @@ export function TowerCards({
   layers,
   hiddenLayerIDs,
   historyOpen,
+  chatsHidden = false,
   onAskSage,
   sage,
 }: {
@@ -79,6 +80,8 @@ export function TowerCards({
   hiddenLayerIDs: string[];
   /** "Previous chats" is open; below xl it covers the right side of the map, so the cards step aside. */
   historyOpen: boolean;
+  /** The chats panel is hidden; its "Chats" button takes the top-right corner, so the cards sit below it. */
+  chatsHidden?: boolean;
   /** Sends a question to Sage in the chat. */
   onAskSage: (prompt: string) => void;
   /** The map's Sage chat, for questions asked on the photo screen (answered there). */
@@ -173,6 +176,7 @@ export function TowerCards({
         collapsedLabel={heading}
         onCollapsedChange={setCollapsedAndSave}
         historyOpen={historyOpen}
+        belowChatsButton={chatsHidden}
       >
         {!openCard && (
           <div className="flex flex-col gap-4">

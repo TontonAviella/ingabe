@@ -1754,6 +1754,7 @@ export default function MapLibreMap({
           layers={mapData?.layers ?? []}
           hiddenLayerIDs={hiddenLayerIDs}
           historyOpen={mobileWorkspacePanel === 'history'}
+          chatsHidden={chatsHidden}
           onAskSage={(prompt) => void sendMessage(prompt)}
         />
         <TowerCards
@@ -1762,6 +1763,7 @@ export default function MapLibreMap({
           layers={mapData?.layers ?? []}
           hiddenLayerIDs={hiddenLayerIDs}
           historyOpen={mobileWorkspacePanel === 'history'}
+          chatsHidden={chatsHidden}
           onAskSage={(prompt) => void sendMessage(prompt)}
           sage={sageLink}
         />
