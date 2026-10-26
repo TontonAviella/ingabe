@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Response
 from typing import List, Optional
 from pydantic import BaseModel
 from datetime import datetime
@@ -148,3 +148,18 @@ async def get_conversation_messages(
             sanitized_payload = convert_mundi_message_to_sanitized(cc_message)
             messages.append(sanitized_payload)
         return messages
+
+
+@router.delete("/conversations/{conversation_id}", status_code=204, operation_id="delete_conversation")
+async def delete_conversation(
+    conversation: Conversation = Depends(get_conversation),
+    session: UserContext = Depends(verify_session_required),
+) -> Response:
+    """Delete one of your own chats (Roger, 2026-10-26: chats could not be deleted). It is hidden everywhere, as a
+    deleted chat already was; its messages stay in the database. get_conversation lets only its owner reach it."""
+    async with async_conn("delete_conversation", user_id=session.get_user_id()) as conn:
+        await conn.execute(
+            "UPDATE conversations SET soft_deleted_at = now() WHERE id = $1 AND owner_uuid = $2::uuid",
+            conversation.id, session.get_user_id(),
+        )
+    return Response(status_code=204)

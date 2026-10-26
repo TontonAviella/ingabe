@@ -120,7 +120,7 @@ async function createAgriIndicesLayer(layerId: string, geojsonUrl: string) {
 }
 
 import { bbox } from '@turf/turf';
-import { Activity, Brain, Database, History, Layers3, MousePointerClick, Send, X, ZoomIn } from 'lucide-react';
+import { Activity, Brain, Database, History, Layers3, MousePointerClick, PanelRightOpen, Send, X, ZoomIn } from 'lucide-react';
 import {
   AJAXError,
   type LayerSpecification,
@@ -172,6 +172,7 @@ const EMPTY_POINT_CLOUD_LAYERS: MapLayer[] = [];
 
 // SWAP_XY is created lazily via getDeckModules() since Matrix4 is dynamically imported.
 
+const CHATS_HIDDEN_KEY = 'ingabe.chatsHidden';
 interface MapLibreMapProps {
   mapId: string;
   width?: string;
@@ -308,6 +309,22 @@ export default function MapLibreMap({
   }>({});
   const [loadingSourceIds, setLoadingSourceIds] = useState<Set<string>>(new Set());
   const [mobileWorkspacePanel, setMobileWorkspacePanel] = useState<MobileWorkspacePanel>(null);
+  // Wide screens: the chats panel can be hidden so the map has the whole width; remembered on this device.
+  const [chatsHidden, setChatsHiddenState] = useState(() => {
+    try {
+      return localStorage.getItem(CHATS_HIDDEN_KEY) === '1';
+    } catch {
+      return false;
+    }
+  });
+  const setChatsHidden = (hidden: boolean) => {
+    setChatsHiddenState(hidden);
+    try {
+      localStorage.setItem(CHATS_HIDDEN_KEY, hidden ? '1' : '0');
+    } catch {
+      // private window or blocked storage: the choice lasts for this visit only
+    }
+  };
   const [isMapReady, setIsMapReady] = useState(false);
 
   const {
@@ -1706,9 +1723,6 @@ export default function MapLibreMap({
   // last message in the conversation and has text content.
   const lastAssistantMsg: string | undefined = lastMsg && lastMsg.role === 'assistant' ? lastMsg.content : undefined;
 
-  // Determine the last user message for the input placeholder.
-  const lastUserMsg: string | undefined = lastMsg && lastMsg.role === 'user' ? lastMsg.content : undefined;
-
   // especially chat disconnected errors happen all the time and shouldn't
   // override the text box
   const criticalErrors = errors.filter((e) => e.shouldOverrideMessages);
@@ -1814,6 +1828,18 @@ export default function MapLibreMap({
         >
           <History className="size-5" />
         </button>
+        {chatsHidden && (
+          <button
+            type="button"
+            className="absolute top-4 right-16 z-40 hidden h-9 items-center gap-2 rounded-full border border-white/10 bg-[#17110E]/95 px-3.5 text-[13.5px] font-semibold text-[#F3EDE6] shadow-md hover:border-[#D9A066]/60 xl:flex cursor-pointer"
+            onClick={() => setChatsHidden(false)}
+            aria-label="Show chats"
+            title="Show chats"
+          >
+            <PanelRightOpen className="size-4 text-[#D9A066]" />
+            Chats
+          </button>
+        )}
         {selectedFeature && (
           <Card className="absolute bottom-10 left-4 max-h-[60vh] overflow-auto py-2 rounded-sm border-0 gap-2 max-w-72 w-full">
             <CardHeader className="px-2">
@@ -1903,13 +1929,19 @@ export default function MapLibreMap({
           onCancel={() => setIsCancelling(true)}
           onDismissError={dismissError}
           actionIcon={getActionIcon}
+          centered={chatsHidden}
         />
-        <div className="z-30 absolute bottom-12 left-1/2 xl:left-3/5 transform -translate-x-1/2 w-[calc(100%-1rem)] sm:w-4/5 max-w-[34rem] flex items-center min-h-12 rounded-[18px] border border-white/10 bg-[#17110E]/95 shadow-[0_12px_32px_rgba(0,0,0,0.45)] backdrop-blur-xl focus-within:border-[#D9A066]/60">
+        <div
+          className={`z-30 absolute bottom-12 left-1/2 ${chatsHidden ? '' : 'xl:left-3/5'} transform -translate-x-1/2 w-[calc(100%-1rem)] sm:w-4/5 max-w-[34rem] flex items-center min-h-12 rounded-[18px] border border-white/10 bg-[#17110E]/95 shadow-[0_12px_32px_rgba(0,0,0,0.45)] backdrop-blur-xl focus-within:border-[#D9A066]/60`}
+        >
           <Input
             className={`flex-1 h-12 border-none shadow-none !bg-transparent px-4 text-[15px] text-[#F3EDE6] placeholder:text-[#8E7F73] focus:!ring-0 focus:!ring-offset-0 focus-visible:!ring-0 focus-visible:!ring-offset-0 focus-visible:!outline-none`}
             placeholder={
-              lastUserMsg ||
-              (farmProject ? 'Ask Sage about this photo, a plot or a place…' : 'Ask Sage about this photo, the map or a place…')
+              conversationId !== null
+                ? 'Continue this chat…'
+                : farmProject
+                  ? 'Ask Sage about this photo, a plot or a place…'
+                  : 'Ask Sage about this photo, the map or a place…'
             }
             value={inputValue}
             onChange={(e) => setInputValue(e.target.value)}
@@ -1931,7 +1963,7 @@ export default function MapLibreMap({
       </div>
 
       <div
-        className={`${mobileWorkspacePanel === 'history' ? 'fixed' : 'hidden'} inset-y-0 right-0 z-50 w-[min(22rem,calc(100%-1rem))] bg-background shadow-xl xl:static xl:block xl:w-96 xl:shrink-0 xl:shadow-none`}
+        className={`${mobileWorkspacePanel === 'history' ? 'fixed' : 'hidden'} inset-y-0 right-0 z-50 w-[min(22rem,calc(100%-1rem))] bg-background shadow-xl xl:static ${chatsHidden ? 'xl:hidden' : 'xl:block'} xl:w-96 xl:shrink-0 xl:shadow-none`}
       >
         <button
           type="button"
@@ -1951,6 +1983,7 @@ export default function MapLibreMap({
           setConversationId={setConversationId}
           activeActions={activeActions}
           farmControls={farmProject}
+          onClose={() => setChatsHidden(true)}
         />
       </div>
     </>

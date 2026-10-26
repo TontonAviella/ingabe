@@ -104,3 +104,17 @@ async def test_multiple_conversations(auth_client, test_map_with_vector_layers):
     conversation_ids = [conv["id"] for conv in conversations]
     assert response1.json()["id"] in conversation_ids
     assert response2.json()["id"] in conversation_ids
+
+
+@pytest.mark.anyio
+async def test_deleting_a_chat_hides_it_and_it_cannot_be_opened_again(auth_client, test_map_with_vector_layers):
+    """Roger (2026-10-26): chats could not be deleted."""
+    project_id = test_map_with_vector_layers["project_id"]
+    created = (await auth_client.post("/api/conversations", json={"project_id": project_id})).json()
+
+    deleted = await auth_client.delete(f"/api/conversations/{created['id']}")
+    assert deleted.status_code == 204
+    listed = (await auth_client.get(f"/api/conversations?project_id={project_id}")).json()
+    assert created["id"] not in [c["id"] for c in listed]
+    assert (await auth_client.get(f"/api/conversations/{created['id']}/messages")).status_code == 404
+    assert (await auth_client.delete(f"/api/conversations/{created['id']}")).status_code == 404  # once
