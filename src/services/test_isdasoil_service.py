@@ -116,3 +116,20 @@ def test_texture_class_is_named(soil):
     texture = soil("texture_class")["texture_class"]
     assert texture["texture_name"] == "Clay loam"
     assert "uncertainty" not in texture and "likely_range" not in texture
+
+
+def test_a_point_is_read_from_the_maps_once_then_from_disk(monkeypatch):
+    reads = []
+
+    def from_source(url, lon, lat, buffer_m):
+        reads.append(url)
+        return np.array(RAW["ph"], dtype=np.float64)
+
+    monkeypatch.setattr(isdasoil_service, "_read_point_from_source", from_source)
+    url = isdasoil_service._cog_url("ph")
+    first = isdasoil_service._read_point(url, *CYAMPIRITA)
+    again = isdasoil_service._read_point(url, *CYAMPIRITA)
+    assert reads == [url]
+    assert again.tolist() == first.tolist() == RAW["ph"]
+    isdasoil_service._read_point(url, CYAMPIRITA[0] + 0.01, CYAMPIRITA[1])  # another point is read
+    assert len(reads) == 2
