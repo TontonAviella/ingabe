@@ -198,3 +198,39 @@ async def test_sharing_with_a_guest_the_usual_way_ends_their_time_limit(team):
                            project)
         assert await project_people.end_expired_guests(conn) == 0  # nothing left to expire
     assert await _visible_to(ids["outsider"], project)
+
+
+class _Session:
+    def __init__(self, user_id: str):
+        self._user_id = user_id
+
+    def get_user_id(self) -> str:
+        return self._user_id
+
+
+@pytest.mark.anyio
+async def test_a_guest_never_sees_other_peoples_sage_chats(team):
+    """Roger (2026-10-26): guests must not see the Sage chats. Every chat read is the asker's own: the chat list,
+    opening one (and the map's history and live replies, which use the same owner check)."""
+    from fastapi import HTTPException
+
+    from src.dependencies.conversation import get_conversation
+    from src.routes.conversation_routes import list_conversations
+
+    ids, email, project = team["ids"], team["email"], team["project"]
+    async with get_async_db_connection() as conn:
+        chat = await conn.fetchval("INSERT INTO conversations (project_id, owner_uuid, title) "
+                                   "VALUES ($1, $2::uuid, 'Owner chat') RETURNING id", project, ids["owner"])
+    try:
+        await _invite(team, email["outsider"], "editor")
+        await _claim(ids["outsider"], email["outsider"])
+        assert await _visible_to(ids["outsider"], project)  # the guest has the project...
+        guest = _Session(ids["outsider"])
+        assert await list_conversations(project, guest) == []  # ...but not the owner's chats
+        with pytest.raises(HTTPException) as no:
+            await get_conversation(chat, guest)
+        assert no.value.status_code == 404
+        assert [c.id for c in await list_conversations(project, _Session(ids["owner"]))] == [chat]
+    finally:
+        async with get_async_db_connection() as conn:
+            await conn.execute("DELETE FROM conversations WHERE id = $1", chat)
