@@ -75,3 +75,26 @@ def test_other_failures_are_not_kept(cog):
     state["error"] = None
     assert ws._read_point(URL, -1.9, 30.1, 0.1, 0.0) == pytest.approx(3.7)
     assert state["opens"] == 2
+
+
+def test_a_restart_reads_kept_values_from_disk_not_the_file(cog, monkeypatch):
+    # Roger, 2026-10-26: the first insurance report after a deploy took ~10 s, re-reading dekads read before.
+    state, _ = cog
+    assert ws._read_point(URL, -1.9, 30.1, 0.1, 0.0) == pytest.approx(3.7)
+    state["value"] = ws.NODATA
+    assert ws._read_point(URL, -1.8, 30.2, 0.1, 0.0) is None
+    monkeypatch.setattr(ws, "_points", LRUCache(maxsize=64))  # the restart: memory is empty, the disk is not
+    state["value"], state["error"] = 99, rasterio.errors.RasterioIOError("HTTP response code: 503")
+    assert ws._read_point(URL, -1.9, 30.1, 0.1, 0.0) == pytest.approx(3.7)
+    assert ws._read_point(URL, -1.8, 30.2, 0.1, 0.0) is None  # NODATA kept as missing, not asked again
+    assert state["opens"] == 2
+
+
+def test_failures_are_not_kept_on_disk(cog, monkeypatch):
+    state, _ = cog
+    state["error"] = rasterio.errors.RasterioIOError("HTTP response code: 503")
+    assert ws._read_point(URL, -1.9, 30.1, 0.1, 0.0) is None
+    monkeypatch.setattr(ws, "_points", LRUCache(maxsize=64))
+    state["error"] = None
+    assert ws._read_point(URL, -1.9, 30.1, 0.1, 0.0) == pytest.approx(3.7)
+    assert state["opens"] == 2
