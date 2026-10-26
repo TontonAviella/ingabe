@@ -9,6 +9,7 @@ import {
   AskSageChips,
   CardButton,
   CardsPanel,
+  type PanelTeaser,
   panelOffset,
   panelPadding,
   readCollapsed,
@@ -648,6 +649,25 @@ function useAnswerOverlay(map: MLMap | null, answer: DroneCardAnswer | null, bou
   }, [map, answer]);
 }
 
+const ANSWERED: DroneCard['status'][] = ['ready', 'partly'];
+
+/** What the hidden panel's button says: how many answers wait on this photo, and the questions they answer (new ones
+ * first), so a reader sees what they would get before they click. */
+export function waitingOnPhoto(cards: DroneCard[] | null): { label: string; teasers: PanelTeaser[] } {
+  if (!cards) return { label: 'Reading your photo', teasers: [] };
+  const fresh = cards.filter((c) => c.new);
+  const answered = cards.filter((c) => ANSWERED.includes(c.status));
+  const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? '' : 's'}`;
+  const label = fresh.length
+    ? `${plural(fresh.length, 'new answer')} on this photo`
+    : answered.length
+      ? `${plural(answered.length, 'answer')} ready on this photo`
+      : `${plural(cards.length, 'question')} about this photo`;
+  // Under "answers ready" show only questions that have one; the rest wait in the panel.
+  const order = fresh.length || answered.length ? [...fresh, ...answered.filter((c) => !c.new)] : cards;
+  return { label, teasers: order.slice(0, 4).map((c) => ({ id: c.id, text: c.question })) };
+}
+
 /** Another mix of questions, for "Other questions". The panel opens on the day's set (seed 0: the server picks the
  * day's), so the questions change each day, not on every page load. */
 function newSeed() {
@@ -659,6 +679,7 @@ export function DroneCards({
   layers,
   hiddenLayerIDs,
   historyOpen,
+  chatsHidden = false,
   onAskSage,
 }: {
   map: MLMap | null;
@@ -666,6 +687,8 @@ export function DroneCards({
   hiddenLayerIDs: string[];
   /** "Previous chats" is open; below xl it covers the right side of the map, so the cards step aside. */
   historyOpen: boolean;
+  /** The chats panel is hidden; its "Chats" button takes the top-right corner, so the cards sit below it. */
+  chatsHidden?: boolean;
   /** Sends a question to Sage in the chat. */
   onAskSage: (prompt: string) => void;
 }) {
@@ -698,15 +721,22 @@ export function DroneCards({
     writeCollapsed(COLLAPSED_KEY, value);
   };
 
+  const waiting = waitingOnPhoto(deck.data?.for_you ?? null);
   return (
     <CardsPanel
       ariaLabel="Questions for this drone photo"
-      heading="Questions"
+      heading="Ask this photo"
       hideLabel="Hide the questions"
       collapsed={collapsed}
-      collapsedLabel={`Questions${deck.data ? ` · ${deck.data.for_you.length}` : ''}`}
+      collapsedLabel={waiting.label}
+      teasers={waiting.teasers}
+      onTeaser={(id) => {
+        setOpenCard(id);
+        setCollapsedAndSave(false);
+      }}
       onCollapsedChange={setCollapsedAndSave}
       historyOpen={historyOpen}
+      belowChatsButton={chatsHidden}
     >
       {deck.isPending && <p className="m-0 py-6 text-[15px] text-[#D8CCBF]">Ingabe is looking at your photo…</p>}
       {deck.error?.status === 409 && (
