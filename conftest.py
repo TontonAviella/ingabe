@@ -61,6 +61,12 @@ import openai._base_client as _openai_base_client
 _openai_base_client.AsyncHttpxClientWrapper.__del__ = lambda self: None
 
 
+@pytest.fixture(autouse=True)
+def _disk_memo_per_test(tmp_path, monkeypatch):
+    """Each test keeps disk_memo answers in its own file, so a value kept by one test never answers another."""
+    monkeypatch.setenv("DISK_MEMO_PATH", str(tmp_path / "memo.sqlite3"))
+
+
 @pytest.fixture
 def run_alembic_operation():
     async def _run_alembic_operation(operation, target=None):

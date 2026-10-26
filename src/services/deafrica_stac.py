@@ -34,6 +34,7 @@ Environment:
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import math
@@ -46,7 +47,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import httpx
 import numpy as np
 
-from src.services import raster_process
+from src.services import disk_memo, raster_process
 from src.services.gdal_http import GDAL_HTTP_TIMEOUTS
 from src.services.stac_service import SCL_UNUSABLE, stac_datetime_interval
 
@@ -402,9 +403,22 @@ def area_ndvi_anomaly(geometry: Dict[str, Any], not_after: date) -> Optional[Dic
             "source": NDVI_ANOMALY_SOURCE}
 
 
-@lru_cache(maxsize=256)  # a published month does not change; a failed read raises and is not kept
+# A published month does not change: its answer for an area is kept in memory and on disk (disk_memo), so
+# a restart does not lose it. A failed read raises and is not kept.
+@lru_cache(maxsize=256)
 def _area_month_anomaly(geometry_json: str, hrefs: Tuple[Tuple[str, str, str], ...]) -> Dict[str, Any]:
     """z, ndvi and clear_fraction of one area over one month's tiles ((anomaly, ndvi, count) hrefs)."""
+    memo_key = hashlib.sha256(json.dumps([geometry_json, hrefs]).encode()).hexdigest()
+    known, kept = disk_memo.get("deafrica_area_month_anomaly", memo_key)
+    if known:
+        return kept
+    result = _read_area_month_anomaly(geometry_json, hrefs)
+    disk_memo.put("deafrica_area_month_anomaly", memo_key, result)
+    return result
+
+
+def _read_area_month_anomaly(geometry_json: str, hrefs: Tuple[Tuple[str, str, str], ...]) -> Dict[str, Any]:
+    """_area_month_anomaly read from the tiles themselves."""
     def read(tile: Tuple[str, str, str]) -> Tuple[str, Any]:
         try:
             return raster_process.run(_area_tile_raw, geometry_json, tile, GDAL_HTTP_TIMEOUTS)

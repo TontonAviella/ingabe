@@ -36,7 +36,7 @@ import numpy as np
 import rasterio
 from cachetools import LRUCache, TTLCache
 
-from src.services import raster_process
+from src.services import disk_memo, raster_process
 from src.services.gdal_http import GDAL_HTTP_TIMEOUTS
 
 logger = logging.getLogger(__name__)
@@ -97,13 +97,14 @@ GDAL_COG_ENV = {
 }
 
 
-# Published dekads do not change, so a point read is kept for the life of the
-# process (a report asks for the same cell and dekads again, and every read takes
-# ~6-10 s). A dekad not published yet (404) is asked for again after a while;
-# other failures are not kept.
+# Published dekads do not change, so a point read is kept for good: in memory and
+# on disk (disk_memo), so a restart does not lose it (a report asks for the same
+# cell and dekads again, and every read takes ~6-10 s). A dekad not published
+# yet (404) is asked for again after a while; other failures are not kept.
 _points: LRUCache = LRUCache(maxsize=8192)  # (url, lat, lon) -> raw value, None for NODATA
 _unpublished: TTLCache = TTLCache(maxsize=1024, ttl=3 * 3600)  # url -> True
 _cache_lock = threading.Lock()
+_MEMO = "wapor_point"  # disk_memo namespace
 # Reads stay 6 at a time rather than all 12 dekads at once; each runs in a raster worker process
 # (raster_process: rasterio holds the GIL during part of a remote read).
 _READ_WORKERS = 6
@@ -123,11 +124,17 @@ def _read_point_raw(url: str, lat: float, lon: float, env: dict[str, str]) -> tu
 def _read_point(url: str, lat: float, lon: float, scale: float, offset: float) -> float | None:
     """Read a single pixel value from a COG at given coordinates."""
     key = (url, lat, lon)
+    memo_key = f"{url}|{lat!r}|{lon!r}"
     with _cache_lock:
         if url in _unpublished:
             return None
         known = key in _points
         raw = _points.get(key)
+    if not known:
+        known, raw = disk_memo.get(_MEMO, memo_key)
+        if known:
+            with _cache_lock:
+                _points[key] = raw
     if not known:
         try:
             kind, got = raster_process.run(_read_point_raw, url, lat, lon, GDAL_COG_ENV)
@@ -142,6 +149,7 @@ def _read_point(url: str, lat: float, lon: float, scale: float, offset: float) -
         raw = None if got == NODATA else got
         with _cache_lock:
             _points[key] = raw
+        disk_memo.put(_MEMO, memo_key, raw)
     return None if raw is None else raw * scale + offset
 
 

@@ -90,3 +90,24 @@ def test_a_tile_that_could_not_be_read_fails_the_read_and_is_not_kept(tmp_path, 
     with pytest.raises(RuntimeError, match="HTTP 503"):
         deafrica_stac.area_ndvi_anomaly(AREA, date(2026, 10, 7))
     assert deafrica_stac._area_month_anomaly.cache_info().currsize == 0  # the next report reads again
+
+
+def test_a_restart_reads_a_kept_month_from_disk_not_the_tiles(tmp_path, monkeypatch):
+    # Roger, 2026-10-26: the first insurance report after a deploy took ~10 s, re-reading months read before.
+    sep = _item("2026-09", "2026-09-30", _tile(tmp_path, "sep", (-1.2, 0.33), 2))
+    monkeypatch.setattr(deafrica_stac, "_search_collection_items", lambda *a, **k: [sep])
+    first = deafrica_stac.area_ndvi_anomaly(AREA, date(2026, 10, 7))
+    deafrica_stac._area_month_anomaly.cache_clear()  # the restart: memory is empty, the disk is not
+    monkeypatch.setattr(deafrica_stac.raster_process, "run", lambda *a: ("error", "tiles must not be read again"))
+    assert deafrica_stac.area_ndvi_anomaly(AREA, date(2026, 10, 7)) == first
+
+
+def test_a_failed_read_is_not_kept_on_disk(tmp_path, monkeypatch):
+    sep = _item("2026-09", "2026-09-30", _tile(tmp_path, "sep", (-1.2, 0.33), 2))
+    monkeypatch.setattr(deafrica_stac, "_search_collection_items", lambda *a, **k: [sep])
+    real_run = deafrica_stac.raster_process.run
+    monkeypatch.setattr(deafrica_stac.raster_process, "run", lambda *a: ("error", "HTTP 503"))
+    with pytest.raises(RuntimeError):
+        deafrica_stac.area_ndvi_anomaly(AREA, date(2026, 10, 7))
+    monkeypatch.setattr(deafrica_stac.raster_process, "run", real_run)
+    assert deafrica_stac.area_ndvi_anomaly(AREA, date(2026, 10, 7))["z"] == pytest.approx(-1.2)
