@@ -68,7 +68,7 @@ from src.services.posthog_analytics import (
     capture_for_session,
     elapsed_ms,
 )
-from src.services.raster_zoom import raster_source_minzoom
+from src.services.raster_zoom import default_raster_maxzoom, raster_source_minzoom
 from src.services import drone_first_look, industry, photo_content, photo_inspections, project_partner, stored_files
 
 logger = logging.getLogger(__name__)
@@ -1326,10 +1326,7 @@ async def _prewarm_raster_tiles_after_cog(
     except (TypeError, ValueError):
         return
 
-    try:
-        maxzoom = int(os.environ.get("RASTER_SOURCE_MAXZOOM", "20"))
-    except ValueError:
-        maxzoom = 20
+    maxzoom = default_raster_maxzoom()
     prewarm_zoom = max(raster_source_minzoom(metadata, bounds), min(maxzoom, 18))
     if "raster_prewarm_zoom" in metadata:
         try:
