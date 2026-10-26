@@ -33,10 +33,10 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import JSONResponse, RedirectResponse
 from pydantic import BaseModel
 
-from src.database.pool import get_async_db_connection
+from src.database.pool import async_conn, get_async_db_connection
 from src.dependencies.session import UserContext, provision_workos_user, verify_session_required, workos_context
 from src.dependencies.workos_session import is_secure, set_session_cookie
-from src.services import workos_auth
+from src.services import project_people, workos_auth
 
 logger = logging.getLogger(__name__)
 
@@ -97,7 +97,13 @@ async def auth_callback(request: Request, code: Optional[str] = None, state: Opt
     except Exception as e:  # noqa: BLE001 - shown to the user as a failed sign-in, logged here
         logger.warning("WorkOS code exchange failed: %s", e)
         return RedirectResponse("/?sign_in_error=1", status_code=status.HTTP_302_FOUND)
-    await provision_workos_user(user["id"], user.get("email"))  # links an existing account by email
+    internal_id = await provision_workos_user(user["id"], user.get("email"))  # links an existing account by email
+    try:
+        async with async_conn("project_guests.claim") as conn:  # no user: it changes projects not yet theirs
+            await project_people.claim_guest_invitations(conn, internal_id, user.get("email"),
+                                                         bool(user.get("email_verified")))
+    except Exception:  # noqa: BLE001 - signing in still works; the guest invitation stays open, logged here
+        logger.warning("Claiming guest invitations for %s failed", user["id"], exc_info=True)
     try:
         joined = await asyncio.to_thread(workos_auth.accept_pending_invitations, user)
     except Exception:  # noqa: BLE001 - signing in still works; the invitation stays pending, logged here

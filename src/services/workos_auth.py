@@ -417,6 +417,27 @@ def invite(organization_id: str, email: str, role: str, inviter_user_id: Optiona
     return _invitation_dict(inv)
 
 
+def invite_guest(email: str, days: int) -> Optional[str]:
+    """Email an invitation to sign in to the app, joining no organization, good for `days` (WorkOS sends it): a
+    project guest (src/services/project_people.py). The invitation id, or None when WorkOS refuses (an address
+    that already has an account, for one): the guest still gets the project by signing in with that address, and
+    the owner is told the same either way so sharing never reveals who has an account."""
+    try:
+        inv = _client().user_management.send_invitation(email=email, organization_id=None, expires_in_days=days)
+    except Exception as e:  # noqa: BLE001 - WorkOS SDK errors: logged; the guest invitation stands
+        logger.info("Guest invitation email not sent (%s)", getattr(e, "code", type(e).__name__))
+        return None
+    return getattr(inv, "id", None)
+
+
+def revoke_guest_invitation(invitation_id: str) -> None:
+    """Withdraw a guest's invitation email (best effort: one already accepted or expired cannot be)."""
+    try:
+        _client().user_management.revoke_invitation(invitation_id)
+    except Exception as e:  # noqa: BLE001 - the guest's access is already ended in the database
+        logger.info("Guest invitation %s not revoked (%s)", invitation_id, getattr(e, "code", type(e).__name__))
+
+
 def _membership_in(membership_id: str, organization_id: str) -> Any:
     m = _client().organization_membership.get_organization_membership(membership_id)
     if m.organization_id != organization_id:
