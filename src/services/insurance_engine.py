@@ -23,6 +23,7 @@ from typing import Any, Optional
 
 import asyncpg
 
+from src.services import admin_boundaries
 from src.services import crop_stages
 from src.services import deafrica_stac
 from src.services import et_normals
@@ -1810,6 +1811,18 @@ def late_sources_note(late: list[str]) -> Optional[str]:
             f"{', '.join(late)}. They are missing, not zero; asking again shortly usually includes them.")
 
 
+def _place_problem(place: dict[str, Any], **asked: Optional[str]) -> dict[str, Any]:
+    """The tool's answer when the place asked for is not exactly one admin unit."""
+    where = ", ".join(f"{level} {name}" for level, name in asked.items() if name)
+    if place.get("status") == "ambiguous":
+        candidates = place.get("candidates") or []
+        places = "; ".join(", ".join(f"{k} {v}" for k, v in c.items() if k != "name" and v) for c in candidates)
+        error = (f"{place.get('admin_name')} is the name of {place.get('match_count') or len(candidates)} "
+                 f"{place.get('admin_level')}s ({places}). Ask which one, then call again with its sector and district.")
+        return {"status": "ambiguous", "error": error, "candidates": candidates}
+    return {"status": "not_found", "error": place.get("error") or f"No Rwanda admin unit matches {where}."}
+
+
 async def compute_insurance_intelligence(
     conn: asyncpg.Connection,
     crop: str = "maize",
@@ -1879,11 +1892,14 @@ async def compute_insurance_intelligence(
 
     growth_phase = _season_progress_label(dap, harvest_dap)
 
-    # Get geometry and centroid for CHIRPS/WaPOR
-    from src.services.admin_boundaries import lookup_admin_geometry
-    geometry = await lookup_admin_geometry(
-        district=district, sector=sector, cell=cell, village=village,
-    )
+    # Get geometry and centroid for CHIRPS/WaPOR. A place that is not exactly one admin unit (not
+    # found, or a name several units share) gets no report: never another place's rain under its name.
+    geometry = None
+    if district or sector or cell or village:
+        place = await admin_boundaries.resolve_admin_geometry(district=district, sector=sector, cell=cell, village=village)
+        if place.get("status") != "success":
+            return _place_problem(place, district=district, sector=sector, cell=cell, village=village)
+        geometry = place.get("geometry")
     if geometry:
         lat, lon = _centroid_from_geojson(geometry)
     else:

@@ -857,7 +857,7 @@ class TestValidAudiences:
 
         from contextlib import ExitStack
         stack = ExitStack()
-        stack.enter_context(patch("src.services.admin_boundaries.lookup_admin_geometry", new_callable=AsyncMock, return_value=None))
+        stack.enter_context(patch("src.services.admin_boundaries.resolve_admin_geometry", new_callable=AsyncMock, return_value={"status": "success", "geometry": None}))
         stack.enter_context(patch("src.services.insurance_engine.compute_insurance_accuracy_safe", new_callable=AsyncMock, return_value=None))
         stack.enter_context(patch("src.services.weather_accuracy.detect_dry_spells", new_callable=AsyncMock, return_value=None))
         stack.enter_context(patch("src.services.weather_accuracy.compute_ndvi_concordance", new_callable=AsyncMock, return_value=None))
@@ -974,7 +974,7 @@ class TestComputeInsuranceIntelligence:
         """Return a contextlib.ExitStack context manager with all external deps patched."""
         from contextlib import ExitStack
         stack = ExitStack()
-        stack.enter_context(patch("src.services.admin_boundaries.lookup_admin_geometry", new_callable=AsyncMock, return_value=geom))
+        stack.enter_context(patch("src.services.admin_boundaries.resolve_admin_geometry", new_callable=AsyncMock, return_value={"status": "success", "geometry": geom}))
         stack.enter_context(patch("src.services.insurance_engine.compute_insurance_accuracy_safe", new_callable=AsyncMock, return_value=acc))
         stack.enter_context(patch("src.services.weather_accuracy.detect_dry_spells", new_callable=AsyncMock, return_value=dry))
         stack.enter_context(patch("src.services.weather_accuracy.compute_ndvi_concordance", new_callable=AsyncMock, return_value=conc))
@@ -1003,6 +1003,33 @@ class TestComputeInsuranceIntelligence:
             result = _run(compute_insurance_intelligence(conn, crop="maize", ref_date=date(2025, 11, 15)))
         assert result["status"] == "error"
         assert "district" in result["error"].lower() or "specify" in result["error"].lower()
+
+    def test_a_place_that_is_several_places_gets_no_report(self):
+        """Roger, 2026-10-26: Kanyangese is a cell in Gatsibo and in Rwamagana; a name alone must not
+        bring back the other one's rain. The tool says where each is, and reads nothing."""
+        conn = self._mock_conn()
+        ambiguous = {"status": "ambiguous", "admin_level": "cell", "admin_name": "Kanyangese", "match_count": 2,
+                     "candidates": [{"name": "Kanyangese", "sector": "Rugarama", "district": "Gatsibo"},
+                                    {"name": "Kanyangese", "sector": "Gahengeri", "district": "Rwamagana"}]}
+        with self._patches() as stack:
+            stack.enter_context(patch("src.services.admin_boundaries.resolve_admin_geometry",
+                                      new_callable=AsyncMock, return_value=ambiguous))
+            chirps = stack.enter_context(patch("src.services.forecast_fusion.fetch_chirps_daily",
+                                               return_value=({}, set())))
+            result = _run(compute_insurance_intelligence(conn, crop="maize", cell="Kanyangese",
+                                                         ref_date=date(2026, 10, 26)))
+        assert result["status"] == "ambiguous"
+        assert "Gatsibo" in result["error"] and "Rwamagana" in result["error"]
+        assert "data" not in result and not chirps.called
+
+    def test_a_place_not_found_gets_no_report_not_the_middle_of_rwanda(self):
+        conn = self._mock_conn()
+        with self._patches() as stack:
+            stack.enter_context(patch("src.services.admin_boundaries.resolve_admin_geometry", new_callable=AsyncMock,
+                                      return_value={"status": "not_found", "error": "No cell called Xyz."}))
+            result = _run(compute_insurance_intelligence(conn, crop="maize", district="Gatsibo", cell="Xyz",
+                                                         ref_date=date(2026, 10, 26)))
+        assert result == {"status": "not_found", "error": "No cell called Xyz."}
 
     def test_season_auto_detection_used(self):
         conn = self._mock_conn()
@@ -1530,7 +1557,7 @@ class TestOrchestratorEdgeCases:
     def _patches(self, *, geom=None, season="A", acc=None, dry=None, conc=None, chirps=None, et=None, soil=None):
         from contextlib import ExitStack
         stack = ExitStack()
-        stack.enter_context(patch("src.services.admin_boundaries.lookup_admin_geometry", new_callable=AsyncMock, return_value=geom))
+        stack.enter_context(patch("src.services.admin_boundaries.resolve_admin_geometry", new_callable=AsyncMock, return_value={"status": "success", "geometry": geom}))
         stack.enter_context(patch("src.services.insurance_engine.compute_insurance_accuracy_safe", new_callable=AsyncMock, return_value=acc))
         stack.enter_context(patch("src.services.weather_accuracy.detect_dry_spells", new_callable=AsyncMock, return_value=dry))
         stack.enter_context(patch("src.services.weather_accuracy.compute_ndvi_concordance", new_callable=AsyncMock, return_value=conc))

@@ -13,6 +13,8 @@ import asyncpg
 from collections import OrderedDict
 from typing import Optional
 
+from src.database.pool import get_async_read_connection
+
 logger = logging.getLogger(__name__)
 
 # Rwanda's 30 districts (official names).
@@ -59,57 +61,65 @@ def _resolve_admin_level(
     return None
 
 
+async def resolve_admin_geometry(
+    district: Optional[str] = None,
+    sector: Optional[str] = None,
+    cell: Optional[str] = None,
+    village: Optional[str] = None,
+    *,
+    conn=None,
+) -> dict:
+    """The one Rwanda admin unit asked for, with its GeoJSON geometry (read on `conn`, else a read connection).
+
+    The smallest level given is the unit; the larger ones given are its parents, and it must lie
+    inside them: 286 cell names, 30 sector names and 1,814 village names are shared by several
+    units, so a name alone may be several places. Same answer as resolve_admin_boundary
+    ("success", "ambiguous", "not_found", "error"); "success" adds "geometry". A name that is several
+    places is never guessed.
+    """
+    resolved = _resolve_admin_level(district, sector, cell, village)
+    if resolved is None:
+        return {"status": "error", "error": "No place given."}
+    level, name = resolved
+    given = {"district": district, "sector": sector, "cell": cell}
+    parents = {key: value for key, value in given.items()
+               if value and _SIZE_ORDER.index(key) > _SIZE_ORDER.index(level)}
+    cache_key = json.dumps([level, name.lower(), sorted((k, v.lower()) for k, v in parents.items())])
+
+    if cache_key in _cache:
+        _cache.move_to_end(cache_key)
+        return {"status": "success", "admin_level": level, "admin_name": name, "geometry": _cache[cache_key]}
+
+    if conn is None:
+        async with get_async_read_connection() as read_conn:
+            return await resolve_admin_geometry(district, sector, cell, village, conn=read_conn)
+    result = await resolve_admin_boundary(conn, {"admin_level": level, "name": name, **parents})
+    if result.get("status") != "success":
+        return result
+    row = await conn.fetchrow(f"SELECT ST_AsGeoJSON(ST_Union(geom))::text FROM ({result['query']}) q")
+    if not (row and row[0]):
+        return {"status": "not_found", "admin_level": level, "admin_name": name}
+    geom = json.loads(row[0])
+    _cache[cache_key] = geom
+    if len(_cache) > _CACHE_MAX:
+        _cache.popitem(last=False)
+    return {**result, "geometry": geom}
+
+
 async def lookup_admin_geometry(
     district: Optional[str] = None,
     sector: Optional[str] = None,
     cell: Optional[str] = None,
     village: Optional[str] = None,
 ) -> Optional[dict]:
-    """Fetch GeoJSON geometry for a Rwanda admin boundary from PostGIS.
-
-    Returns cached result if available.  Priority: village > cell > sector > district.
-    Uses read-only connection pool.  Includes sector fallback via cell union.
-    """
-    resolved = _resolve_admin_level(district, sector, cell, village)
-    if resolved is None:
-        return None
-
-    level, name = resolved
-    cache_key = f"{level}:{name.lower()}"
-
-    if cache_key in _cache:
-        _cache.move_to_end(cache_key)
-        return _cache[cache_key]
-
+    """GeoJSON geometry of the one admin unit asked for (see resolve_admin_geometry), or None when it
+    is not exactly one place or the lookup failed (logged)."""
     try:
-        from src.structures import get_async_read_connection
-
-        async with get_async_read_connection() as conn:
-            table, column = _ADMIN_LEVELS[level]
-            row = await conn.fetchrow(
-                f"SELECT ST_AsGeoJSON(geom)::text FROM {table} "
-                f"WHERE LOWER({column}) = LOWER($1) LIMIT 1",
-                name,
-            )
-
-            # Sector fallback: union cells if sector table lookup fails
-            if not (row and row[0]) and level == "sector":
-                row = await conn.fetchrow(
-                    "SELECT ST_AsGeoJSON(ST_Union(geom))::text FROM rwanda_cell_boundaries "
-                    "WHERE LOWER(sector_name) = LOWER($1)",
-                    name,
-                )
-
-            if row and row[0]:
-                geom = json.loads(row[0])
-                _cache[cache_key] = geom
-                if len(_cache) > _CACHE_MAX:
-                    _cache.popitem(last=False)
-                return geom
+        result = await resolve_admin_geometry(district, sector, cell, village)
     except Exception as e:
-        logger.warning("Admin geometry lookup failed for %s: %s", cache_key, e)
-
-    return None
+        logger.warning("Admin geometry lookup failed for %s/%s/%s/%s: %s", district, sector, cell, village, e)
+        return None
+    return result["geometry"] if result.get("status") == "success" else None
 
 
 # Map outlines per level: (table, id column, name column, parent columns).
