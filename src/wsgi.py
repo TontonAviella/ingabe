@@ -259,8 +259,26 @@ async def lifespan(app: FastAPI):
                 )
             await asyncio.sleep(30)
 
+    async def _guest_expiry_loop():
+        """Take project guests whose time ran out off their project (src/services/project_people.py)."""
+        from src.database.pool import async_conn
+        from src.services import project_people
+
+        await asyncio.sleep(15)
+        while True:
+            try:
+                async with async_conn("project_guests.expire") as conn:  # no user: it changes others' projects
+                    ended = await project_people.end_expired_guests(conn)
+                if ended:
+                    logging.getLogger("src.services.project_people").info("Ended %d guest(s) whose time ran out", ended)
+            except Exception:  # noqa: BLE001 - the loop must survive; the next cycle tries again
+                logging.getLogger("src.services.project_people").warning("Guest expiry cycle failed", exc_info=True)
+            await asyncio.sleep(project_people.GUEST_SWEEP_SECONDS)
+
     workers_enabled = _background_workers_enabled()
     hook_task = asyncio.create_task(_brain_hook_loop()) if workers_enabled else None
+    # Guests' time limits are enforced here, so this runs in every app process (it is idempotent).
+    guest_task = asyncio.create_task(_guest_expiry_loop())
     # Component self-tests (src/dependencies/component_checks.py): one worker runs them, chosen by a Redis lock.
     checks_task = None
     if workers_enabled and os.environ.get("COMPONENT_CHECKS", "1").strip().lower() not in {"0", "false", "no", "off"}:
@@ -284,6 +302,7 @@ async def lifespan(app: FastAPI):
     yield
 
     workos_warm_task.cancel()
+    guest_task.cancel()
     if checks_task is not None:
         checks_task.cancel()
     if hook_task is not None:

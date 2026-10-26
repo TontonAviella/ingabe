@@ -7,8 +7,9 @@ import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 
 // "Share": who a project is shared with, and for its owner, sharing it with a colleague (someone in one of their
-// organizations, from the People page) as editor or viewer. The server decides who may share and with whom
-// (src/services/project_people.py); this only shows its answer.
+// organizations, from the People page) as editor or viewer, or with anyone by email as a guest: this project only,
+// for 1, 7 or 30 days. The server decides who may share and with whom (src/services/project_people.py); this only
+// shows its answer.
 
 type Role = 'editor' | 'viewer';
 interface Person {
@@ -16,11 +17,37 @@ interface Person {
   email: string | null;
   role: Role | null;
 }
+interface Guest {
+  id: number;
+  email: string;
+  role: Role;
+  status: 'invited' | 'active';
+  expires_at: string;
+}
 export interface ProjectPeople {
   owner: Person;
   people: Person[];
   can_share: boolean;
   colleagues: Person[];
+  guests?: Guest[];
+  guest_days?: number[];
+}
+
+const until = (iso: string) => new Date(iso).toLocaleDateString(undefined, { day: 'numeric', month: 'short' });
+type Change =
+  | { kind: 'share'; email: string; role: Role }
+  | { kind: 'remove'; userId: string }
+  | { kind: 'invite'; email: string; role: Role; days: number }
+  | { kind: 'removeGuest'; id: number };
+
+async function send(projectId: string, action: Change): Promise<Response> {
+  const json = (method: string, url: string, body: unknown) =>
+    apiFetch(url, { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  const base = `/api/projects/${projectId}`;
+  if (action.kind === 'share') return json('PUT', `${base}/people`, { email: action.email, role: action.role });
+  if (action.kind === 'invite') return json('POST', `${base}/guests`, { email: action.email, role: action.role, days: action.days });
+  if (action.kind === 'remove') return apiFetch(`${base}/people/${action.userId}`, { method: 'DELETE' });
+  return apiFetch(`${base}/guests/${action.id}`, { method: 'DELETE' });
 }
 
 const ROLE_WORDS: Record<Role, string> = {
@@ -64,23 +91,23 @@ function ShareDialog({ projectId, onClose }: { projectId: string; onClose: () =>
   });
   const [email, setEmail] = useState('');
   const [role, setRole] = useState<Role>('editor');
+  const [guestEmail, setGuestEmail] = useState('');
+  const [guestRole, setGuestRole] = useState<Role>('viewer');
+  const [guestDays, setGuestDays] = useState(7);
 
   const change = useMutation({
-    mutationFn: async (action: { kind: 'share'; email: string; role: Role } | { kind: 'remove'; userId: string }) =>
-      readJson(
-        action.kind === 'share'
-          ? await apiFetch(`/api/projects/${projectId}/people`, {
-              method: 'PUT',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ email: action.email, role: action.role }),
-            })
-          : await apiFetch(`/api/projects/${projectId}/people/${action.userId}`, { method: 'DELETE' }),
-      ),
+    mutationFn: async (action: Change) => readJson(await send(projectId, action)),
     onSuccess: (people, action) => {
       queryClient.setQueryData(key, people);
       if (action.kind === 'share') {
         setEmail('');
         toast(`Shared with ${action.email}.`);
+      }
+      if (action.kind === 'invite') {
+        setGuestEmail('');
+        toast(
+          `${action.email} is invited until ${until(people.guests?.find((g) => g.email === action.email.trim().toLowerCase())?.expires_at ?? '')}.`,
+        );
       }
     },
     onError: (e) => toast.error((e as Error).message),
@@ -96,7 +123,7 @@ function ShareDialog({ projectId, onClose }: { projectId: string; onClose: () =>
           <DialogTitle>Share this project</DialogTitle>
           <DialogDescription>
             {data?.can_share
-              ? 'Give a colleague from your organization access. Editors can open the maps, ask Sage and add layers; viewers can only look. Only you can delete the project.'
+              ? 'Give a colleague access, or invite anyone as a guest for a limited time. Editors can open the maps, ask Sage and add layers; viewers can only look. Only you can delete the project.'
               : 'The people who can open this project. Only its owner can change this.'}
           </DialogDescription>
         </DialogHeader>
@@ -141,6 +168,26 @@ function ShareDialog({ projectId, onClose }: { projectId: string; onClose: () =>
                   )}
                 </li>
               ))}
+              {(data.guests ?? []).map((g) => (
+                <li key={`guest-${g.id}`} className="flex items-center justify-between gap-2">
+                  <span className="flex min-w-0 flex-col">
+                    <span className="truncate">{g.email}</span>
+                    <span className="text-xs text-gray-400">
+                      {g.status === 'invited' ? 'Invited, not signed in yet' : 'Guest'} · {ROLE_WORDS[g.role].toLowerCase()} until{' '}
+                      {until(g.expires_at)}
+                    </span>
+                  </span>
+                  <button
+                    type="button"
+                    aria-label={`End ${g.email}'s access now`}
+                    disabled={change.isPending}
+                    onClick={() => change.mutate({ kind: 'removeGuest', id: g.id })}
+                    className="cursor-pointer rounded p-1 text-gray-400 hover:text-white"
+                  >
+                    <X className="h-3.5 w-3.5" />
+                  </button>
+                </li>
+              ))}
             </ul>
 
             {data.can_share &&
@@ -181,10 +228,66 @@ function ShareDialog({ projectId, onClose }: { projectId: string; onClose: () =>
               ) : (
                 <p className="border-t border-gray-700 pt-4 text-sm text-gray-400">
                   {data.colleagues.length > 0
-                    ? 'It is shared with everyone in your organization.'
-                    : 'Nobody else is in your organization yet. Invite people from People in the sidebar, then share.'}
+                    ? 'Everyone in your organization already has it.'
+                    : 'Nobody else is in your organization yet.'}
                 </p>
               ))}
+
+            {data.can_share && (
+              <form
+                className="flex flex-col gap-2 border-t border-gray-700 pt-4"
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  if (guestEmail.trim()) change.mutate({ kind: 'invite', email: guestEmail.trim(), role: guestRole, days: guestDays });
+                }}
+              >
+                <span className="text-sm font-semibold">Someone outside your organization</span>
+                <span className="text-xs text-gray-400">
+                  They see this project only, until the time runs out. They open it by signing in to Ingabe with this email.
+                </span>
+                <input
+                  id="guest-email"
+                  type="email"
+                  aria-label="Guest's email"
+                  placeholder="name@example.com"
+                  value={guestEmail}
+                  onChange={(e) => setGuestEmail(e.target.value)}
+                  className="min-w-0 rounded border border-gray-600 bg-transparent px-2 py-1.5 text-sm"
+                />
+                <div className="flex flex-wrap gap-2">
+                  <select
+                    id="guest-role"
+                    aria-label="Guest's role"
+                    value={guestRole}
+                    onChange={(e) => setGuestRole(e.target.value as Role)}
+                    className="rounded border border-gray-600 bg-transparent px-2 py-1.5 text-sm"
+                  >
+                    <option value="viewer">{ROLE_WORDS.viewer}</option>
+                    <option value="editor">{ROLE_WORDS.editor}</option>
+                  </select>
+                  <select
+                    id="guest-days"
+                    aria-label="How long"
+                    value={guestDays}
+                    onChange={(e) => setGuestDays(Number(e.target.value))}
+                    className="rounded border border-gray-600 bg-transparent px-2 py-1.5 text-sm"
+                  >
+                    {(data.guest_days ?? [1, 7, 30]).map((d) => (
+                      <option key={d} value={d}>
+                        for {d} {d === 1 ? 'day' : 'days'}
+                      </option>
+                    ))}
+                  </select>
+                  <Button
+                    type="submit"
+                    disabled={!guestEmail.trim() || change.isPending}
+                    className="ml-auto bg-[#D9A066] text-[#140E0B] hover:bg-[#E9B987]"
+                  >
+                    {change.isPending ? 'Inviting…' : 'Invite'}
+                  </Button>
+                </div>
+              </form>
+            )}
           </div>
         )}
       </DialogContent>
