@@ -20,6 +20,8 @@ Resolution: 30m, EPSG:3857
 Coverage: All of Africa
 Depths: 0–20 cm and 20–50 cm
 Bands per file: 4 (mean_0_20, mean_20_50, stdev_0_20, stdev_20_50)
+
+The maps are a fixed release, so each point read is kept on disk (disk_memo) and never read twice.
 """
 
 import logging
@@ -31,6 +33,8 @@ import rasterio
 from pyproj import Transformer
 from rasterio.env import Env as RasterioEnv
 from rasterio.windows import from_bounds
+
+from src.services import disk_memo
 
 logger = logging.getLogger(__name__)
 
@@ -230,7 +234,18 @@ def _cog_url(prop: str) -> str:
 def _read_point(
     url: str, lon: float, lat: float, buffer_m: float = 150.0
 ) -> np.ndarray:
-    """Read a small window around a point from a COG. Returns array of shape (bands,)."""
+    """Read a small window around a point from a COG. Returns array of shape (bands,).
+    Kept on disk: the iSDAsoil maps are a fixed release, so the same point never changes."""
+    key = f"{url}|{lon!r}|{lat!r}|{buffer_m!r}"
+    found, kept = disk_memo.get("isdasoil_point", key)
+    if found:
+        return np.asarray(kept, dtype=np.float64)
+    result = _read_point_from_source(url, lon, lat, buffer_m)
+    disk_memo.put("isdasoil_point", key, result.tolist())
+    return result
+
+
+def _read_point_from_source(url: str, lon: float, lat: float, buffer_m: float) -> np.ndarray:
     cx, cy = _transformer.transform(lon, lat)
     west = cx - buffer_m
     east = cx + buffer_m

@@ -7,7 +7,8 @@ insurance report after one took ~10 s instead of ~1.5 s (measured in mundi-app o
 each). This is the copy on disk beneath those memory caches.
 
 Only values that will never change may be kept here: the caller decides, and keys must name the exact
-source (URL, coordinates, area). Values are JSON. A disk that cannot be read or written is logged and
+source (URL, coordinates, area). A value that may change slowly (a place's position on OpenStreetMap) is
+kept with the time it was read, and its caller decides when it is too old (search_place). Values are JSON. A disk that cannot be read or written is logged and
 treated as a miss, so the answer is read from its source as before.
 
 The file lives on the ingabe-cache volume (DISK_MEMO_PATH), which outlives containers.

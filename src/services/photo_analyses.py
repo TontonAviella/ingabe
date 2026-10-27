@@ -1,6 +1,10 @@
 """One analysis of each photo of an inspection (SAM 3 outlines today: trees around a site, conductors on a line), run
 once per photo in the background and kept in storage under the analysis' own prefix (never beside the photo work
-records, which tower_inspection lists by prefix). A result is reused only by the same method."""
+records, which tower_inspection lists by prefix). A result is reused only by the same method.
+
+A result depends on nothing but the photo's pixels (the reader checks them against the SHA-256), so it is kept by
+the photo's content: the same photo in another inspection, project or partner's upload reuses it instead of paying
+Roboflow again. Results kept before 2026-10-26 under the inspection's own key are still read."""
 
 from __future__ import annotations
 
@@ -32,7 +36,12 @@ class PhotoAnalysis:
     enabled: Callable[[], bool]  # it can run here
 
 
-def _key(job: PhotoAnalysis, project_id: str, layer_id: str, sha256: str) -> str:
+def _key(job: PhotoAnalysis, sha256: str) -> str:
+    return f"{job.store_prefix}/by_photo/{sha256}.json"
+
+
+def _inspection_key(job: PhotoAnalysis, project_id: str, layer_id: str, sha256: str) -> str:
+    """Where results were kept before they were kept by content (read only)."""
     return f"{job.store_prefix}/{project_id}/{layer_id}/{sha256}.json"
 
 
@@ -41,9 +50,11 @@ async def load(job: PhotoAnalysis, s3: Any, bucket: str, project_id: str, layer_
     """The stored results of this method for the photos it applies to, by photo."""
     out: dict[str, dict[str, Any]] = {}
     for p in job.select(photos):
-        data = await stored_files.load_json(s3, bucket, _key(job, project_id, layer_id, p.sha256))
-        if data is not None and data.get("method") == job.method:
-            out[p.sha256] = data
+        for key in (_key(job, p.sha256), _inspection_key(job, project_id, layer_id, p.sha256)):
+            data = await stored_files.load_json(s3, bucket, key)
+            if data is not None and data.get("method") == job.method:
+                out[p.sha256] = data
+                break
     return out
 
 
@@ -55,7 +66,7 @@ async def _analyse_photo(job: PhotoAnalysis, s3: Any, bucket: str, project_id: s
     picture = await InspectionPhoto(s3=s3, bucket=bucket, layer_id=layer_id, layer_metadata=layer_metadata,
                                     sha256=photo.sha256, view=view).read()
     result = await asyncio.to_thread(job.analyse, picture.pixels)
-    await s3.put_object(Bucket=bucket, Key=_key(job, project_id, layer_id, photo.sha256),
+    await s3.put_object(Bucket=bucket, Key=_key(job, photo.sha256),
                         Body=json.dumps({"method": job.method, **result}).encode(), ContentType="application/json")
 
 
