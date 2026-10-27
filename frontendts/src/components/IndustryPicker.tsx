@@ -17,13 +17,6 @@ const WORLDS: Record<IndustryKey, { preset: Preset; seed: number; eyebrow: strin
     covers: ['Hillside plots, marshland rice, tea and irrigation schemes', 'Crops, bare ground and plant health'],
     alt: 'A hillside of terraced farm plots',
   },
-  power_grid: {
-    preset: 'corridor',
-    seed: 8,
-    eyebrow: 'Lines',
-    covers: ['High-voltage towers and village poles', 'Spans, wires and the corridor around them'],
-    alt: 'A power line corridor: lattice towers carrying wires across hills',
-  },
   telecom: {
     preset: 'telecom',
     seed: 2,
@@ -178,11 +171,11 @@ export default function IndustryPicker({ data, onClose }: { data: IndustryState;
               ? `Each map belongs to one industry. Switching changes what you see and where your new maps go, only for you${
                   company ? `: ${company.name}'s industry stays as it is` : ''
                 }.`
-              : 'Ingabe reads drone and satellite pictures for three industries. Choose yours and Ingabe opens with what matters to it. Each map belongs to one industry; you can switch from the sidebar at any time.'}
+              : 'Ingabe reads drone and satellite pictures for two industries. Choose yours and Ingabe opens with what matters to it. Each map belongs to one industry; you can switch from the sidebar at any time.'}
           </p>
         </div>
 
-        <div className="mt-10 grid flex-1 grid-cols-1 gap-5 md:grid-cols-3 lg:gap-7" role="radiogroup" aria-label="Industry">
+        <div className="mt-10 grid flex-1 grid-cols-1 gap-5 md:grid-cols-2 lg:gap-7" role="radiogroup" aria-label="Industry">
           {(Object.keys(WORLDS) as IndustryKey[]).map((key, k) => {
             const world = WORLDS[key];
             const option = data.options.find((o) => o.key === key);

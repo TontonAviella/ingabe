@@ -178,9 +178,6 @@ _TOOL_CATEGORIES: dict[str, str] = {
     # --- Telecom towers (TOWERS): a photo inspection's equipment counted by a person (switch TOWERS) ---
     "get_tower_inspection_findings": TOWERS,
     "tower_photos_needing_review": TOWERS,
-    # --- Power lines (TOWERS): the same photo inspection work on a Power Grid project ---
-    "get_power_line_inspection_findings": TOWERS,
-    "power_line_photos_needing_review": TOWERS,
 }
 
 
@@ -300,8 +297,7 @@ _TOWER_WORDS = re.compile(
     r"base\s+stations?|bts|cell\s+sites?|telcos?|t[eé]l[eé]com(?:munications?|s)?|"
     r"mâts?|paraboles?|faisceaux?\s+hertziens?|abris?|stations?\s+de\s+base|unit[eé]s?\s+radio|micro-?ondes?|"
     r"[ui]?m[ui]nara|itumanaho|"
-    r"insulators?|isolateurs?|power\s+lines?|transmission\s+lines?|lignes?\s+[ée]lectriques?|"
-    r"nests?|nids?|bolts?|boulons?"
+    r"bolts?|boulons?"
     r")(?![^\W_])",
     re.IGNORECASE,
 )
@@ -338,12 +334,12 @@ _CHECK_WORDS = re.compile(
 )
 
 
-# The defects the inspection tools answer: missing or loose bolts (towers) and bird nests (power lines).
-_DEFECT_WORDS = re.compile(r"(?<![^\W_])(?:bolts?|boulons?|nests?|nids?)(?![^\W_])", re.IGNORECASE)
+# The defects the inspection tools answer: missing or loose bolts on a tower.
+_DEFECT_WORDS = re.compile(r"(?<![^\W_])(?:bolts?|boulons?)(?![^\W_])", re.IGNORECASE)
 
 
 def asks_about_tower_work(text: str) -> bool:
-    """True when a message asks what the inspection tools answer: a count, the equipment, the bolt or nest defects,
+    """True when a message asks what the inspection tools answer: a count, the equipment, the bolt defects,
     or photos to check."""
     head = str(text or "")[:_ROUTED_CHARS]
     return bool(_TOWER_COUNT_WORDS.search(head) or _DEFECT_WORDS.search(head)
@@ -354,7 +350,7 @@ def asks_about_tower_work(text: str) -> bool:
 # Intent classification
 # ---------------------------------------------------------------------------
 # Weather and hazard words select the agriculture category, where the weather and flood tools are filed, but those
-# tools serve every industry (industry.CAPABILITIES): on a Power Grid or Telecom project such a question is not a
+# tools serve every industry (industry.CAPABILITIES): on a Telecom project such a question is not a
 # farm question.
 _WEATHER_HAZARD_WORDS = re.compile(
     r"\b(flood|water|rain(?:fall|s|ed|y|ing)?|precip|weather|forecast|temperature)\b",

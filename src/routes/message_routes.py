@@ -1596,7 +1596,7 @@ def _shorten_old_tool_results(messages: list[Any]) -> list[Any]:
 
 def _without_other_industries_calls(messages: list[Any], project_industry: Optional[str]) -> list[Any]:
     """The replayed history without tool calls this project may not make now, nor their results: another industry's
-    (one farm result stored in a Power Grid or Telecom conversation would otherwise ride along on every later turn,
+    (one farm result stored in a Telecom conversation would otherwise ride along on every later turn,
     audit R2-14) and a switched-off capability's (tower counts once TOWERS is off). Results are matched to calls by
     id, so a dropped call takes its result with it."""
     dropped: set[str] = set()

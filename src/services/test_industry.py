@@ -14,7 +14,6 @@ RUN_TAG = uuid.uuid4().hex[:8]
 CATALOG = json.loads((Path(__file__).resolve().parents[2] / "evals" / "sage_routing" / "tool_catalog.json").read_text())
 AGRI_ONLY = {name for name, served in industry.CAPABILITIES.items() if served == industry.AGRICULTURE}
 TELECOM_ONLY = {name for name, served in industry.CAPABILITIES.items() if served == industry.TELECOM}
-POWER_ONLY = {name for name, served in industry.CAPABILITIES.items() if served == industry.POWER_GRID}
 
 
 # --- The capability list --------------------------------------------------------------------------------------------
@@ -33,14 +32,14 @@ def test_every_live_tool_is_labelled():
     assert sorted(live - set(industry.CAPABILITIES)) == []
 
 
-@pytest.mark.parametrize("other", ["power_grid", "telecom"])
+@pytest.mark.parametrize("other", ["telecom"])
 def test_other_industries_get_no_agriculture_tool(other):
     tools = [{"function": {"name": n}} for n in CATALOG["model_tools"]]
     offered = {t["function"]["name"] for t in industry.tools_for(tools, other)}
     assert offered and not offered & AGRI_ONLY
     assert {"search_location", "display_layer", "describe_user_raster", "search_brain"} <= offered
     assert {t["function"]["name"] for t in industry.tools_for(tools, "agriculture")} == (
-        set(CATALOG["model_tools"]) - TELECOM_ONLY - POWER_ONLY)
+        set(CATALOG["model_tools"]) - TELECOM_ONLY)
 
 
 def test_the_tower_tools_are_telecom_only_and_only_while_towers_is_on(monkeypatch):
@@ -59,17 +58,15 @@ def test_the_tower_tools_are_telecom_only_and_only_while_towers_is_on(monkeypatc
     assert tower_tools <= {t["function"]["name"] for t in industry.tools_for(tools, "telecom")}
     assert not tower_tools & {t["function"]["name"] for t in industry.tools_for(tools, "agriculture")}
     assert industry.tool_refusal("get_tower_inspection_findings", "telecom") is None
-    for elsewhere in ("agriculture", None, "power_grid"):  # never offered there, so as on main: it does not exist
+    for elsewhere in ("agriculture", None):  # never offered there, so as on main: it does not exist
         assert industry.tool_refusal("tower_photos_needing_review", elsewhere)["error"].startswith(
             "There is no tool named tower_photos_needing_review here.")
     assert "Never count equipment or defects from a picture yourself" in industry.prompt_note("telecom")
-    assert industry.prompt_note("power_grid") and "get_tower_inspection_findings" not in industry.prompt_note(
-        "power_grid")
 
 
 def test_a_wrong_industry_tool_is_refused_when_called_anyway():
-    refusal = industry.tool_refusal("get_ndvi_stats", "power_grid")
-    assert refusal and refusal["error_kind"] == "wrong_industry" and "Power Grid" in refusal["error"]
+    refusal = industry.tool_refusal("get_ndvi_stats", "telecom")
+    assert refusal and refusal["error_kind"] == "wrong_industry" and "Telecom Towers" in refusal["error"]
     assert industry.tool_refusal("get_ndvi_stats", "agriculture") is None
     assert industry.tool_refusal("search_location", "telecom") is None
     invented = industry.tool_refusal("a_tool_nobody_labelled", "telecom")  # unknown: refused, but not "for agriculture"
@@ -82,12 +79,9 @@ def test_a_refusal_names_the_industries_the_tool_serves(monkeypatch):
     assert industry.tool_refusal("get_ndvi_stats", "telecom")["error"].startswith(
         "get_ndvi_stats is for Agriculture projects; this project is Telecom Towers.")
     monkeypatch.setitem(industry.CAPABILITIES, "count_antennas", frozenset({"telecom"}))
-    monkeypatch.setitem(industry.CAPABILITIES, "inspect_line_and_mast", frozenset({"power_grid", "telecom"}))
     assert industry.tool_refusal("count_antennas", "telecom") is None
     assert industry.tool_refusal("count_antennas", "agriculture")["error"].startswith(
         "count_antennas is for Telecom Towers projects; this project is Agriculture.")
-    assert industry.tool_refusal("inspect_line_and_mast", "agriculture")["error"].startswith(
-        "inspect_line_and_mast is for Power Grid and Telecom Towers projects; this project is Agriculture.")
 
 
 def test_only_other_industries_get_a_prompt_note():
@@ -102,16 +96,13 @@ def test_each_industry_is_briefed_in_its_own_words_with_what_was_measured(monkey
     from src.services import answer_levels, example_finder
 
     monkeypatch.setenv("TOWERS", "1")
-    telecom, power = industry.prompt_note("telecom"), industry.prompt_note("power_grid")
-    assert "still being built" not in telecom and "still being built" not in power
+    telecom = industry.prompt_note("telecom")
+    assert "still being built" not in telecom
     assert "azimuth" in telecom and "tenancy" in telecom and "get_tower_inspection_findings" in telecom
-    assert "insulator" in power and "right-of-way" in power and "get_power_line_inspection_findings" in power
-    assert "get_tower_inspection_findings" not in power and "get_power_line_inspection_findings" not in telecom
-    for note, parts in ((telecom, tower_inspection.parts_for("telecom")), (power, tower_inspection.POWER_PARTS)):
-        for part in parts:
-            m = answer_levels.target_for(part, example_finder.settings(part).model).measured
-            assert f"{m['value']:.2f} on {m['n_images']} test photos" in note
-    assert "Not measured yet" in telecom and "thermal camera" in telecom and "sag" in power
+    for part in tower_inspection.parts_for("telecom"):
+        m = answer_levels.target_for(part, example_finder.settings(part).model).measured
+        assert f"{m['value']:.2f} on {m['n_images']} test photos" in telecom
+    assert "Not measured yet" in telecom and "thermal camera" in telecom
     assert "never say there are no defects where nobody marked them" in telecom
 
 
@@ -121,7 +112,7 @@ def test_farm_procedures_stay_out_of_other_industries_prompts(monkeypatch):
     monkeypatch.setattr(life_harness, "life_harness_enabled", lambda: True)
     question = "check maize stress in Nyagatare after the dry spell"
     try:
-        set_request_industry("power_grid")
+        set_request_industry("telecom")
         grid = life_harness.apply_life_harness_system_prompt("P", question)
         set_request_industry("agriculture")
         farm = life_harness.apply_life_harness_system_prompt("P", question)
@@ -156,8 +147,8 @@ async def test_current_industry_is_the_users_own_choice_else_the_companys():
             assert await industry.industry_for_new_project(conn, user, org) == "agriculture"
             assert await industry.current_industry(conn, None, None) is None  # legacy single-user mode: no account
 
-            await industry.save_company_industry(conn, org, "power_grid")
-            assert await industry.current_industry_and_source(conn, user, org) == ("power_grid", "company")
+            await industry.save_company_industry(conn, org, "agriculture")
+            assert await industry.current_industry_and_source(conn, user, org) == ("agriculture", "company")
             assert await industry.current_industry(conn, user, None) is None  # outside the company
 
             await industry.save_industry(conn, user, "telecom")
@@ -182,13 +173,13 @@ async def test_a_partner_companys_industry_beats_its_peoples_own_choice():
         try:
             assert await industry.locked_industry(conn, partner) is None  # no industry yet: its people choose
             assert await industry.claim_company_industry(conn, partner, "agriculture")
-            assert not await industry.claim_company_industry(conn, partner, "power_grid")  # once
+            assert not await industry.claim_company_industry(conn, partner, "telecom")  # once
             assert await industry.locked_industry(conn, partner) == "agriculture"
             assert await industry.current_industry_and_source(conn, user, partner) == ("agriculture", "company")
             assert await industry.industry_for_new_project(conn, user, partner) == "agriculture"
 
             assert not await industry.claim_company_industry(conn, ingabe, "agriculture")  # Ingabe is never locked
-            await industry.save_company_industry(conn, ingabe, "power_grid")
+            await industry.save_company_industry(conn, ingabe, "agriculture")
             assert await industry.locked_industry(conn, ingabe) is None
             assert await industry.current_industry(conn, user, ingabe) == "telecom"
         finally:
@@ -230,7 +221,7 @@ async def test_cards_and_first_look_are_for_agriculture_projects_only():
     owner = str(uuid.uuid4())
     grid_layer, farm_layer = f"L{RUN_TAG}grd", f"L{RUN_TAG}frm"
     async with get_async_db_connection() as conn:
-        grid_map = await _project(conn, owner, "power_grid", grid_layer)
+        grid_map = await _project(conn, owner, "telecom", grid_layer)
         await _project(conn, owner, "agriculture", farm_layer)
     from types import SimpleNamespace
 
@@ -241,7 +232,7 @@ async def test_cards_and_first_look_are_for_agriculture_projects_only():
                                "VALUES ($1, $2, 'photo', 'raster', $3)", layer_id, owner, source_map)
     with pytest.raises(HTTPException) as refused:
         await _agriculture_project(SimpleNamespace(layer_id=grid_layer))
-    assert refused.value.status_code == 404 and "Power Grid" in refused.value.detail
+    assert refused.value.status_code == 404 and "Telecom Towers" in refused.value.detail
     await _agriculture_project(SimpleNamespace(layer_id=farm_layer))  # allowed: no exception
     with pytest.raises(HTTPException):  # a layer on no map at all: unknown industry, no crop cards (R1-17)
         await _agriculture_project(SimpleNamespace(layer_id=f"L{RUN_TAG}orph"[:12]))
@@ -263,7 +254,7 @@ async def test_brain_notes_of_one_industry_are_invisible_from_another():
         await conn.execute("INSERT INTO brain_timeline_entries (page_id, date, summary) VALUES ($1, CURRENT_DATE, 'visit')",
                            farm_id)
     try:
-        set_request_industry("power_grid")
+        set_request_industry("telecom")
         async with get_async_db_connection() as conn:
             seen = {r["slug"] for r in await conn.fetch(
                 "SELECT slug FROM brain_pages WHERE slug = ANY($1::text[])", [farm_slug, general_slug])}
@@ -272,7 +263,7 @@ async def test_brain_notes_of_one_industry_are_invisible_from_another():
             # A note written during a grid turn belongs to the grid.
             await conn.execute("INSERT INTO brain_pages (slug, type, title, compiled_truth, owner_uuid) "
                                "VALUES ($1, 'note', 'Span 12', 'sag', $2)", grid_slug, owner)
-            assert await conn.fetchval("SELECT industry FROM brain_pages WHERE slug = $1", grid_slug) == "power_grid"
+            assert await conn.fetchval("SELECT industry FROM brain_pages WHERE slug = $1", grid_slug) == "telecom"
             # It cannot write into another industry either.
             with pytest.raises(Exception):
                 await conn.execute("INSERT INTO brain_pages (slug, type, title, compiled_truth, industry, owner_uuid) "
@@ -312,7 +303,7 @@ async def test_brain_fails_closed_for_a_user_request_without_an_industry():
 
 @pytest.mark.anyio
 async def test_an_industry_cannot_write_into_a_general_note():
-    """Observations from a Power Grid turn cannot land on a general note that every industry reads (audit R1-3)."""
+    """Observations from a Telecom turn cannot land on a general note that every industry reads (audit R1-3)."""
     owner = str(uuid.uuid4())
     general = f"general3-{RUN_TAG}"
     async with get_async_db_connection() as conn:
@@ -320,7 +311,7 @@ async def test_an_industry_cannot_write_into_a_general_note():
                            general, owner)
         page_id = await conn.fetchval("SELECT id FROM brain_pages WHERE slug = $1", general)
     try:
-        set_request_industry("power_grid")
+        set_request_industry("telecom")
         async with get_async_db_connection() as conn:
             assert await conn.fetchval("SELECT count(*) FROM brain_pages WHERE id = $1", page_id) == 1  # readable
             with pytest.raises(Exception):
@@ -367,10 +358,10 @@ async def test_a_message_request_is_scoped_before_the_brain_packet_is_built():
 
     owner = str(uuid.uuid4())
     async with get_async_db_connection() as conn:
-        grid_map = await _project(conn, owner, "power_grid", f"L{RUN_TAG}sm"[:12])
+        grid_map = await _project(conn, owner, "telecom", f"L{RUN_TAG}sm"[:12])
     try:
-        assert await _scope_request_to_map_industry(grid_map) == "power_grid"
-        assert get_request_industry() == "power_grid"
+        assert await _scope_request_to_map_industry(grid_map) == "telecom"
+        assert get_request_industry() == "telecom"
     finally:
         set_request_industry(None)
 
@@ -479,7 +470,7 @@ async def test_background_writes_link_only_to_notes_the_author_could_read():
                 page.id)}
             assert linked == {mine, open_}  # never B's private farmer
 
-            await conn.execute("SELECT set_config('app.industry', 'power_grid', false)")
+            await conn.execute("SELECT set_config('app.industry', 'telecom', false)")
             grid_page = await brain.put_page(conn, grid, PageInput(
                 type="asset", title="Substation", compiled_truth=f"near [[{open_}]] [[{mine}]]"), owner_uuid=a)
             assert await conn.fetchval("SELECT count(*) FROM brain_links WHERE from_page_id = $1", grid_page.id) == 0
@@ -616,8 +607,7 @@ def test_the_routing_eval_skips_tower_cases_while_towers_is_off(monkeypatch):
     spec.loader.exec_module(harness)
     cases = harness.load_cases()
     towers = {c["id"] for c in cases if set(c["expect"].get("any_of") or []) & {
-        "get_tower_inspection_findings", "tower_photos_needing_review", "get_power_line_inspection_findings",
-        "power_line_photos_needing_review"}}
+        "get_tower_inspection_findings", "tower_photos_needing_review"}}
     assert len(towers) >= 8
     monkeypatch.setenv("TOWERS", "0")
     assert harness.check_industry_cases(cases) == towers
@@ -672,7 +662,7 @@ async def test_writing_another_industrys_slug_fails_with_one_plain_error():
 
 
 def test_routing_eval_cases_expect_only_tools_their_industry_is_offered():
-    """A Power Grid or Telecom eval case expecting a farm tool could never pass (audit R1-33)."""
+    """A Telecom eval case expecting a farm tool could never pass (audit R1-33)."""
     import importlib.util
     import sys
 

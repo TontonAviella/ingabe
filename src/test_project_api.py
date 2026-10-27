@@ -213,26 +213,25 @@ async def test_the_home_follows_the_users_choice_else_the_companys(client):
     from src.database.pool import get_async_db_connection
     from src.services import industry
 
-    async with _people(1, org_industry="power_grid", tier="internal") as ((me,), org):  # Ingabe's own company
-        grid = await _project(me, "power_grid")
+    async with _people(1, org_industry="telecom", tier="internal") as ((me,), org):  # Ingabe's own company
         mast = await _project(me, "telecom")
-        await _project(me, "agriculture")
+        farm = await _project(me, "agriculture")
 
         _signed_in(me, org)  # never chose: the company's industry is the default
         body = await _home(client)
-        assert _ids(body) == {grid} and body["industry"] == "power_grid"
-        assert [o["industry"] for o in body["other_industries"]] == ["agriculture", "telecom"]  # INDUSTRIES order
-        made = (await client.post("/api/maps/create", json={"title": f"Line {RUN_TAG}"})).json()
-        assert _ids(await _home(client)) == {grid, made["project_id"]}
+        assert _ids(body) == {mast} and body["industry"] == "telecom"
+        assert [o["industry"] for o in body["other_industries"]] == ["agriculture"]
+        made = (await client.post("/api/maps/create", json={"title": f"Mast {RUN_TAG}"})).json()
+        assert _ids(await _home(client)) == {mast, made["project_id"]}
 
         _signed_in(me, org, role="admin")  # their own choice beats the company's, and leaves the company's alone
-        assert (await client.put("/api/user/industry", json={"industry": "telecom"})).status_code == 200
+        assert (await client.put("/api/user/industry", json={"industry": "agriculture"})).status_code == 200
         body = await _home(client)
-        assert _ids(body) == {mast} and body["industry"] == "telecom"
+        assert _ids(body) == {farm} and body["industry"] == "agriculture"
         _signed_in(me)  # outside the company (personal workspace): still their own choice
-        assert _ids(await _home(client)) == {mast}
+        assert _ids(await _home(client)) == {farm}
         async with get_async_db_connection() as conn:
-            assert await industry.company_industry(conn, org) == "power_grid"
+            assert await industry.company_industry(conn, org) == "telecom"
 
 
 @pytest.mark.anyio

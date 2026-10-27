@@ -29,7 +29,7 @@ export interface DistrictNdviMap {
       shared_note_village?: string;
     };
   }>;
-  // null, and no NDVI on the districts, in projects of industries without vegetation analysis (Power Grid, Telecom)
+  // null, and no NDVI on the districts, in projects of industries without vegetation analysis (Telecom)
   legend: { title: string; items: Array<{ key: string; label: string; range: string; color: string }> } | null;
   levels: MapLevel[];
   data_coverage: DataCoverage | null;

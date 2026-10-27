@@ -26,8 +26,7 @@ from src.structures import async_conn
 
 logger = logging.getLogger(__name__)
 
-INDUSTRIES = {"agriculture": "drone photos of farms", "telecom": "photos of telecom towers",
-              "power_grid": "photos of power lines and their pylons"}
+INDUSTRIES = {"agriculture": "drone photos of farms", "telecom": "photos of telecom towers"}
 QUESTION_CHARS = 300  # the longest question a person can ask here
 LEARNED_WORDS = 15  # a learned question is at most this many words
 MIN_ASKERS = 3  # different people who asked it before a learned question is shown to others

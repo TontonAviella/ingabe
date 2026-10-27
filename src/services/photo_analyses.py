@@ -1,4 +1,4 @@
-"""One analysis of each photo of an inspection (SAM 3 outlines today: trees around a site, conductors on a line), run
+"""One analysis of each photo of an inspection (SAM 3 outlines today: trees around a telecom site), run
 once per photo in the background and kept in storage under the analysis' own prefix (never beside the photo work
 records, which tower_inspection lists by prefix). A result is reused only by the same method."""
 

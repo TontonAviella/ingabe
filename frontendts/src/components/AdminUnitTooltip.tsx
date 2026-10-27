@@ -5,7 +5,7 @@ type Props = Record<string, unknown> | null | undefined;
 
 /** Hover card for an admin unit: its name and parents, and its district's NDVI,
  * saying when the value is shared by every unit of a finer level. Projects of industries without vegetation
- * analysis (Power Grid, Telecom) get the names only. */
+ * analysis (Telecom) get the names only. */
 export function AdminUnitTooltip({
   district,
   unit,

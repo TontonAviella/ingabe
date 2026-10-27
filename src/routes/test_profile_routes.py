@@ -30,8 +30,8 @@ async def test_get_industry_lists_the_three_industries(auth_client):
     r = await auth_client.get("/api/user/industry")
     assert r.status_code == 200
     body = r.json()
-    assert body["industry"] in {None, "agriculture", "power_grid", "telecom"}
-    assert [o["key"] for o in body["options"]] == ["agriculture", "power_grid", "telecom"]
+    assert body["industry"] in {None, "agriculture", "telecom"}
+    assert [o["key"] for o in body["options"]] == ["agriculture", "telecom"]
     assert all(o["label"] and o["note"] for o in body["options"])
     assert isinstance(body["can_choose"], bool)  # false without an account row: the app does not ask (R1-30)
 
@@ -54,8 +54,8 @@ async def test_an_industry_is_saved_on_the_account_and_can_be_changed():
         await conn.execute("INSERT INTO users (internal_uuid) VALUES ($1)", user)
         try:
             assert await industry.industry_of(conn, user) is None  # not chosen yet: the app asks
-            assert await industry.save_industry(conn, user, "power_grid")
-            assert await industry.industry_of(conn, user) == "power_grid"
+            assert await industry.save_industry(conn, user, "agriculture")
+            assert await industry.industry_of(conn, user) == "agriculture"
             assert await industry.save_industry(conn, user, "telecom")
             assert await industry.industry_of(conn, user) == "telecom"
             assert not await industry.save_industry(conn, str(uuid.uuid4()), "agriculture")  # no account row
@@ -99,8 +99,8 @@ async def test_switching_changes_only_the_users_own_view(client):
         assert body["company"] == {"name": "Grid Co", "industry": None}
 
         as_(admin, "admin")  # an admin's switch is their own: the company's industry is not written
-        body = (await client.put("/api/user/industry", json={"industry": "power_grid"})).json()
-        assert body["industry"] == "power_grid" and body["source"] == "you"
+        body = (await client.put("/api/user/industry", json={"industry": "agriculture"})).json()
+        assert body["industry"] == "agriculture" and body["source"] == "you"
         assert body["company"] == {"name": "Grid Co", "industry": None}
         assert await company_column() is None
 
@@ -113,7 +113,7 @@ async def test_switching_changes_only_the_users_own_view(client):
 
         as_(admin, "admin")  # their own choice beats the company's default
         body = (await client.get("/api/user/industry")).json()
-        assert body["industry"] == "power_grid" and body["source"] == "you"
+        assert body["industry"] == "agriculture" and body["source"] == "you"
 
         as_(member, "member")  # a member of a company that has chosen can switch too
         response = await client.put("/api/user/industry", json={"industry": "agriculture"})
@@ -169,7 +169,7 @@ async def test_a_partner_company_works_in_one_industry(client):
         as_(second)  # their earlier choice no longer counts here
         body = (await client.get("/api/user/industry")).json()
         assert (body["industry"], body["source"], body["locked"]) == ("agriculture", "company", True)
-        refused = await client.put("/api/user/industry", json={"industry": "power_grid"})
+        refused = await client.put("/api/user/industry", json={"industry": "telecom"})
         assert refused.status_code == 403 and "Agriculture" in refused.json()["detail"]
 
         async with get_async_db_connection() as conn:
@@ -216,13 +216,13 @@ async def test_only_a_first_choice_claims_a_partner_company(client):
         assert (await client.put("/api/user/industry", json={"industry": "telecom"})).status_code == 200
         assert await company() is None
         as_(newcomer)  # a first choice claims it
-        assert (await client.put("/api/user/industry", json={"industry": "power_grid"})).json()["locked"] is True
-        assert await company() == "power_grid"
+        assert (await client.put("/api/user/industry", json={"industry": "telecom"})).json()["locked"] is True
+        assert await company() == "telecom"
         as_(late)  # their first choice matches: saved, no error
-        assert (await client.put("/api/user/industry", json={"industry": "power_grid"})).status_code == 200
+        assert (await client.put("/api/user/industry", json={"industry": "telecom"})).status_code == 200
         as_(late)  # a different one is refused, naming the company's
         refused = await client.put("/api/user/industry", json={"industry": "agriculture"})
-        assert refused.status_code == 403 and "Power Grid" in refused.json()["detail"]
+        assert refused.status_code == 403 and "Telecom Towers" in refused.json()["detail"]
     finally:
         app.dependency_overrides.pop(verify_session_required, None)
         async with get_async_db_connection() as conn:

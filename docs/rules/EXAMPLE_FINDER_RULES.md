@@ -29,11 +29,12 @@ otherwise. Two kinds:
 
 - **Our own models** (`own:...`, `src/services/own_detector.py`): RF-DETR small (Apache 2.0) trained by us on public data
   on Kaggle's free GPU, exported to ONNX and run on this server's CPU (4 threads). **The photos stay on the server**; no
-  key. On by default; `OWN_DETECTORS=0` switches them off (the way back: towers use the example finder, power
-  parts answer "switched off"). Weights only from object storage (`own_detector.MODELS`: key and sha256), fetched once. They find the
-  Telecom and Power Grid parts. Measured with the ONNX files on held-out pictures (AP50): dishes 0.889, antennas 0.952,
+  key. On by default; `OWN_DETECTORS=0` switches them off (the way back: towers use the example finder, bolt
+  defects answer "switched off"). Weights only from object storage (`own_detector.MODELS`: key and sha256), fetched once. They find the
+  Telecom parts. Measured with the ONNX files on held-out pictures (AP50): dishes 0.889, antennas 0.952,
   radio units 0.562 (60 tower photos, same sites as training; the same recipe on a new site: antennas 0.858, dishes
-  0.807, radio units 0.545), pylons 0.989, insulators 0.869, bird nests 0.958 (40 power line photos). ONNX on CPU
+  0.807, radio units 0.545). The Power Grid parts (pylons, insulators, bird nests) were removed with that industry on
+  2026-10-27. ONNX on CPU
   matched the trained PyTorch model within 0.02 AP50 on every class.
 - **Roboflow-hosted** (`roboflow:...`, `src/services/hosted_detector.py`): only maize plants, SAM 3 with the typed prompt
   "seedling" (0.741 on 36 INRAe squares). Used only while `HOSTED_FINDER` is on (default off) and `ROBOFLOW_API_KEY` is

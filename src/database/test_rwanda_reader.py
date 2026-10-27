@@ -26,8 +26,7 @@ async def _login(industry: str) -> asyncpg.Connection:
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("industry, role", [("agriculture", READER_ROLE), ("power_grid", GENERAL_READER_ROLE),
-                                            ("telecom", GENERAL_READER_ROLE)])
+@pytest.mark.parametrize("industry, role", [("agriculture", READER_ROLE), ("telecom", GENERAL_READER_ROLE)])
 async def test_each_login_reads_boundaries_and_nothing_private(industry, role):
     reader = await _login(industry)
     try:
@@ -45,7 +44,7 @@ async def test_each_login_reads_boundaries_and_nothing_private(industry, role):
 
 @pytest.mark.anyio
 async def test_only_agriculture_reads_the_farm_caches():
-    farm, grid = await _login("agriculture"), await _login("power_grid")
+    farm, grid = await _login("agriculture"), await _login("telecom")
     try:
         assert await farm.fetchval("SELECT count(*) FROM ndvi_cell_cache") >= 0
         with pytest.raises(asyncpg.exceptions.InsufficientPrivilegeError):

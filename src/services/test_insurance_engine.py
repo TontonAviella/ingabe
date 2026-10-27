@@ -2243,7 +2243,7 @@ def test_a_role_in_one_industry_never_changes_the_other():
     assert conn.columns == {"report_audience": "scientist", "asset_role": "technician"}
     assert _run(reader_roles.saved_role(conn, "telecom", "u1", None)) == ("technician", "user")
     assert _run(reader_roles.saved_role(conn, "agriculture", "u1", None)) == ("scientist", "user")
-    _run(reader_roles.save_role(conn, "u1", None, "power_grid"))  # clearing in Power Grid keeps Agriculture's
+    _run(reader_roles.save_role(conn, "u1", None, "telecom"))  # clearing in Telecom keeps Agriculture's
     assert conn.columns == {"report_audience": "scientist", "asset_role": None}
 
 

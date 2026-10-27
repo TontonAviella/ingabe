@@ -1140,7 +1140,7 @@ def test_house_questions_still_take_the_fast_path_after_the_tower_check():
     assert call is not None and call.tool_name == RASTER_OBJECT_CANDIDATES_TOOL
 
 
-@pytest.mark.parametrize("project_industry", ["agriculture", "telecom", "power_grid", None])
+@pytest.mark.parametrize("project_industry", ["agriculture", "telecom", None])
 def test_shared_fast_paths_run_for_every_industry(project_industry):
     from src.dependencies.sage_routing import build_project_fast_tool_call
 
@@ -1361,11 +1361,11 @@ def test_categories_with_tools_follow_the_projects_industry(monkeypatch):
 
     every = {BRAIN, MAP_EDIT, SATELLITE, SPATIAL_INSIGHT, USER_RASTER, AGRICULTURE}
     monkeypatch.delenv("TOWERS", raising=False)
-    for project_industry in ("agriculture", "telecom", "power_grid", None):
+    for project_industry in ("agriculture", "telecom", None):
         assert every <= categories_with_tools(project_industry)  # agriculture also files the weather tools
         assert TOWERS not in categories_with_tools(project_industry)  # TOWERS off: no tower tool anywhere
     monkeypatch.setenv("TOWERS", "1")
-    assert TOWERS in categories_with_tools("telecom") and TOWERS in categories_with_tools("power_grid")
+    assert TOWERS in categories_with_tools("telecom")
     for project_industry in ("agriculture", None):
         assert TOWERS not in categories_with_tools(project_industry)
     monkeypatch.delenv("TOWERS")

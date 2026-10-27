@@ -334,7 +334,6 @@ def _with(part_sets, **kw):
 
 
 TELECOM_PARTS = tower_inspection.parts_for("telecom")
-POWER = tower_cards.ASSETS["power_grid"]
 BOLTS = {"a" * 64: _with(TELECOM_PARTS, tower_bolt_missing=dict(marks=1, suggestions=2, reviewed=2))}  # 3 missing
 
 
@@ -358,29 +357,6 @@ def test_no_defect_marked_never_reads_as_no_defects():
     assert "never say there are none" in sage["rule"]
 
 
-def test_power_lines_ask_about_the_line_and_its_nests_never_tower_equipment():
-    work = _with(tower_inspection.POWER_PARTS, power_nest=dict(marks=1, suggestions=1, reviewed=1),
-                 power_pylon=dict(marks=1, suggestions=0))
-    # The helper's 60 px marks are smaller than the nests were measured on (the size gate, tested in answer_levels),
-    # so the counts a person reached are set here.
-    work["power_nest"] = replace(work["power_nest"], counted_by_you=2)
-    work["power_pylon"] = replace(work["power_pylon"], counted_by_you=1, review_saved=True)
-    nests = {"a" * 64: work}
-    power = tower_cards.Here(inspection=_inspection(PHOTOS, nests), earlier=NO_EARLIER, asset=POWER)
-    deck = {c["id"]: c for c in tower_cards.deck(power, "owner")["cards"]}
-    assert deck["equipment"]["title"] == "What equipment is on this stretch of line?"  # the owner's words
-    assert deck["defects"]["title"] == "Are birds nesting on my line?" and deck["defects"]["status"] == READY
-    equipment = tower_cards.answer_card("equipment", power, "owner")
-    assert "Pylons" in equipment["what"] and "ishes" not in equipment["what"]  # no dishes, antennas or radio units
-    nest = tower_cards.answer_card("defects", power, "owner")
-    assert nest["what"].startswith("Bird nests: at least 2 on one photo (DJI_0001.JPG)")
-    assert nest["todo"] == POWER.defect_todo and "insulator" in nest["why"]
-    learn = tower_cards.answer_card("learn_review", power, "owner")
-    assert "public line photos" in learn["what"] and "0.146" in learn["what"]  # pylons, as measured at new sites
-    with pytest.raises(KeyError):
-        tower_cards.answer_card("camera", power, "owner")
-
-
 def test_every_worry_is_a_card_and_the_ones_not_measured_say_so_without_a_number():
     """The deck asks what a tower owner worries about. A question nothing measures yet still shows, with its own
     status (coming soon, a thermal camera, a night flight), what it will tell and what it needs, and no number."""
@@ -396,9 +372,6 @@ def test_every_worry_is_a_card_and_the_ones_not_measured_say_so_without_a_number
         assert not re.search(r"\d", answer["what"]), (card_id, answer["what"])  # no number for what is not measured
     ranked = [c["id"] for c in tower_cards.deck(here(BOLTS), "owner")["cards"]]
     assert ranked.index("defects") < ranked.index("alignment")  # answers before what is coming
-    power = {c["id"] for c in tower_cards.deck(tower_cards.Here(inspection=_inspection(PHOTOS, {}),
-                                                                 earlier=NO_EARLIER, asset=POWER), "owner")["cards"]}
-    assert {"right_of_way", "insulators", "sag", "steel", "hot_spots"} <= power and "alignment" not in power
 
 
 def test_the_surroundings_card_reads_what_sam3_and_the_green_rule_found_on_photos_looking_straight_down(monkeypatch):
@@ -424,31 +397,6 @@ def test_the_surroundings_card_reads_what_sam3_and_the_green_rule_found_on_photo
     assert [i["title"] for i in answer["items"]] == [down[0].filename, down[1].filename]  # most trees first
     assert "Buildings, erosion and the access road are not measured yet." in answer["what"]
     assert any("0.62" in b for b in answer["how_sure"]["because"])  # the measurement, read from site_surroundings
-
-
-def test_the_conductors_card_lists_the_photos_sam3_outlined_conductors_on(monkeypatch):
-    """Line checks: where SAM 3 ("power line") outlined conductors, photo by photo, with the measurement behind it;
-    nothing invented while the photos are looked at."""
-    from src.services import line_conductors
-
-    monkeypatch.setattr(line_conductors, "enabled", lambda: True)
-    waiting = tower_cards.Here(inspection=_inspection(PHOTOS, {}), earlier=NO_EARLIER, asset=POWER, conductors={})
-    assert "conductors" in {c["id"] for c in tower_cards.deck(waiting, "owner")["cards"]}
-    assert tower_cards.answer_card("conductors", waiting, "owner")["status"] == WORKING
-    two = [[0, 0], [10, 0], [10, 2]]
-    results = {PHOTOS[0].sha256: {"method": line_conductors.METHOD, "outlines": [two]},
-               PHOTOS[1].sha256: {"method": line_conductors.METHOD, "outlines": [two, two]},
-               PHOTOS[2].sha256: {"method": line_conductors.METHOD, "outlines": []}}
-    done = tower_cards.Here(inspection=_inspection(PHOTOS[:3], {}), earlier=NO_EARLIER, asset=POWER,
-                            conductors=results)
-    answer = tower_cards.answer_card("conductors", done, "owner")
-    assert answer["status"] == READY
-    assert answer["what"].startswith("SAM 3 outlined conductors on 2 of the 3 photos looked at; 1 photo shows none.")
-    assert [i["title"] for i in answer["items"]] == [PHOTOS[1].filename, PHOTOS[0].filename]  # most outlines first
-    assert "Sag, clearance to the ground" in answer["what"]
-    assert any("97%" in b and "83%" in b for b in answer["how_sure"]["because"])
-    telecom = {c["id"] for c in tower_cards.deck(here(), "owner")["cards"]}
-    assert "conductors" not in telecom
 
 
 def test_the_photo_screen_asks_the_inspections_questions_for_one_photo():

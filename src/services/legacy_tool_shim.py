@@ -840,7 +840,7 @@ async def _handle_get_forecast(ctx: LegacyToolContext) -> Dict[str, Any]:
             None,
             lambda: get_farm_forecast(lat, lon, forecast_days=days),
         )
-        if not industry.request_is_agriculture():  # power lines and masts get weather, not crop advice
+        if not industry.request_is_agriculture():  # masts get weather, not crop advice
             result = without_farm_advice(result)
         return {"status": "success", **result}
     except Exception as e:

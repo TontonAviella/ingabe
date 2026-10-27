@@ -34,7 +34,7 @@ ERROR = "error"
 
 STRATA = ("observed", "coverage")
 LANGS = ("en", "rw", "fr")
-INDUSTRIES = ("agriculture", "power_grid", "telecom")  # a case without one runs as agriculture
+INDUSTRIES = ("agriculture", "telecom")  # a case without one runs as agriculture
 FARM_WORDING = "<farm-wording>"  # pseudo first tool: a non-agriculture reply that talked about farming
 KINDS = ("single", "multi_turn", "chain")
 LAYER_TYPES = ("raster", "vector", "postgis", "point_cloud")

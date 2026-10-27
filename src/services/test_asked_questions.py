@@ -58,16 +58,16 @@ async def test_a_learned_question_is_offered_only_once_three_people_asked_it(mon
     users = [f"user-{tag}-{n}" for n in range(3)]
     try:
         for i, user in enumerate(users):
-            asked_id = await asked_questions.record(user_id=user, org_id=None, industry="power_grid", role="owner",
-                                                    layer_id="Ltest", question=f"Is pylon {i} at Rubavu leaning?")
+            asked_id = await asked_questions.record(user_id=user, org_id=None, industry="telecom", role="owner",
+                                                    layer_id="Ltest", question=f"Is mast {i} at Rubavu leaning?")
             assert await asked_questions.learn(asked_id) == "new"
-            offered = await asked_questions.offered("power_grid", "reader", "Ltest")
+            offered = await asked_questions.offered("telecom", "reader", "Ltest")
             assert (general in offered) is (i == 2)  # two people are not enough; the third makes it common
         async with get_async_db_connection() as conn:
             kept = await conn.fetch("SELECT question, common_id FROM asked_questions WHERE user_id = ANY($1)", users)
         assert len({r["common_id"] for r in kept}) == 1  # the same learned question for all three
         assert all("Rubavu" in r["question"] for r in kept)  # their own words stay theirs, never offered
-        assert await asked_questions.record(user_id=None, org_id=None, industry="power_grid", role=None,
+        assert await asked_questions.record(user_id=None, org_id=None, industry="telecom", role=None,
                                             layer_id="Ltest", question="Anything?") is None
     finally:
         async with get_async_db_connection() as conn:

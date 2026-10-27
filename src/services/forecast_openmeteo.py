@@ -615,7 +615,7 @@ def _has_data(result: Dict[str, Any]) -> bool:
     return False
 
 
-# The farm advice above, and the neutral wording other industries get instead (power lines and masts care about
+# The farm advice above, and the neutral wording other industries get instead (masts care about
 # heat and dry spells, not crops). Applied per request to a copy; the cached forecast keeps the farm wording.
 _FARM_TO_NEUTRAL = (
     (" — crop heat stress likely.", " — very hot."),

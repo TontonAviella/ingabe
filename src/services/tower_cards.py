@@ -1,9 +1,8 @@
-"""Inspection question cards: the questions Ingabe asks about a photo inspection of telecom towers or power lines,
-answered from what a person counted. Each industry has its own questions and words (ASSETS): what is on the tower or
-line, its defects (missing and loose bolts on a telecom tower; bird nests on a power line), the photos to check, where
-they were taken from, what changed, and how the suggestions were measured.
+"""Inspection question cards: the questions Ingabe asks about a photo inspection of telecom towers, answered from
+what a person counted. The questions and words live in ASSETS: what is on the tower, its defects (missing and loose
+bolts), the photos to check, where they were taken from, what changed, and how the suggestions were measured.
 
-Three readers (src/services/reader_roles.py): the owner (what is on the tower or line, what changed), the operations
+Three readers (src/services/reader_roles.py): the owner (what is on the tower, what changed), the operations
 manager (which sites need a crew, how far the inspection is) and the field technician (which photos to check next,
 what to fix up there). Each is asked its own questions in its own words (_ROLE_WORDS); the answers are written for
 the owner or the technician (a manager reads the owner's). The deck changes each day and with what changed since the
@@ -30,7 +29,6 @@ from typing import Any, Optional, Sequence
 from src.services import (
     answer_levels,
     example_finder,
-    line_conductors,
     photo_inspections,
     reader_roles,
     site_surroundings,
@@ -98,7 +96,7 @@ class Asset:
     """What one industry's inspection cards ask and the words they use."""
 
     industry: str
-    thing: str  # what was photographed: "tower", "line"
+    thing: str  # what was photographed: "tower"
     heading: str  # what the cards panel is called
     equipment: tuple[str, ...]  # the parts the equipment card counts and the changes card compares
     defects: tuple[str, ...]  # the parts the defects card answers
@@ -155,8 +153,7 @@ ASSETS = {
                       "and bird nests on the tower, each with the photo it is on."),
                 why="Damage lets water in and takes sectors off air.",
                 needs=("Close-up photos of the antennas, radio units and cable runs, and examples of each kind of "
-                       "damage to measure against. Bird nests are found on power lines today, not yet on telecom "
-                       "towers.")),
+                       "damage to measure against.")),
             "hot_spots": Upcoming(
                 NEEDS_CAMERA, "Needs thermal images", "Overheating shows only on thermal images.",
                 what="Radio units, connectors, batteries or a shelter running hotter than the others.",
@@ -167,58 +164,6 @@ ASSETS = {
                 what="Whether the aviation obstruction light at the top of the tower is on.",
                 why="It is a legal requirement and keeps aircraft clear of the tower.",
                 needs="Photos of the top of the tower taken at dusk or at night."),
-        }),
-    "power_grid": Asset(
-        industry="power_grid", thing="line", heading="Line checks", equipment=("power_pylon", "power_insulator"), defects=("power_nest",),
-        cards={"defects": "Are there bird nests on the line?",
-               "equipment": "What is on this line?",
-               "conductors": "Where do the conductors run on the photos?",
-               "right_of_way": "Are trees or buildings too close to the line?",
-               "insulators": "Are any insulators broken or flashed over?",
-               "sag": "Is a conductor sagging too low?",
-               "steel": "Is the pylon steel safe?",
-               "hot_spots": "Is any joint or insulator overheating?",
-               "changes": "What changed since the last inspection?",
-               "photos_to_check": "Which photos still need checking?",
-               "camera_positions": "Where were the photos taken from?",
-               "learn_review": "Why does a person check every suggestion?"},
-        start_noun="pylons (or insulators)",
-        register_why=("An asset register needs what is really on the line. Each number was checked by a person, "
-                      "suggestion by suggestion; photos overlap, so it is the most seen on one photo, not a sum of "
-                      "photos."),
-        defect_why={OWNER: ("A nest on a pylon can short a live conductor to the steel when it is wet or when "
-                            "nesting material falls across an insulator: an outage, and a fire risk in dry season."),
-                    TECHNICIAN: ("Each nest counted here is a pylon to visit; the photo shows where it sits relative "
-                                 "to the insulators.")},
-        defect_todo=("Send a crew to remove or relocate the nests on the photos listed, those close to insulators "
-                     "first, under the line's live-work or outage rules."),
-        upcoming={
-            "right_of_way": Upcoming(
-                TO_BUILD, "Coming soon", "Vegetation and buildings in the right-of-way: not measured yet.",
-                what="Trees, crops and buildings inside the corridor kept clear under the line, with where they are.",
-                why="A tree touching a conductor trips the line and starts fires; a building under it is a danger.",
-                needs="Photos looking down along the line, covering the whole corridor."),
-            "insulators": Upcoming(
-                TO_BUILD, "Coming soon", "Broken or flashed-over insulators: not measured yet.",
-                what="Insulator strings with broken, cracked or burnt discs, with the photo of each.",
-                why="A damaged insulator can fail under load and cause an outage.",
-                needs="Close-up photos of each insulator string. Insulators are found today; their condition is not."),
-            "sag": Upcoming(
-                TO_BUILD, "Coming soon", "Conductor sag and clearance: not measured yet.",
-                what="How low each span hangs and how much clearance it leaves above the ground, roads and buildings.",
-                why="Too low a conductor is a danger to people and vehicles, and can flash over.",
-                needs="Photos from the side of each span, or survey data with heights."),
-            "steel": Upcoming(
-                TO_BUILD, "Coming soon", "Pylon steel: not measured yet.",
-                what="Missing or loose bolts, rust and bent members on the pylons.",
-                why="A weakened pylon can fail in a storm and bring the line down.",
-                needs=("Close-up photos of the pylon joints. The bolt model was measured on telecom towers, not yet on "
-                       "pylons.")),
-            "hot_spots": Upcoming(
-                NEEDS_CAMERA, "Needs thermal images", "Overheating shows only on thermal images.",
-                what="Joints, clamps and insulators running hotter than the rest of the line.",
-                why="A hot joint is about to fail.",
-                needs="Thermal images along the line. Ordinary photos cannot show heat."),
         }),
 }
 DEFAULT_ASSET = ASSETS["telecom"]
@@ -231,7 +176,7 @@ _BASE_SCORE = {READY: 100, PARTLY: 60, WORKING: 55, NEEDS_FLIGHT: 40, NEEDS_CAME
 # list of photos to check comes first for them.
 _READER_BOOST = {
     OWNER: {"equipment": 90, "defects": 85, "changes": 20},
-    MANAGER: {"defects": 80, "changes": 45, "photos_to_check": 40, "equipment": 30, "right_of_way": 20},
+    MANAGER: {"defects": 80, "changes": 45, "photos_to_check": 40, "equipment": 30},
     TECHNICIAN: {"photos_to_check": 45, "defects": 30, "camera_positions": 15},
 }
 SHUFFLE_POINTS = 30  # with a seed (each day's, or "Other questions"), each card gets up to this many points at random
@@ -262,26 +207,6 @@ _ROLE_WORDS: dict[str, dict[str, dict[str, tuple[str, ...]]]] = {
             "camera_positions": ("Where was the drone when each photo was taken?",),
             "equipment": ("What equipment will I find up there?",),
             "learn_review": ("Why must I check every suggestion?",),
-        },
-    },
-    "power_grid": {
-        OWNER: {
-            "defects": ("Are birds nesting on my line?", "Which towers on my line have bird nests?"),
-            "equipment": ("What equipment is on this stretch of line?",),
-            "changes": ("What changed on my line since the last inspection?",),
-            "right_of_way": ("Is anything growing or built too close to my line?",),
-        },
-        MANAGER: {
-            "defects": ("Where should a crew go to clear nests?", "Which towers need a crew for nests?"),
-            "photos_to_check": ("How far along is this inspection?", "Which photos still need checking?"),
-            "changes": ("What changed along this line since the last patrol?",),
-            "right_of_way": ("Which spans need clearing?",),
-        },
-        TECHNICIAN: {
-            "photos_to_check": ("Which photos do I check next?",),
-            "defects": ("Which towers have nests I need to clear?",),
-            "conductors": ("Where do the conductors run on these photos?",),
-            "camera_positions": ("Where was the drone for each photo?",),
         },
     },
 }
@@ -330,7 +255,6 @@ class Here:
     earlier: Earlier
     asset: Asset = DEFAULT_ASSET
     surroundings: Optional[dict[str, dict[str, Any]]] = None  # site_surroundings results by photo (None: not loaded)
-    conductors: Optional[dict[str, dict[str, Any]]] = None  # line_conductors results by photo (None: not loaded)
     role: Optional[str] = None  # the reader's role: its questions are worded for it
     seed: int = 0  # picks each question's wording and shuffles the deck (card_memory.daily_seed); 0 keeps both fixed
     seen: frozenset[str] = frozenset()  # cards the reader opened in the last day
@@ -502,8 +426,6 @@ def _status(card_id: str, here: Here) -> str:
     if card_id == "surroundings":
         return _analysed(site_surroundings.straight_down(here.inspection.photos), here.surroundings,
                          site_surroundings.enabled())
-    if card_id == "conductors":
-        return _analysed(line_conductors.readable(here.inspection.photos), here.conductors, line_conductors.enabled())
     if card_id == "defects":
         defects = here.defects
         if _anything_counted(defects):
@@ -569,13 +491,6 @@ def _preview(card_id: str, here: Here) -> str:
                     else "Trees are found by SAM 3, which is switched off on this server.")
         return (f"Trees cover {mean['trees']:.0%} of the ground in view, other vegetation {mean['other_vegetation']:.0%}"
                 f" ({_n(len(here.surroundings or {}), 'photo')}).")
-    if card_id == "conductors":
-        photos, done = line_conductors.readable(here.inspection.photos), here.conductors or {}
-        if not done:
-            return (f"Outlining the conductors on {_n(len(photos), 'photo')}…" if line_conductors.enabled()
-                    else "Conductors are outlined by SAM 3, which is switched off on this server.")
-        seen = sum(1 for r in done.values() if r["outlines"])
-        return f"Conductors in view on {seen} of {_n(len(done), 'photo')} looked at."
     if card_id == "defects":
         counted = [i for i in here.defects.values() if i.at_least]
         if counted:
@@ -990,43 +905,6 @@ def _surroundings(here: Here, audience: str) -> dict[str, Any]:
                    facts=facts, items=items)
 
 
-def _conductors(here: Here, audience: str) -> dict[str, Any]:
-    inspection = here.inspection
-    photos, done = line_conductors.readable(inspection.photos), here.conductors or {}
-    m = line_conductors.MEASURED
-    measured = (f"Measured on {m['dataset']}, {m['date']}: of the conductors people outlined, {m['found']:.0%} were "
-                f"within {m['tolerance_px']} px of SAM 3's outline, and {m['right']:.0%} of SAM 3's outline was on a "
-                f"conductor (pixel overlap {m['iou']:.2f})")
-    why = ("Knowing which photos show the conductors tells you whether the inspection covered every span, and which "
-           "photos to open to look at a span.")
-    gaps = "Sag, clearance to the ground, broken strands and trees near the conductors are not measured yet."
-    rows = [(p, done[p.sha256]) for p in photos if p.sha256 in done]
-    seen = sorted(((p, r) for p, r in rows if r["outlines"]), key=lambda pr: -len(pr[1]["outlines"]))
-    facts = [{"label": "Photos looked at", "value": f"{len(rows)} of {len(photos)}"},
-             {"label": "Photos with conductors in view", "value": str(len(seen))}]
-    items = [_item(inspection, p, _n(len(r["outlines"]), "conductor outline")) for p, r in seen[:LISTED_PHOTOS]]
-    if not rows:
-        what = ((f"Outlining the conductors on the {_n(len(photos), 'photo')}; the answer appears as each one is done."
-                 if line_conductors.enabled() else
-                 "Conductors are outlined by SAM 3 on Roboflow, which is switched off on this server, so nothing is "
-                 "measured.") + " " + gaps)
-        todo = "Come back in a few minutes." if line_conductors.enabled() else "Ask for SAM 3 to be switched on."
-    else:
-        none = len(rows) - len(seen)
-        what = (f"SAM 3 outlined conductors on {len(seen)} of the {_n(len(rows), 'photo')} looked at"
-                + (f"; {_n(none, 'photo')} {'shows' if none == 1 else 'show'} none" if none else "") + ". " + gaps)
-        todo = ("Open the photos listed to see the spans they cover; photos with no conductor in view do not show the "
-                "line itself." if audience == OWNER else
-                "Open the photos listed to look along each span; they are ordered by how many conductors are in view.")
-    sure = how_sure("low" if len(rows) < len(photos) else "medium", [
-        measured,
-        "Measured on photos from other countries' lines; a line here has not been checked against people's outlines",
-        "SAM 3 runs on Roboflow: the photos are sent there",
-    ], "Outlining the conductors on a few of your photos by hand would measure it on your line.")
-    return _answer("conductors", here, what=what, why=why, todo=todo, sure=sure, audience=audience, terms=[],
-                   facts=facts, items=items)
-
-
 def _finder_of(part: str) -> tuple[Optional[str], Optional[answer_levels.Target]]:
     """How this server finds a part (its words) and the measurement behind it; (None, None) when nothing can."""
     try:
@@ -1153,7 +1031,6 @@ _ANSWERS = {
     "learn_review": _learn_review,
     "defects": _defects,
     "surroundings": _surroundings,
-    "conductors": _conductors,
 }
 
 
@@ -1245,12 +1122,6 @@ def _photo_line(card_id: str, here: Here, photo: PhotoFacts) -> tuple[Optional[s
             return None, "Looks straight down: trees and vegetation are being measured."
         return READY, (f"Trees cover {result['trees']:.0%} of this photo, other vegetation "
                        f"{result['other_vegetation']:.0%}.")
-    if card_id == "conductors":
-        result = (here.conductors or {}).get(photo.sha256)
-        if result is None:
-            return None, "The conductors on this photo are not outlined yet."
-        found = len(result["outlines"])
-        return READY, f"SAM 3 outlined {_n(found, 'conductor')} here." if found else "No conductor in view here."
     if card_id == "hot_spots":
         return None, "An ordinary photo does not show heat."
     if upcoming is not None:
@@ -1348,11 +1219,9 @@ async def load_here(conn: Any, redis: Any, s3: Any, bucket: str, project_id: str
     asset = ASSETS[industry]
     surroundings = (await site_surroundings.load(s3, bucket, project_id, layer_id, photos)
                     if "surroundings" in asset.cards else None)
-    conductors = (await line_conductors.load(s3, bucket, project_id, layer_id, photos)
-                  if "conductors" in asset.cards else None)
     inspection = await tower_inspection.load_inspection(redis, s3, bucket, project_id, layer_id, name, photos,
                                                         tower_inspection.parts_for(industry))
     return Here(inspection=inspection,
                 earlier=await tower_inspection.earlier_inspection(conn, redis, s3, bucket, inspection,
                                                                   asset.equipment),
-                asset=asset, surroundings=surroundings, conductors=conductors)
+                asset=asset, surroundings=surroundings)
