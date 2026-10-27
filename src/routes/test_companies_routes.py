@@ -51,14 +51,14 @@ async def test_staff_list_and_add_companies(client, as_user):
     login("Staff@Ingabe.rw")
     listed = (await client.get("/api/admin/companies")).json()
     assert listed["companies"][0]["name"] == "BK Insurance" and listed["companies"][0]["industry"] is None
-    assert [o["key"] for o in listed["industries"]] == ["agriculture", "power_grid", "telecom"]
+    assert [o["key"] for o in listed["industries"]] == ["agriculture", "telecom"]
     no_industry = await client.post("/api/admin/companies", json={"name": "Radiant", "admin_email": "it@radiant.rw"})
     assert no_industry.status_code in (400, 422) and calls == []  # a partner company needs its industry
     r = await client.post("/api/admin/companies",
-                          json={"name": "Radiant", "admin_email": "it@radiant.rw", "industry": "power_grid"})
+                          json={"name": "Radiant", "admin_email": "it@radiant.rw", "industry": "agriculture"})
     assert r.status_code == 200 and calls == [("Radiant", "it@radiant.rw")]
     async with get_async_db_connection() as conn:  # set before anyone from the company signs in
-        assert await conn.fetchval("SELECT industry FROM organizations WHERE workos_org_id = $1", new_org) == "power_grid"
+        assert await conn.fetchval("SELECT industry FROM organizations WHERE workos_org_id = $1", new_org) == "agriculture"
     moved = await client.put(f"/api/admin/companies/{new_org}/industry", json={"industry": "telecom"})
     assert moved.status_code == 200
     async with get_async_db_connection() as conn:

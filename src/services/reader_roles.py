@@ -1,14 +1,14 @@
 """Who a person is when they read Ingabe's questions and answers: their role, per industry (Roger, 2026-10-25).
 
 Each industry has its own roles. Agriculture: farmer, cooperative or farm manager, agronomist, insurer, scientist,
-government or district, buyer or processor (the readers of the drone cards brief). Telecom Towers and Power Grid:
-owner, operations manager, field technician. A role decides which questions a person is asked and how they are
-worded (src/services/drone_cards.py, src/services/tower_cards.py); the answers are written in one of a few voices,
-and each role reads in one of them (VOICE): a cooperative manager reads the farmer's plain words, a government
+government or district, buyer or processor (the readers of the drone cards brief). Telecom Towers: owner, operations
+manager, field technician. A role decides which questions a person is asked and how they are worded
+(src/services/drone_cards.py, src/services/tower_cards.py); the answers are written in one of a few voices, and each
+role reads in one of them (VOICE): a cooperative manager reads the farmer's plain words, a government
 officer the insurer's evidence-first words, an operations manager the owner's.
 
-A person keeps one role per group of industries, so picking one never changes the other: Agriculture in
-users.report_audience (reports read it too), Telecom Towers and Power Grid in users.asset_role. Else their company's
+A person keeps one role per industry, so picking one never changes the other: Agriculture in
+users.report_audience (reports read it too), Telecom Towers in users.asset_role. Else their company's
 default (organizations.metadata.default_audience, Agriculture), else the industry's default.
 """
 
@@ -30,10 +30,10 @@ ASSETS = {
     "manager": "Operations manager",
     "technician": "Field technician",
 }
-ROLES: dict[str, dict[str, str]] = {"agriculture": AGRICULTURE, "telecom": ASSETS, "power_grid": ASSETS}
+ROLES: dict[str, dict[str, str]] = {"agriculture": AGRICULTURE, "telecom": ASSETS}
 # Where each group's role is saved on the account.
-_COLUMN = {"agriculture": "report_audience", "telecom": "asset_role", "power_grid": "asset_role"}
-DEFAULT_ROLE = {"agriculture": "agronomist", "telecom": "owner", "power_grid": "owner"}
+_COLUMN = {"agriculture": "report_audience", "telecom": "asset_role"}
+DEFAULT_ROLE = {"agriculture": "agronomist", "telecom": "owner"}
 ALL_ROLES = frozenset(AGRICULTURE) | frozenset(ASSETS)
 
 # The voice each role's answers are written in (the answer texts exist for these voices only).

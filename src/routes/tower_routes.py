@@ -31,7 +31,6 @@ from src.services import (
     example_finder,
     example_finder_pictures,
     industry,
-    line_conductors,
     part_outlines,
     photo_context,
     photo_inspections,
@@ -114,10 +113,9 @@ def _part(inspection: _Inspection, part: str) -> str:
 
 
 async def _with_cards(inspection: _Inspection = Depends(_viewed)) -> _Inspection:
-    """The inspection cards exist for Telecom Towers and Power Grid inspections."""
+    """The inspection cards exist for Telecom Towers inspections."""
     if not all(industry.available("tower_cards", i) for i in inspection.industries):
-        raise HTTPException(404, "The inspection cards are for photo inspections in Telecom Towers and Power Grid "
-                                 "projects")
+        raise HTTPException(404, "The inspection cards are for photo inspections in Telecom Towers projects")
     return inspection
 
 
@@ -175,10 +173,6 @@ async def scan_tower_photos(inspection: _Inspection = Depends(_edited),
         await site_surroundings.ensure(get_async_redis(), await get_async_s3_client(), get_bucket_name(),
                                        inspection.project_id, inspection.layer.layer_id,
                                        inspection.layer.metadata_dict or {}, inspection.photos)
-    if "power_grid" in inspection.industries:  # the Line checks deck asks where the conductors run
-        await line_conductors.ensure(get_async_redis(), await get_async_s3_client(), get_bucket_name(),
-                                     inspection.project_id, inspection.layer.layer_id,
-                                     inspection.layer.metadata_dict or {}, inspection.photos)
     return await _scan_state(inspection, running)
 
 

@@ -780,10 +780,10 @@ def test_the_switch_is_off_by_default(monkeypatch):
 # Trained detectors: our own (own_detector) always; Roboflow-hosted only while HOSTED_FINDER is on
 # --------------------------------------------------------------------------- #
 
-def test_towers_and_power_parts_use_our_own_detectors_by_default(monkeypatch):
+def test_tower_parts_use_our_own_detectors_by_default(monkeypatch):
     monkeypatch.delenv("HOSTED_FINDER", raising=False)
     monkeypatch.delenv("OWN_DETECTORS", raising=False)
-    for part in ("tower_dish", "tower_antenna", "tower_radio_unit", "power_pylon", "power_insulator", "power_nest"):
+    for part in ("tower_dish", "tower_antenna", "tower_radio_unit"):
         s = example_finder.settings(part)
         d = answer_levels.detector(part)
         assert s.model == d.finder_model and s.model.startswith("own:") and s.detector_class == d.detector_class
@@ -791,12 +791,12 @@ def test_towers_and_power_parts_use_our_own_detectors_by_default(monkeypatch):
         assert not s.look_alike_marks and not s.suggestion_filter and s.uses_detector
 
 
-def test_switched_off_our_detectors_give_way_to_the_example_finder_and_power_parts_are_refused(monkeypatch):
+def test_switched_off_our_detectors_give_way_to_the_example_finder_and_bolt_defects_are_refused(monkeypatch):
     monkeypatch.setenv("OWN_DETECTORS", "0")
     assert example_finder.settings("tower_dish").model == example_finder.MODEL_NAME
     assert "model" not in example_finder.settings("tower_dish").as_dict()  # the example finder's requests as before
     with pytest.raises(example_finder.FinderInputError, match="trained model, which is switched off"):
-        example_finder.settings("power_insulator")
+        example_finder.settings("tower_bolt_missing")
 
 
 def test_without_the_switch_maize_uses_the_example_finder(monkeypatch):
@@ -854,9 +854,9 @@ def test_our_detector_without_its_weights_is_a_plain_refusal(monkeypatch):
     monkeypatch.setenv("OWN_DETECTORS", "1")
     monkeypatch.setattr(stored_files, "ensure_local_copy", missing)
     monkeypatch.setattr(example_finder, "get_s3_client", lambda: None)
-    monkeypatch.delitem(own_detector._sessions, "own:rfdetr-small-powerlines-2026-10-12", raising=False)
+    monkeypatch.delitem(own_detector._sessions, example_finder.settings("tower_bolt_missing").model, raising=False)
     with pytest.raises(example_finder.FinderInputError, match="could not be loaded"):
-        example_finder._runner_for(example_finder.settings("power_nest"))
+        example_finder._runner_for(example_finder.settings("tower_bolt_missing"))
 
 
 def test_the_hosted_runner_keeps_its_class_and_never_puts_the_key_in_an_error(monkeypatch):
@@ -880,7 +880,7 @@ def test_the_hosted_runner_keeps_its_class_and_never_puts_the_key_in_an_error(mo
         return Answer()
 
     monkeypatch.setattr(hosted_detector.requests, "post", post)
-    s = example_finder.Settings(target="power_insulator", image_px=640, finder_input_px=640, look_alike_marks=False,
+    s = example_finder.Settings(target="tower_antenna", image_px=640, finder_input_px=640, look_alike_marks=False,
                                 view=answer_levels.OBLIQUE, suggestion_filter=False, detector_class="insulator",
                                 model="roboflow:roger-ntabukiraniro-s-workspace/nests-towers-insulators-7d9vg-2-rfdetr-small-t1")
     rows = example_finder._runner_for(s)(np.zeros((64, 64, 3), np.uint8), [], [], 640, example_finder.CONF, example_finder.MAX_DET)
@@ -959,14 +959,13 @@ def test_a_tiled_detector_reads_squares_at_the_photos_own_size_and_keeps_each_ob
 
 def test_a_detector_with_a_minimum_score_shows_only_boxes_from_it_up(monkeypatch):
     monkeypatch.setenv("OWN_DETECTORS", "1")
-    s = example_finder.settings("power_pylon")
-    assert s.min_score == 0.6 and s.as_dict()["min_score"] == 0.6
-    assert "min_score" not in example_finder.settings("power_insulator").as_dict()
+    s = example_finder.settings("tower_radio_unit")
+    assert s.min_score == 0.5 and s.as_dict()["min_score"] == 0.5
     picture = example_finder.Shown(pixels=np.zeros((64, 64, 3), np.uint8), sx=1.0, sy=1.0, width=64, height=64,
                                    marks=[], looks=[])
-    rows = [(0.0, 0.0, 10.0, 10.0, 0.59, 0), (20.0, 20.0, 30.0, 30.0, 0.6, 0), (40.0, 40.0, 50.0, 50.0, 0.9, 0)]
+    rows = [(0.0, 0.0, 10.0, 10.0, 0.49, 0), (20.0, 20.0, 30.0, 30.0, 0.5, 0), (40.0, 40.0, 50.0, 50.0, 0.9, 0)]
     finds = example_finder._find(picture, s, lambda *a: rows)
-    assert [f.score for f in finds] == [0.9, 0.6]
+    assert [f.score for f in finds] == [0.9, 0.5]
 
 
 def test_the_size_gate_reads_a_wide_photo_at_the_squares_size():

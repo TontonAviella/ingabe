@@ -12,7 +12,7 @@ export interface MapProject {
   };
   soft_deleted_at?: string;
   // The one industry the project belongs to; farm-only controls show only in agriculture projects.
-  industry?: 'agriculture' | 'power_grid' | 'telecom';
+  industry?: 'agriculture' | 'telecom';
   // The signed-in user owns it: only the owner deletes or shares it (absent: not said, treat as owner).
   is_owner?: boolean;
 }

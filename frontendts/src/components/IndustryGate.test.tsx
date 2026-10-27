@@ -13,7 +13,6 @@ const fetchMock = vi.mocked(apiFetch);
 
 const OPTIONS: IndustryState['options'] = [
   { key: 'agriculture', label: 'Agriculture', note: 'Farms, plots and crops' },
-  { key: 'power_grid', label: 'Power Grid', note: 'Transmission and distribution lines' },
   { key: 'telecom', label: 'Telecom Towers', note: 'Masts, antennas and sites' },
 ];
 const state = (industry: IndustryState['industry']): IndustryState => ({
@@ -25,12 +24,12 @@ const state = (industry: IndustryState['industry']): IndustryState => ({
   options: OPTIONS,
 });
 
-function Project({ industry }: { industry?: 'agriculture' | 'power_grid' | 'telecom' }) {
+function Project({ industry }: { industry?: 'agriculture' | 'telecom' }) {
   useFollowProjectIndustry(industry);
   return null;
 }
 
-function open(user: IndustryState, project?: 'agriculture' | 'power_grid' | 'telecom', copies = 1) {
+function open(user: IndustryState, project?: 'agriculture' | 'telecom', copies = 1) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   client.setQueryData(INDUSTRY_KEY, user);
   mount(
@@ -50,12 +49,12 @@ afterEach(() => {
 });
 
 describe('one industry at a time', () => {
-  it('opening a Telecom project while in Power Grid switches the user into Telecom and says so', async () => {
+  it('opening a Telecom project while in Agriculture switches the user into Telecom and says so', async () => {
     fetchMock.mockImplementation(async (_url, init) => {
       if (init?.method === 'PUT') return new Response(JSON.stringify(state('telecom')), { status: 200 });
-      return new Response(JSON.stringify(state('power_grid')), { status: 200 });
+      return new Response(JSON.stringify(state('agriculture')), { status: 200 });
     });
-    const client = open(state('power_grid'), 'telecom');
+    const client = open(state('agriculture'), 'telecom');
     await findBy(() => (vi.mocked(toast).mock.calls.length ? true : null), 'the switch notice');
     const put = fetchMock.mock.calls.find(([, init]) => init?.method === 'PUT');
     expect(put?.[0]).toBe('/api/user/industry');

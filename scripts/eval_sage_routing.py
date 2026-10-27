@@ -44,7 +44,7 @@ RUNS_DIR = EVAL_DIR / "runs"
 # _DESIRED_OUTPUT_TOKENS). Reasoning models spend part of it thinking.
 MAX_TOKENS = 4096
 
-# Farm talk in a Power Grid or Telecom reply (scored as scoring.FARM_WORDING).
+# Farm talk in a Telecom reply (scored as scoring.FARM_WORDING).
 FARM_WORDS = re.compile(r"\b(crops?|farm(s|ers?|ing|land)?|harvest|maize|beans|cassava|yield|NDVI|vegetation health|"
                         r"irrigation|livestock|insurance payout)\b", re.IGNORECASE)
 RETRYABLE_STATUS = {408, 409, 429, 500, 502, 503, 504}

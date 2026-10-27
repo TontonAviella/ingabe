@@ -47,17 +47,15 @@ logger = logging.getLogger(__name__)
 _SWITCH = "TOWERS"
 PARTS = ("tower_dish", "tower_antenna", "tower_radio_unit")  # Telecom Towers: the tower cards count these
 FARM_PARTS = ("maize_seedling",)  # Agriculture: marked and found on the photos; no cards yet
-POWER_PARTS = ("power_pylon", "power_insulator", "power_nest")  # Power Grid: found only by the trained detector
 # Telecom Towers' defects: marked and found on close-up photos of the steel (trained detector only); not equipment, so
 # the tower cards do not count them.
 DEFECT_PARTS = ("tower_bolt_missing", "tower_bolt_loose")
-ALL_PARTS = PARTS + FARM_PARTS + POWER_PARTS + DEFECT_PARTS
-PARTS_BY_INDUSTRY = {"telecom": PARTS + DEFECT_PARTS, "agriculture": FARM_PARTS, "power_grid": POWER_PARTS}
+ALL_PARTS = PARTS + FARM_PARTS + DEFECT_PARTS
+PARTS_BY_INDUSTRY = {"telecom": PARTS + DEFECT_PARTS, "agriculture": FARM_PARTS}
 # How the marking screen names each part (one, many), in the order it offers them.
 PART_LABELS = {"tower_dish": ("Microwave dish", "microwave dishes"), "tower_antenna": ("Panel antenna", "panel antennas"),
                "tower_radio_unit": ("Radio unit", "radio units"), "maize_seedling": ("Maize plant", "maize plants"),
-               "power_pylon": ("Pylon", "pylons"), "power_insulator": ("Insulator", "insulators"),
-               "power_nest": ("Bird nest", "bird nests"), "tower_bolt_missing": ("Missing bolt", "missing bolts"),
+               "tower_bolt_missing": ("Missing bolt", "missing bolts"),
                "tower_bolt_loose": ("Loose bolt", "loose bolts")}
 STORE_PREFIX = "towers/v1"
 REDIS_PREFIX = "towers:v1"
@@ -117,7 +115,7 @@ def check_part(part: Any, parts: Sequence[str] = ALL_PARTS) -> str:
 
 def _family(part: str) -> tuple[str, ...]:
     """The parts marked alongside this one (its industry's): only they can be its look-alike marks."""
-    return next(family for family in (PARTS, FARM_PARTS, POWER_PARTS, DEFECT_PARTS) if part in family)
+    return next(family for family in (PARTS, FARM_PARTS, DEFECT_PARTS) if part in family)
 
 
 # --------------------------------------------------------------------------- #
@@ -753,7 +751,7 @@ class PartInventory:
 
 def inventory(inspection: Inspection, parts: Sequence[str] = PARTS) -> dict[str, PartInventory]:
     """What is counted of each part across the inspection, and what is still open (the tower equipment unless the
-    caller names other parts: a Power Grid inspection's, or the defects)."""
+    caller names other parts: the defects)."""
     out = {}
     photos = {p.sha256: p for p in inspection.photos}
     for part in parts:

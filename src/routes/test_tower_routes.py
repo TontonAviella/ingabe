@@ -122,26 +122,6 @@ async def test_with_a_switch_off_even_a_malformed_write_is_not_found(client, swi
 
 
 @pytest.mark.anyio
-async def test_power_grid_marks_pylons_insulators_and_nests_and_has_its_own_cards(client, seeded, switched_on):
-    """Power Grid: the photos are marked for its own three parts (found only by the trained detector); a tower part
-    is refused (422); its cards ask about the line and its bird nests, never about tower equipment or bolts."""
-    ids = await seeded.make(industry="power_grid")
-    _as(ids["owner"])
-    photos = (await client.get(f"{_base(ids['layer'])}/photos")).json()
-    assert [p["id"] for p in photos["parts"]] == ["power_pylon", "power_insulator", "power_nest"]
-    assert [p["label"] for p in photos["parts"]] == ["Pylon", "Insulator", "Bird nest"]
-    assert await _every_route(client, ids["layer"]) == [200, 200, 422, 422, 422, 200, 200]
-    titles = {c["id"]: c["title"] for c in (await client.get(f"{_base(ids['layer'])}/cards?seed=7")).json()["cards"]}
-    line = tower_cards.ASSETS["power_grid"]
-    # the owner's words for the line's cards (tower_cards.question), never a tower's
-    assert titles["equipment"] == tower_cards.question(line, "owner", "equipment", 7)
-    assert titles["defects"] == tower_cards.question(line, "owner", "defects", 7)
-    assert "tower" not in titles["equipment"].lower() and "bolt" not in titles["defects"].lower()
-    assert (await client.get(f"{_base(ids['layer'])}/cards/defects?seed=7")).json()["question"] == titles["defects"]
-    assert switched_on.calls == []
-
-
-@pytest.mark.anyio
 async def test_agriculture_marks_maize_plants_and_has_no_tower_cards(client, seeded, switched_on):
     """In Agriculture the photos are marked for maize plants only: a tower part is refused (422) before anything is
     saved or found, and the tower cards do not exist there (404)."""

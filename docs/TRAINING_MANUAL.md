@@ -63,7 +63,7 @@ Ingabe is a map you use in your web browser, with an assistant called **Sage** t
 
 ## 3. Your Maps
 
-After signing in you see your maps for the industry you work in (Agriculture, Power Grid or Telecom Towers), for
+After signing in you see your maps for the industry you work in (Agriculture or Telecom Towers), for
 example **Your Telecom Towers maps (3 projects)**: a grid of the map projects you own or that were shared with you
 in that industry (12 per page). The sidebar's recent maps follow the same industry.
 

@@ -24,7 +24,7 @@ from typing import Optional
 from urllib.parse import quote
 
 READER_ROLE = "mundi_rwanda_reader"  # agriculture projects
-GENERAL_READER_ROLE = "mundi_rwanda_reader_general"  # power grid, telecom
+GENERAL_READER_ROLE = "mundi_rwanda_reader_general"  # telecom
 READER_ROLES = (READER_ROLE, GENERAL_READER_ROLE)
 
 BOUNDARY_TABLES = frozenset(

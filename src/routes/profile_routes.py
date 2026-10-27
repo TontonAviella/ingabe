@@ -105,7 +105,7 @@ async def get_industry(session: UserContext = Depends(verify_session_required)):
 
 @router.put("/industry")
 async def put_industry(body: IndustryUpdate, session: UserContext = Depends(verify_session_required)):
-    """Save the user's own industry: agriculture, power_grid or telecom. Refused for a partner company that has an
+    """Save the user's own industry: agriculture or telecom. Refused for a partner company that has an
     industry (its people work only in it). For the first person of a partner company without one, the choice becomes
     the company's industry for everyone (src/services/industry.py)."""
     async with get_async_db_connection() as conn:

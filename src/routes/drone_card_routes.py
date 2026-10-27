@@ -41,8 +41,8 @@ logger = logging.getLogger(__name__)
 
 
 async def _agriculture_project(layer: MapLayer = Depends(get_layer)) -> None:
-    """The cards (plots, crops, bare ground, the crop survey) are an agriculture capability: a photo in a Power Grid
-    or Telecom project gets a 404 (the panel shows nothing; 409 already means "still processing, ask again").
+    """The cards (plots, crops, bare ground, the crop survey) are an agriculture capability: a photo in a Telecom
+    project gets a 404 (the panel shows nothing; 409 already means "still processing, ask again").
     Runs after the layer access check (get_layer), so it never tells a stranger anything about a layer (R1-21)."""
     async with async_read_conn("drone_cards.industry") as conn:
         project_industry = await industry.industry_of_layer(conn, layer.layer_id)

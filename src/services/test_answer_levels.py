@@ -21,11 +21,10 @@ OPEN_FIELD = Facts(planting_date=PLANTED, capture_date=TAKEN, green_cover_share=
 TOWER_PARTS = ("tower_dish", "tower_antenna", "tower_radio_unit")
 ANSWERABLE = ("tower_dish", "tower_antenna", "tower_radio_unit", "building", "maize_seedling", "row_crop_plant", "weed")
 CANT_TELL_KINDS = ("tree_crown_forest", "tree_crown_savanna", "banana_mat")
-# Found only by a trained detector: the example finder was never measured on them (CAN'T TELL without it).
-POWER_PARTS = ("power_pylon", "power_insulator", "power_nest")
-DETECTED = (*TOWER_PARTS, *POWER_PARTS)
+DETECTED = TOWER_PARTS
 DEFECT_PARTS = ("tower_bolt_missing", "tower_bolt_loose")
-ONLY_DETECTED = (*POWER_PARTS, *DEFECT_PARTS)  # never measured with the example finder
+# Found only by a trained detector: the example finder was never measured on them (CAN'T TELL without it).
+ONLY_DETECTED = DEFECT_PARTS
 EVIDENCE = json.loads(al.EVIDENCE_PATH.read_text())
 
 
@@ -560,32 +559,24 @@ def test_a_detector_matches_its_evidence(name):
     assert row["model"] == d.finder_model and row["class"] == d.detector_class
     assert d.finder_input_px == d.measured["image_px"] and d.max_level is Level.FULL_REVIEW
     assert d.measured["date"] == "2026-10-13"
-    assert ("sites the model never saw" in d.measured["dataset"] if name == "power_pylon" else
-            "same sites" in d.measured["note"])
+    assert "same sites" in d.measured["note"]
     model = own_detector.MODELS[d.finder_model]  # our own model, its weights named by key and sha256
     assert d.detector_class in model.classes and model.sha256[:16] in model.key
     assert d.size_floor_px is not None and d.size_floor_px > 0
 
 
-@pytest.mark.parametrize("name,value", [("tower_dish", 0.889), ("tower_antenna", 0.952), ("tower_radio_unit", 0.562),
-                                        ("power_pylon", 0.146), ("power_insulator", 0.869), ("power_nest", 0.958)])
+@pytest.mark.parametrize("name,value", [("tower_dish", 0.889), ("tower_antenna", 0.952), ("tower_radio_unit", 0.562)])
 def test_the_detectors_hold_the_measurements_of_2026_10_13(name, value):
     assert al.detector(name).measured["value"] == value
 
 
-def test_pylons_are_shown_only_from_the_score_measured_at_new_sites():
-    """TTPLA (1,242 photos at sites the model never saw): from score 0.6 up, 83% of boxes on a tower, 15% of towers
-    found; the other detectors show every box, as they were measured."""
-    d = al.detector("power_pylon")
-    (row,) = _rows(d.measured["evidence"])
-    assert d.min_score == row["cut"] == 0.6 and (row["p"], row["r"], row["n_gt"]) == (0.831, 0.153, 968)
-    assert "0.989" in d.measured["note"]  # the same-site score is kept, said to be optimistic
+def test_each_detector_shows_boxes_from_its_measured_score_up():
     floors = {n: al.detector(n).min_score for n in (*DETECTED, *DEFECT_PARTS)}
-    assert floors == {"tower_dish": 0.4, "tower_antenna": 0.4, "tower_radio_unit": 0.5, "power_pylon": 0.6,
-                      "power_insulator": None, "power_nest": None, "tower_bolt_missing": 0.4, "tower_bolt_loose": 0.4}
+    assert floors == {"tower_dish": 0.4, "tower_antenna": 0.4, "tower_radio_unit": 0.5, "tower_bolt_missing": 0.4,
+                      "tower_bolt_loose": 0.4}
 
 
-def test_only_tower_power_and_maize_parts_have_a_detector():
+def test_only_tower_and_maize_parts_have_a_detector():
     assert {t.name for t in al.targets() if al.detector(t.name)} == set(DETECTED) | set(DEFECT_PARTS) | {"maize_seedling"}
 
 
@@ -614,7 +605,7 @@ def test_maize_is_found_by_sam3_with_its_measured_prompt():
     assert len(EVIDENCE["marks"]["rf_maize_seedling"]["pictures"]) == 36
 
 
-def test_power_parts_cannot_be_answered_by_the_example_finder():
+def test_bolt_defects_cannot_be_answered_by_the_example_finder():
     for name in ONLY_DETECTED:
         assert al.target(name).max_level is Level.CANT_TELL and al.target(name).finder_model == FINDER
         gate = al.size_gate(name, 640, marked_box_px=[(300, 300)] * 3, finder_model=al.detector(name).finder_model)

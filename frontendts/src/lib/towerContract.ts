@@ -6,16 +6,7 @@ import type { Box, Point } from '@/lib/photoView';
 // comes from the server; the screens only show them. All routes answer 404 when towers are switched off (TOWERS) or
 // the project is not a telecom project, and the panels then show nothing.
 
-export type TowerPart =
-  | 'tower_dish'
-  | 'tower_antenna'
-  | 'tower_radio_unit'
-  | 'maize_seedling'
-  | 'power_pylon'
-  | 'power_insulator'
-  | 'power_nest'
-  | 'tower_bolt_missing'
-  | 'tower_bolt_loose';
+export type TowerPart = 'tower_dish' | 'tower_antenna' | 'tower_radio_unit' | 'maize_seedling' | 'tower_bolt_missing' | 'tower_bolt_loose';
 
 export interface PartLabel {
   id: TowerPart;
@@ -45,14 +36,11 @@ export const TOWER_PARTS: PartLabel[] = [
 export const ALL_PARTS: PartLabel[] = [
   ...TOWER_PARTS,
   { id: 'maize_seedling', label: 'Maize plant', plural: 'maize plants' },
-  { id: 'power_pylon', label: 'Pylon', plural: 'pylons' },
-  { id: 'power_insulator', label: 'Insulator', plural: 'insulators' },
-  { id: 'power_nest', label: 'Bird nest', plural: 'bird nests' },
   { id: 'tower_bolt_missing', label: 'Missing bolt', plural: 'missing bolts' },
   { id: 'tower_bolt_loose', label: 'Loose bolt', plural: 'loose bolts' },
 ];
 
-// Who reads the tower and line questions (src/services/reader_roles.py ASSETS): each is asked its own questions.
+// Who reads the tower questions (src/services/reader_roles.py ASSETS): each is asked its own questions.
 export type TowerAudience = 'owner' | 'manager' | 'technician';
 
 export const TOWER_AUDIENCES: { id: TowerAudience; label: string }[] = [
@@ -177,7 +165,7 @@ export interface TowerCard {
 
 export interface TowerCards {
   cards: TowerCard[];
-  /** What the panel is called for this industry: "Tower checks", "Line checks". */
+  /** What the panel is called: "Tower checks". */
   heading?: string;
 }
 

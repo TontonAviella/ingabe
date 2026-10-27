@@ -1,7 +1,7 @@
-"""Sage's tools for a photo inspection on the map, of telecom towers or of power lines: what a person counted on it
+"""Sage's tools for a photo inspection of telecom towers on the map: what a person counted on it
 (equipment and defects), and which photos still need checking. An adapter only: they read the same facts as the
 inspection cards (src/services/tower_cards.py), so Sage and the cards agree, and none ever counts from a picture. The
-tower tools serve Telecom projects, the power line tools Power Grid projects, while TOWERS is on (industry.available).
+tools serve Telecom projects while TOWERS is on (industry.available).
 """
 
 from __future__ import annotations
@@ -48,8 +48,7 @@ async def _here(layer_id: str, meta: IngabeToolCallMetaArgs,
         # The tool's own capability (its industry): photo marking also serves Agriculture, these counts do not.
         project_industry = await industry.industry_of_project(conn, project_id)
         if not industry.available(capability, project_industry):
-            return None, ("Tower work is for Telecom Towers projects only." if capability.startswith(("get_tower",
-                          "tower_")) else "Power line work is for Power Grid projects only.")
+            return None, "Tower work is for Telecom Towers projects only."
         s3, bucket = await get_async_s3_client(), get_bucket_name()
         photos = await tower_inspection.inspection_photos(s3, bucket, prefix)
         if photos is None:
@@ -92,35 +91,3 @@ async def tower_photos_needing_review(args: TowerInspectionArgs, meta: IngabeToo
         return {"status": "error", "error": why_not}
     return {"status": "success", **tower_cards.photos_needing_review(here),
             "source": "Ingabe tower inspection: the work saved on each photo"}
-
-
-async def get_power_line_inspection_findings(args: TowerInspectionArgs, meta: IngabeToolCallMetaArgs) -> dict[str, Any]:
-    """What is on a power line according to a photo inspection: for pylons and insulators, the number a person
-    counted (at least N: the most counted on one photo, after checking every suggestion on it), and the bird nests a
-    person counted with the photos they are on; how many photos are counted, suggestions still waiting, and where the
-    photos were taken from. When nothing is checked yet it says so and what to do.
-
-    WHEN TO USE: "how many pylons / insulators", "what is on this line", "are there bird nests on the line", "which
-    pylons have nests", "where were the photos taken from".
-    WHEN NOT TO USE: conductor sag, vegetation clearance, broken insulators or hot spots (not measured); a raster photo
-    that is not a photo inspection. Never count from a picture yourself: give only the counts this tool returns, and
-    never say there are no nests where nobody marked them."""
-    here, why_not = await _here(args.layer_id, meta, "get_power_line_inspection_findings")
-    if here is None:
-        return {"status": "error", "error": why_not}
-    return {"status": "success", **tower_cards.findings(here),
-            "source": "Ingabe power line inspection: counts checked by a person, photo facts from EXIF and DJI data"}
-
-
-async def power_line_photos_needing_review(args: TowerInspectionArgs, meta: IngabeToolCallMetaArgs) -> dict[str, Any]:
-    """The photos of a power line inspection a person still has to check, in the order to work on them: suggestions
-    waiting for review (most first), photos marked but not searched yet, photos being searched, then photos with
-    nothing marked. A photo's count exists only once it is checked.
-
-    WHEN TO USE: "which line photos still need checking", "what is left to review", "where do I start".
-    WHEN NOT TO USE: the counts themselves (use get_power_line_inspection_findings)."""
-    here, why_not = await _here(args.layer_id, meta, "power_line_photos_needing_review")
-    if here is None:
-        return {"status": "error", "error": why_not}
-    return {"status": "success", **tower_cards.photos_needing_review(here),
-            "source": "Ingabe power line inspection: the work saved on each photo"}

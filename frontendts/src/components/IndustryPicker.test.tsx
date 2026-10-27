@@ -12,7 +12,6 @@ const fetchMock = vi.mocked(apiFetch);
 
 const OPTIONS: IndustryState['options'] = [
   { key: 'agriculture', label: 'Agriculture', note: 'Farms, plots and crops' },
-  { key: 'power_grid', label: 'Power Grid', note: 'Transmission and distribution lines' },
   { key: 'telecom', label: 'Telecom Towers', note: 'Masts, antennas and sites' },
 ];
 

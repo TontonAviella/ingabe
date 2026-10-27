@@ -212,13 +212,13 @@ def _abdication_on(project_industry: str, text: str, tools: list[dict] | None = 
         # What the exemption is for: a farm question outside agriculture; "Ingabe cannot do this yet" is right.
         ("telecom", "is the maize stressed near the mast?", None),
         ("telecom", "Is there drought in Kayonza this season?", None),
-        ("power_grid", "Give me the maize yield risk for Gicumbi", None),
-        ("power_grid", "Is vegetation growing into the Jabana line corridor? Check the NDVI.", None),
+        ("telecom", "Give me the maize yield risk for Gicumbi", None),
+        ("telecom", "Is vegetation growing around the Jabana mast? Check the NDVI.", None),
         # The over-reach it had: weather and flood words select the agriculture category too, and their tools
         # serve every industry, so a prose answer is still abdication.
         ("telecom", "Will heavy rain hit the Rebero tower site this week?", "get_forecast"),
         ("telecom", "Did the river flood near Rubavu after last week's rain?", "detect_flood_extent"),
-        ("power_grid", "What temperature is forecast for Musanze tomorrow?", "get_forecast"),
+        ("telecom", "What temperature is forecast for Musanze tomorrow?", "get_forecast"),
         # Words every industry says ("field visit", "field team", "field crew", "trigger") select the agriculture
         # category too, but they do not make a farm question: the notes and point tools serve every industry.
         ("telecom", "Log a field visit to the Rebero mast: the shelter door is broken", "add_observation"),
@@ -226,10 +226,10 @@ def _abdication_on(project_industry: str, text: str, tools: list[dict] | None = 
         ("telecom", "Remember that the field engineer replaced the RRU on the Gasabo mast", "add_observation"),
         ("telecom", "Add a point for the generator yard where the field crew parks at -1.94, 30.08",
          "create_point_layer"),
-        ("power_grid", "Log a field visit to the Jabana substation: the fence is down", "add_observation"),
-        ("power_grid", "Remember the trigger level our field crews use for the Jabana line", "add_observation"),
+        ("telecom", "Log a field visit to the Jabana site: the fence is down", "add_observation"),
+        ("telecom", "Remember the trigger level our field crews use for the Jabana mast", "add_observation"),
         # A farm word does not excuse prose on a request to keep a note.
-        ("power_grid", "Log a field visit: the maize under the Jabana line was cut back", "add_observation"),
+        ("telecom", "Log a field visit: the maize around the Jabana mast was cut back", "add_observation"),
         # Agriculture is unchanged.
         ("agriculture", "is the maize stressed in Nyagatare?", "get_field_health"),
         ("agriculture", "Will heavy rain hit Musanze this week?", "get_forecast"),
@@ -260,7 +260,6 @@ def test_the_abdication_exemption_covers_farm_questions_only(project_industry: s
         ("telecom", "Y a-t-il des dégâts sur le mât dans cette image ?"),
         ("telecom", "Umunara w'itumanaho uri kuri iyi foto ufite ibyangiritse?"),
         ("telecom", "Count the RRUs and microwave dishes on Mast_site_Kicukiro"),
-        ("power_grid", "How many antennas are on this tower photo?"),
         ("agriculture", "How many antennas are on this tower photo?"),  # no industry has a tower tool
     ],
 )
@@ -298,10 +297,6 @@ def test_with_towers_on_a_telecom_tower_question_is_offered_the_tower_tools_and_
     assert {"get_tower_inspection_findings", "tower_photos_needing_review"} <= set(_names(plan.tools))
     assert not {"describe_user_raster", "analyze_raster_object_candidates"} & set(_names(plan.tools))
     assert abdicated is True  # a tool here answers it: prose is abdication
-    # Power Grid has its own inspection tools in the category (pylons, insulators, nests), never the tower ones.
-    abdicated, plan = _abdication_on("power_grid", text)
-    assert "get_tower_inspection_findings" not in _names(plan.tools)
-    assert {"get_power_line_inspection_findings", "power_line_photos_needing_review"} <= set(_names(plan.tools))
     abdicated, plan = _abdication_on("agriculture", text)  # no inspection tool there: the honest no stands
     assert abdicated is False and plan.routing.selected_categories == frozenset()
     assert "get_tower_inspection_findings" not in _names(plan.tools)
@@ -365,7 +360,7 @@ def test_tower_questions_are_guarded_again_once_a_tower_tool_exists(monkeypatch)
     text = "How many antennas are on this tower photo?"
     abdicated, plan = _abdication_on("telecom", text, tools)
     assert abdicated is True and "count_tower_equipment" in _names(plan.tools)
-    abdicated, plan = _abdication_on("power_grid", text, tools)
+    abdicated, plan = _abdication_on("agriculture", text, tools)
     assert abdicated is False and "count_tower_equipment" not in _names(plan.tools)
 
 

@@ -11,9 +11,6 @@ export const PART_COLOR: Record<TowerPart, string> = {
   tower_antenna: '#8FD3FF',
   tower_radio_unit: '#FFB35C',
   tower_dish: '#FF8FB4',
-  power_pylon: '#8FD3FF',
-  power_insulator: '#FFB35C',
-  power_nest: '#FF8FB4',
   maize_seedling: '#F2C14E',
   tower_bolt_missing: '#FF8FB4',
   tower_bolt_loose: '#FFB35C',
@@ -103,8 +100,8 @@ export function countedWords(counted: CountedPart[], parts: PartLabel[]): string
 export function litParts(lights: string | null, parts: PartLabel[]): TowerPart[] {
   const ids = parts.map((p) => p.id);
   if (lights === 'antennas') return ids.filter((id) => id === 'tower_antenna');
-  if (lights === 'defects') return ids.filter((id) => id === 'tower_bolt_missing' || id === 'tower_bolt_loose' || id === 'power_nest');
-  if (lights === 'equipment') return ids.filter((id) => id !== 'tower_bolt_missing' && id !== 'tower_bolt_loose' && id !== 'power_nest');
+  if (lights === 'defects') return ids.filter((id) => id === 'tower_bolt_missing' || id === 'tower_bolt_loose');
+  if (lights === 'equipment') return ids.filter((id) => id !== 'tower_bolt_missing' && id !== 'tower_bolt_loose');
   return [];
 }
 

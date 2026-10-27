@@ -18,7 +18,6 @@ const fetchMock = vi.mocked(apiFetch);
 
 const INDUSTRIES: { key: IndustryKey; label: string; note: string }[] = [
   { key: 'agriculture', label: 'Agriculture', note: 'Farms, plots and crops' },
-  { key: 'power_grid', label: 'Power Grid', note: 'Transmission and distribution lines' },
   { key: 'telecom', label: 'Telecom Towers', note: 'Masts, antennas and sites' },
 ];
 const label = (key: IndustryKey) => INDUSTRIES.find((i) => i.key === key)?.label ?? key;
@@ -215,7 +214,7 @@ describe('the home lists the maps of the industry the user works in now', () => 
     await findText('Your Telecom Towers maps (1 project)', 'h1');
     expect(byText('T1')).not.toBeNull();
     expect(byText('A1')).toBeNull();
-    await vi.waitFor(() => expect(tabs()).toEqual(['Agriculture 1', 'Power Grid', '*Telecom Towers 1']));
+    await vi.waitFor(() => expect(tabs()).toEqual(['Agriculture 1', '*Telecom Towers 1']));
     // The server decides the industry: the client never sends one with a list.
     expect(calls.some((u) => u.includes('industry='))).toBe(false);
   });
@@ -233,15 +232,9 @@ describe('the home lists the maps of the industry the user works in now', () => 
     const puts = fetchMock.mock.calls.filter(([url, init]) => url === '/api/user/industry' && init?.method === 'PUT');
     expect(puts.map(([, init]) => JSON.parse(String(init?.body)).industry)).toEqual(['agriculture']);
     expect(document.querySelector('[role="dialog"]')).toBeNull();
-    await vi.waitFor(() => expect(tabs()).toEqual(['*Agriculture 2', 'Power Grid', 'Telecom Towers 1']));
+    await vi.waitFor(() => expect(tabs()).toEqual(['*Agriculture 2', 'Telecom Towers 1']));
     // The sidebar's recent maps follow the switch too.
     await vi.waitFor(() => expect(document.querySelector('[data-testid="recent"]')?.textContent).toBe('A1,A2'));
-  });
-
-  it('counts several other industries in their tabs', async () => {
-    world.projects = [...projects('telecom', 1, 'T'), ...projects('agriculture', 2, 'A'), ...projects('power_grid', 1, 'G')];
-    renderHome();
-    await vi.waitFor(() => expect(tabs()).toEqual(['Agriculture 2', 'Power Grid 1', '*Telecom Towers 1']));
   });
 
   it('goes back to page 1 when the industry changes, and never asks for page 2 of the new one', async () => {

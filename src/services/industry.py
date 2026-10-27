@@ -1,6 +1,8 @@
-"""Industries: Ingabe serves agriculture, power grids and telecom towers, and keeps them apart.
+"""Industries: Ingabe serves agriculture and telecom towers, and keeps them apart.
 
-The settings (Roger, 2026-10-25: a partner company works in one industry, and only Ingabe sees all three):
+Power Grid was a third industry until 2026-10-27 (Roger: not worth the energy); its projects moved to agriculture.
+
+The settings (Roger, 2026-10-25: a partner company works in one industry, and only Ingabe sees both):
 - organizations.industry: a company's industry. Ingabe staff set it when they add the company (Companies page); a
   partner company that has none yet takes the first choice one of its people makes at sign-in, once
   (claim_company_industry).
@@ -36,14 +38,12 @@ from src.services import tower_inspection
 
 INDUSTRIES: dict[str, dict[str, str]] = {
     "agriculture": {"label": "Agriculture", "note": "Farms, plots and crops"},
-    "power_grid": {"label": "Power Grid", "note": "Transmission and distribution lines"},
     "telecom": {"label": "Telecom Towers", "note": "Masts, antennas and sites"},
 }
 DEFAULT_INDUSTRY = "agriculture"  # projects made before industries existed, and users who have not chosen
 
 AGRICULTURE = frozenset({"agriculture"})
 TELECOM = frozenset({"telecom"})
-POWER_GRID = frozenset({"power_grid"})
 SHARED = frozenset(INDUSTRIES)
 
 # Sage's tools and the automatic jobs, each with the industries it serves.
@@ -71,7 +71,7 @@ CAPABILITIES: dict[str, frozenset[str]] = {
     "analyze_raster_object_candidates": SHARED,
     "create_raster_h3_context_layer": SHARED,
     "query_worldcover_stats": SHARED,
-    # Weather and hazards matter to lines and masts as much as to farms.
+    # Weather and hazards matter to masts as much as to farms.
     "get_forecast": SHARED,
     "get_forecast_accuracy": SHARED,
     "get_weather_stats": SHARED,
@@ -113,22 +113,18 @@ CAPABILITIES: dict[str, frozenset[str]] = {
     "district_ndvi_map": AGRICULTURE,  # district vegetation colours and NDVI in the admin outlines tooltip
     # --- Telecom towers: the work on a photo inspection's photos (switch TOWERS) ---
     # marks, the finder's suggestions and their review (/api/towers/...): tower parts in Telecom, maize plants in
-    # Agriculture, pylons, insulators and nests in Power Grid (tower_inspection.PARTS_BY_INDUSTRY)
-    "tower_inspection": TELECOM | AGRICULTURE | POWER_GRID,
-    "tower_cards": TELECOM | POWER_GRID,  # the inspection question cards (each industry its own: tower_cards.ASSETS)
+    # Agriculture (tower_inspection.PARTS_BY_INDUSTRY)
+    "tower_inspection": TELECOM | AGRICULTURE,
+    "tower_cards": TELECOM,  # the inspection question cards (tower_cards.ASSETS)
     "get_tower_inspection_findings": TELECOM,
     "tower_photos_needing_review": TELECOM,
-    # --- Power Grid: the same photo inspection work on power lines (switch TOWERS) ---
-    "get_power_line_inspection_findings": POWER_GRID,
-    "power_line_photos_needing_review": POWER_GRID,
 }
 
 # Capabilities that exist only while their switch is on: off, they are not offered, not run and not shown, for any
 # industry (each switch is read by its domain's one function).
 SWITCHES: dict[str, Callable[[], bool]] = {
     name: tower_inspection.enabled
-    for name in ("tower_inspection", "tower_cards", "get_tower_inspection_findings", "tower_photos_needing_review",
-                 "get_power_line_inspection_findings", "power_line_photos_needing_review")
+    for name in ("tower_inspection", "tower_cards", "get_tower_inspection_findings", "tower_photos_needing_review")
 }
 
 
@@ -189,8 +185,7 @@ def tool_refusal(tool_name: str, industry: Optional[str]) -> Optional[dict]:
 
 
 def _labels(industries: frozenset[str]) -> str:
-    """The industries' labels in INDUSTRIES order: "Agriculture", "Agriculture and Telecom Towers". A refused tool
-    serves at most two of the three industries."""
+    """The industries' labels in INDUSTRIES order: "Agriculture", "Telecom Towers"."""
     return " and ".join(INDUSTRIES[name]["label"] for name in INDUSTRIES if name in industries)
 
 
@@ -216,20 +211,6 @@ _BRIEFINGS: dict[str, dict[str, Any]] = {
                    "(needs a thermal camera), the aviation obstruction light, theft or tampering at the fence and "
                    "shelter",
     },
-    "power_grid": {
-        "readers": "line owners and asset managers (what is on the line, what puts it at risk) and line crews (which "
-                   "pylons to visit)",
-        "words": "Pylon (transmission tower) carries the conductors on insulator strings; a span is the conductor "
-                 "between two pylons; sag is how low it hangs; the right-of-way is the corridor kept clear of trees "
-                 "and buildings; a bird nest near an insulator can short a live conductor to the steel (a flashover: "
-                 "an outage, and a fire risk in dry season).",
-        "tools": "For a photo inspection (a layer of camera points): get_power_line_inspection_findings (pylons, "
-                 "insulators and bird nests counted, where the photos were taken from) and "
-                 "power_line_photos_needing_review (what a crew checks next).",
-        "parts": ("power_pylon", "power_insulator", "power_nest"),
-        "not_yet": "conductor sag and clearance, vegetation in the right-of-way, broken or flashed-over insulator "
-                   "discs, corrosion, hot spots (needs a thermal camera)",
-    },
 }
 
 
@@ -250,8 +231,7 @@ def prompt_note(industry: Optional[str]) -> Optional[str]:
         "Never use crop, farming, soil or vegetation-health reasoning here, and do not mention farm findings."
     )
     brief = _BRIEFINGS.get(industry or "")
-    inspection_tool = {"telecom": "get_tower_inspection_findings",
-                       "power_grid": "get_power_line_inspection_findings"}.get(industry or "")
+    inspection_tool = {"telecom": "get_tower_inspection_findings"}.get(industry or "")
     if brief is None or inspection_tool is None or not available(inspection_tool, industry):
         return note + (f" Ingabe's dedicated {label} analysis is still being built: help with the map, places, "
                        "imagery, the user's own uploads, weather and the project's notes, and say plainly when a "

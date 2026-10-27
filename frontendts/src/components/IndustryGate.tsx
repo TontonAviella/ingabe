@@ -3,14 +3,15 @@ import { type QueryClient, useQuery, useQueryClient } from '@tanstack/react-quer
 import { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react';
 import { toast } from 'sonner';
 
-// Ingabe serves three industries. The first time someone signs in, before anything else, they pick theirs from
-// three miniature worlds (the same dioramas as nozalabs.rw), so "grid" or "towers" is never a guess. The choice is
+// Ingabe serves two industries (Power Grid was removed on 2026-10-27). The first time someone signs in, before
+// anything else, they pick theirs from two miniature worlds (the same dioramas as nozalabs.rw), so "farms" or
+// "towers" is never a guess. The choice is
 // saved on the account (/api/user/industry) and switched in one tap from the home's industry tabs or the sidebar's
 // "Your industry" menu (the full-screen picker is only the first choice). A switch changes
 // only the user's own view, also for a company's owners and admins. Members of a company that has an industry start
 // in it (its default) and are never asked, but can switch too.
 
-export type IndustryKey = 'agriculture' | 'power_grid' | 'telecom';
+export type IndustryKey = 'agriculture' | 'telecom';
 
 export interface IndustryState {
   industry: IndustryKey | null; // the industry the user works in now: their own choice, else their company's
