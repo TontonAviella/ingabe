@@ -139,6 +139,9 @@ class Settings:
     detector_class: Optional[str] = None  # the class the trained detector boxes for this target
     tile_px: Optional[int] = None  # the detector reads a larger picture in squares of this size (answer_levels)
     min_score: Optional[float] = None  # the detector's boxes are shown only from this score up (answer_levels)
+    # Which finds a person is shown (answer_levels.ShownRule, shown_finds): applied when they are shown, so it is not
+    # part of a request's identity (as_dict) and a job found before the rule is shown with it.
+    shown_rule: Optional[answer_levels.ShownRule] = None
 
     def as_dict(self) -> dict[str, Any]:
         out = {"target": self.target, "image_px": self.image_px, "finder_input_px": self.finder_input_px,
@@ -186,7 +189,8 @@ def settings(target_name: str) -> Settings:
     if t.finder_input_px is None or image_px is None or view is None:
         raise FinderInputError(f"the finder has never been measured on {t.noun}, so it has no settings to run with")
     return Settings(target=target_name, image_px=int(image_px), finder_input_px=int(t.finder_input_px),
-                    look_alike_marks=t.look_alike_marks, view=view, suggestion_filter=t.suggestion_filter)
+                    look_alike_marks=t.look_alike_marks, view=view, suggestion_filter=t.suggestion_filter,
+                    shown_rule=t.shown_rule)
 
 
 def _is_number(v: Any) -> bool:
@@ -372,6 +376,24 @@ def filter_suggestions(finds: Sequence[Find], marks_px: Sequence[Box], s: Settin
         if len(kept) >= FILTER_MAX:
             break
     return kept
+
+
+def shown_finds(finds: Sequence[dict[str, Any]], rule: Optional[answer_levels.ShownRule]) -> list[int]:
+    """Which of a job's finds (stored, as job.finds) a person is shown, as positions in `finds`: all of them without
+    a rule; otherwise, best score first, a find whose overlap with an already shown one covers at least
+    rule.nested_overlap of the smaller box is dropped (the same object boxed twice, one box inside the other), and
+    only finds scoring at least rule.relative_score times the best find are shown. Measured 2026-11-01 on INRAe
+    maize, scripts/finder_eval/run_shown.py."""
+    order = sorted(range(len(finds)), key=lambda i: -finds[i]["score"])
+    if rule is None:
+        return order
+    shown: list[int] = []
+    for i in order:
+        box = finds[i]["box_px"]
+        if not any(boxes.overlap_of_smaller(box, finds[j]["box_px"]) >= rule.nested_overlap for j in shown):
+            shown.append(i)
+    best = max((finds[i]["score"] for i in shown), default=0.0)
+    return [i for i in shown if finds[i]["score"] >= rule.relative_score * best]
 
 
 def _runner_for(s: Settings) -> Runner:

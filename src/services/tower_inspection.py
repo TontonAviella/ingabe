@@ -33,7 +33,7 @@ import statistics
 from collections import OrderedDict
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
-from typing import Any, Optional, Sequence
+from typing import Any, Collection, Optional, Sequence
 
 from redis.exceptions import LockError
 
@@ -350,11 +350,20 @@ def level_answer(part: str, marks: Sequence[Box], photo: PhotoFacts,
     return answer_levels.decide(part, model, gate, answer_levels.countability(part, answer_levels.Facts()))
 
 
-def suggestions_of(job: example_finder.Job, min_score: Optional[float] = None) -> tuple[Suggestion, ...]:
+def suggestions_of(job: example_finder.Job, min_score: Optional[float] = None,
+                   rule: Optional[answer_levels.ShownRule] = None,
+                   reviewed: Collection[str] = ()) -> tuple[Suggestion, ...]:
     """A finished job's finds as suggestions, best first, each with an id naming the job; only those from min_score
-    up when one is given (ids keep their place among all the finds, so earlier reviews still match)."""
-    return tuple(Suggestion(id=f"{job.job_id[:12]}-{i}", box=_box(find["box_px"]), score=find["score"])
-                 for i, find in enumerate(job.finds or [], 1) if min_score is None or find["score"] >= min_score)
+    up when one is given, and only those the target's measured rule shows (example_finder.shown_finds) when it has
+    one. Ids keep their place among all the finds, so earlier reviews still match, and a suggestion already
+    reviewed (`reviewed`, ids) is always shown: a review saved before the rule stays whole and can be saved again."""
+    ids = [f"{job.job_id[:12]}-{i}" for i in range(1, len(job.finds or []) + 1)]
+    finds = list(job.finds or [])
+    floor = [i for i, find in enumerate(finds) if min_score is None or find["score"] >= min_score]
+    shown = {floor[k] for k in example_finder.shown_finds([finds[i] for i in floor], rule)}
+    return tuple(Suggestion(id=ids[i], box=_box(find["box_px"]), score=find["score"])
+                 for i, find in sorted(enumerate(finds), key=lambda f: -f[1]["score"])
+                 if i in shown or ids[i] in reviewed)
 
 
 def _min_score(part: str) -> Optional[float]:
@@ -362,6 +371,15 @@ def _min_score(part: str) -> Optional[float]:
     before the floor was set is shown with it too."""
     try:
         return example_finder.settings(part).min_score
+    except FinderInputError:
+        return None
+
+
+def _shown_rule(part: str) -> Optional[answer_levels.ShownRule]:
+    """The part's measured rule for which suggestions a person sees (answer_levels); read when shown, like
+    _min_score."""
+    try:
+        return example_finder.settings(part).shown_rule
     except FinderInputError:
         return None
 
@@ -392,7 +410,8 @@ async def part_work(redis: Any, s3: Any, bucket: str, project_id: str, record: P
     # Bolts found by a scan (no marks) are not shown: scan_parts says why.
     job = None if part in DEFECT_PARTS and not own.marks else await _job(redis, s3, bucket, project_id, own.job_id)
     done = job is not None and job.status == example_finder.DONE
-    suggestions = suggestions_of(job, _min_score(part)) if done and job is not None else ()
+    suggestions = (suggestions_of(job, _min_score(part), _shown_rule(part), own.review.reviewed())
+                   if done and job is not None else ())
     if suggestions and job is not None:
         outlines = await part_outlines.load(s3, bucket, project_id, job.job_id) or {}
         suggestions = tuple(replace(s, outline=tuple(tuple((int(x), int(y)) for x, y in poly) for poly in outlines[s.id]))

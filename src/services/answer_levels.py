@@ -101,6 +101,17 @@ EVIDENCE_PATH = Path(__file__).parent / "answer_levels_evidence.json"
 
 
 @dataclass(frozen=True)
+class ShownRule:
+    """Which of the example finder's suggestions a person is shown, as measured for the target (its `shown` entry):
+    a suggestion whose overlap with a better scored shown one covers at least `nested_overlap` of the smaller box is
+    that one again (a box inside a box), and only suggestions scoring at least `relative_score` times the photo's
+    best are shown. Applied when the suggestions are shown, so a finder job found before the rule is shown with it."""
+
+    nested_overlap: float
+    relative_score: float
+
+
+@dataclass(frozen=True)
 class Target:
     """One kind of object the finder was measured on, with its settings and the highest level it supports."""
 
@@ -123,6 +134,8 @@ class Target:
     tile_px: Optional[int] = None
     # Set on a detector whose boxes are shown only from this score up: the score its measurement was taken at.
     min_score: Optional[float] = None
+    # Set on a target whose example finder suggestions are shown by a measured rule (ShownRule); None shows them all.
+    shown_rule: Optional[ShownRule] = None
 
 
 def _check_unit_interval(where: str, value: Any) -> None:
@@ -200,6 +213,27 @@ def _suggestion_filter(name: str, entry: dict[str, Any]) -> bool:
     return given["on"]
 
 
+_SHOWN_KEYS = {"nested_overlap", "relative_score", "evidence", "note"}
+
+
+def _shown_rule(name: str, entry: dict[str, Any]) -> Optional[ShownRule]:
+    """The target's measured rule for which suggestions are shown (its optional `shown` entry), with the run it was
+    measured in (`evidence`, checked against the evidence file by the tests) and a note saying what it gained and
+    lost; None without one."""
+    given = entry.get("shown")
+    if given is None:
+        return None
+    if not isinstance(given, dict) or set(given) != _SHOWN_KEYS:
+        raise ValueError(f"answer target {name}: shown must have exactly {sorted(_SHOWN_KEYS)}")
+    if not given["evidence"] or not given["note"]:
+        raise ValueError(f"answer target {name}: the shown rule needs the measurement it rests on and a note")
+    if not entry["suggestion_filter"]["on"]:
+        raise ValueError(f"answer target {name}: the shown rule was measured on top of the suggestion filter")
+    for key in ("nested_overlap", "relative_score"):
+        _check_unit_interval(f"answer target {name}: shown {key}", given[key])
+    return ShownRule(nested_overlap=float(given["nested_overlap"]), relative_score=float(given["relative_score"]))
+
+
 def _target(name: str, entry: dict[str, Any], marks: dict[str, Any]) -> Target:
     measured = entry["measured"]
     _check_provenance(name, measured)
@@ -232,7 +266,8 @@ def _target(name: str, entry: dict[str, Any], marks: dict[str, Any]) -> Target:
                   object_size_note=entry["object_size_note"], finder_model=finder["model"],
                   finder_input_px=measured["finder_input_px"], look_alike_marks=bool(finder["look_alike_marks"]),
                   suggestion_filter=_suggestion_filter(name, entry), max_level=level, size_floor_px=floor,
-                  measured=dict(measured), also_measured=tuple(dict(e) for e in entry["also_measured"]))
+                  measured=dict(measured), also_measured=tuple(dict(e) for e in entry["also_measured"]),
+                  shown_rule=_shown_rule(name, entry))
 
 
 _DETECTOR_KEYS = {"model", "class", "max_level", "size_evidence", "measured", "note"}
@@ -271,7 +306,7 @@ def _detector(name: str, base: Target, entry: dict[str, Any], marks: dict[str, A
     return replace(base, finder_model=given["model"], finder_input_px=measured["finder_input_px"],
                    look_alike_marks=False, suggestion_filter=False, max_level=Level[given["max_level"]],
                    size_floor_px=floor, measured=dict(measured), also_measured=(), detector_class=given["class"],
-                   tile_px=tile, min_score=min_score)
+                   tile_px=tile, min_score=min_score, shown_rule=None)  # measured for the example finder only
 
 
 def load_targets(path: Path = TARGETS_PATH, evidence_path: Path = EVIDENCE_PATH) -> dict[str, Target]:

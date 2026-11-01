@@ -31,9 +31,12 @@ Set `FINDER_EVAL_DIR` to a work folder holding `raw/` (the downloads), `w/` (wei
    after the suggestion filter (fixed before measuring: area 1/4x..4x the median mark, overlaps at IoU 0.5 dropped,
    at most 50) -> `results/postfilter.jsonl`; sets each target's `suggestion_filter` (the app's
    `example_finder.filter_suggestions`).
-8. `record_test_result.py` — not a measurement: records one real result on the committed tower photo for the app's
+8. `run_shown.py` — what a person is SHOWN for maize (not AP50): the finder's finds on INRAe tiles, then today's
+   filter vs nested boxes merged vs a score cut (chosen on calibration tiles of other photos) -> `results/shown.json`
+   (2026-11-01); sets maize_seedling's `shown` rule (the app's `example_finder.shown_finds`). `prep_maize.py` first.
+9. `record_test_result.py` — not a measurement: records one real result on the committed tower photo for the app's
    example finder tests (`test_fixtures/example_finder/recorded_yoloe_result.json`); runs inside the app image.
-9. `measure_finder_process.py` — not a measurement of finding: run time and memory of the app's finder process per
+10. `measure_finder_process.py` — not a measurement of finding: run time and memory of the app's finder process per
    picture and input size (the table in `docs/rules/EXAMPLE_FINDER_RULES.md`); runs inside the app image.
 
 Run them one at a time: each loads a model on the CPU; parallel runs on a 16 GB Mac swapped and skewed timings.

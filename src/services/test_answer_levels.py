@@ -627,3 +627,22 @@ def test_a_detector_reads_the_picture_at_its_own_size():
 def test_another_model_s_output_gets_no_level():
     with pytest.raises(ValueError, match="detector"):
         al.decide("tower_dish", "some-other-model", _big_gate("tower_dish"), al.countability("tower_dish", Facts()))
+
+
+def test_the_maize_shown_rule_is_the_one_chosen_on_calibration_tiles_and_shows_more_plants_than_not():
+    """The rule's numbers are the ones chosen on calibration tiles (other photos), and on the test tiles it shows
+    about as many boxes as there are plants, most of them plants, where the filter alone showed 2.5 times as many,
+    two thirds of them not plants. Recall drops: what the person adds by hand."""
+    entry = json.loads(al.TARGETS_PATH.read_text())["targets"]["maize_seedling"]["shown"]
+    rule = al.target("maize_seedling").shown_rule
+    assert rule is not None and entry["evidence"] == {"source": "results/shown.json", "task": "maize_shown"}
+    (chosen,) = [r for r in _rows(entry["evidence"]) if "chosen_on_calibration" in r]
+    assert chosen["chosen_on_calibration"] == {"nested_overlap": rule.nested_overlap,
+                                               "relative_score": rule.relative_score}
+    (before,) = _rows({**entry["evidence"], "rule": "current", "field": "all"})
+    (after,) = _rows({**entry["evidence"], "rule": "cut_rel", "field": "all"})
+    assert after["precision"] > 2 * before["precision"] and after["recall"] < before["recall"]
+    assert abs(after["shown_per_tile"] - after["true_per_tile"]) < 1 < before["shown_per_tile"] / before["true_per_tile"]
+    assert f"{round(100 * after['precision'])}% plants" in entry["note"]
+    assert {t.name for t in al.targets() if t.shown_rule is not None} == {"maize_seedling"}
+    assert al.detector("maize_seedling").shown_rule is None  # measured for the example finder only

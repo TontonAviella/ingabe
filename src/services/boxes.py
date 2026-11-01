@@ -28,3 +28,14 @@ def iou(a: Sequence[float], b: Sequence[float]) -> float:
     intersection = (ix2 - ix1) * (iy2 - iy1)
     union = area(a) + area(b) - intersection
     return intersection / union if union > 0 else 0.0
+
+
+def overlap_of_smaller(a: Sequence[float], b: Sequence[float]) -> float:
+    """How much of the smaller of two boxes the other covers: 1 when one box lies wholly inside the other (however
+    much bigger it is), 0 when they do not overlap or one has no area."""
+    ix = min(a[2], b[2]) - max(a[0], b[0])
+    iy = min(a[3], b[3]) - max(a[1], b[1])
+    smaller = min(area(a), area(b))
+    if ix <= 0 or iy <= 0 or smaller <= 0:
+        return 0.0
+    return ix * iy / smaller
