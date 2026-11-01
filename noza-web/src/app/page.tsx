@@ -8,7 +8,7 @@ import { TwoLooks } from "@/components/TwoLooks";
 import { WireDrawing } from "@/components/WireDrawing";
 import { Words } from "@/components/Words";
 import { WorldsStrip } from "@/components/WorldsStrip";
-import { INGABE_URL, PHONES, SIGN_IN_URL } from "@/lib/site";
+import { INGABE_URL, PHONES, REQUEST_ACCESS_URL, SIGN_IN_URL } from "@/lib/site";
 import type { ModelName } from "@/lib/wire3d";
 
 const FACTS = [
@@ -239,6 +239,85 @@ export default function Home() {
           </div>
         </section>
 
+        {/* ---------- Access: invite-only, how people are admitted and how sign-in works ---------- */}
+        <section id="access" className="scroll-mt-16 border-t border-bitter/10 bg-cream py-24 sm:py-32">
+          <div className="mx-auto grid max-w-page gap-16 px-5 sm:px-8 lg:grid-cols-[1fr_1fr] lg:gap-20 lg:px-12">
+            <div>
+              <Reveal>
+                <p className="font-mono text-[11px] uppercase tracking-label text-mocha">Access to Ingabe</p>
+                <h2 className="mt-5 font-display text-[clamp(2.8rem,5.4vw,5rem)] leading-[0.96] tracking-[-0.015em] text-bitter">
+                  By invitation, <span className="italic">on purpose.</span>
+                </h2>
+                <p className="mt-7 max-w-lg text-[17px] leading-relaxed text-mocha">
+                  Ingabe holds field records, drone photographs and inspection findings that belong to the companies we work with. So
+                  nobody opens an account on their own: every person comes in through an invitation, from their company&apos;s admin or
+                  from our team.
+                </p>
+              </Reveal>
+              <ol className="mt-12">
+                {[
+                  ["01", "Ask", "Request access with your name, your company and what you need to see. It takes a minute."],
+                  ["02", "We review", "Our team reads every request and answers by email. If your company already works with us, its admin can add you directly."],
+                  ["03", "Invitation", "Once approved, an invitation arrives by email. It opens Ingabe inside your company, with your company's maps and work."],
+                  ["04", "Sign in", "Type your email and Ingabe sends a one-time code. There is no password to remember, share or lose."],
+                ].map(([n, h, t], k) => (
+                  <Reveal as="li" key={n} delay={k * 100} className="grid grid-cols-[3.5rem_1fr] border-t border-bitter/10 py-6">
+                    <span className="font-mono text-[12px] text-bark">{n}</span>
+                    <div>
+                      <h3 className="text-[19px] font-medium text-bitter">{h}</h3>
+                      <p className="mt-1.5 max-w-md text-[15.5px] leading-relaxed text-mocha">{t}</p>
+                    </div>
+                  </Reveal>
+                ))}
+              </ol>
+              <div className="mt-10 flex flex-wrap items-center gap-x-6 gap-y-4">
+                <a
+                  href={REQUEST_ACCESS_URL}
+                  className="group inline-flex items-center gap-4 rounded-full bg-bitter py-4 pl-8 pr-7 text-[15px] font-medium text-cream transition-colors hover:bg-bark"
+                >
+                  Request access
+                  <Arrow className="transition-transform duration-300 group-hover:translate-x-1" />
+                </a>
+                <a href={SIGN_IN_URL} className="link-line pb-0.5 text-[15px] text-bitter">
+                  Already invited? Sign in
+                </a>
+              </div>
+            </div>
+
+            <Reveal delay={150} className="lg:pt-24">
+              <div className="rounded-2xl border border-bitter/10 bg-sand p-7 sm:p-9">
+                <h3 className="text-[19px] font-medium text-bitter">How sign-in protects your work</h3>
+                <ul className="mt-6 space-y-5 text-[15.5px] leading-relaxed text-mocha">
+                  <li>
+                    <span className="font-medium text-bitter">No passwords.</span> Each sign-in uses a one-time code sent to your
+                    email, so there is nothing to steal from a reused or written-down password.
+                  </li>
+                  <li>
+                    <span className="font-medium text-bitter">A dedicated sign-in service.</span> Sign-in runs on WorkOS, an identity
+                    service built for business software. Ingabe never handles your codes.
+                  </li>
+                  <li>
+                    <span className="font-medium text-bitter">Each company sees only its own work.</span> Maps, photographs and
+                    findings are kept apart in the database itself, not only on screen.
+                  </li>
+                  <li>
+                    <span className="font-medium text-bitter">Access can end at once.</span> Your company&apos;s admin decides who
+                    joins and can remove anyone; a removed person is signed out at their next click.
+                  </li>
+                </ul>
+                <p className="mt-7 border-t border-bitter/10 pt-6 text-[14px] leading-relaxed text-mocha">
+                  Waiting for a code that never arrives? Your address may not be invited yet. Sign-in only sends codes to invited
+                  people, so request access, or call us on{" "}
+                  <a href={PHONES[0].href} className="link-line text-bitter">
+                    {PHONES[0].label}
+                  </a>
+                  .
+                </p>
+              </div>
+            </Reveal>
+          </div>
+        </section>
+
         {/* ---------- Contact ---------- */}
         <section id="contact" className="scroll-mt-16 overflow-hidden bg-cream">
           <div className="mx-auto grid max-w-page items-center gap-10 px-5 py-24 sm:px-8 sm:py-32 lg:grid-cols-[1.1fr_1fr] lg:px-12">
@@ -307,7 +386,9 @@ export default function Home() {
               links={[
                 ["Open the app", INGABE_URL],
                 ["Sign in", SIGN_IN_URL],
+                ["Request access", REQUEST_ACCESS_URL],
                 ["How it works", "#how"],
+                ["How access works", "#access"],
               ]}
             />
             <div>

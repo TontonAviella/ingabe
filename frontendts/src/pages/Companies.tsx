@@ -1,4 +1,20 @@
-import { Building2, Check, Copy, ExternalLink, Loader2, Mail, Plus, RefreshCw, UserPlus, X } from 'lucide-react';
+import {
+  Ban,
+  Building2,
+  Check,
+  ChevronDown,
+  ChevronRight,
+  Copy,
+  ExternalLink,
+  Loader2,
+  Mail,
+  Plus,
+  RefreshCw,
+  UserMinus,
+  UserPlus,
+  Users,
+  X,
+} from 'lucide-react';
 import { type FormEvent, useCallback, useEffect, useState } from 'react';
 import { toast } from 'sonner';
 import { useWorkOSSession } from '@/components/auth/WorkOSSession';
@@ -93,6 +109,214 @@ function CompanyIndustry({ company, options, onDone }: { company: Company; optio
         </option>
       ))}
     </select>
+  );
+}
+
+// A company's people, for taking someone out of the company or blocking them from Ingabe
+// (src/services/access_removal.py): either takes effect at the person's next click.
+interface Member {
+  id: string;
+  user_id: string;
+  email: string | null;
+  name: string | null;
+  role: string | null;
+  status: string | null;
+  last_sign_in_at: string | null;
+  blocked: boolean;
+}
+
+interface BlockedPerson {
+  user_id: string;
+  email: string | null;
+  blocked_at: string;
+  blocked_by: string;
+  reason: string | null;
+}
+
+function CompanyPeople({ company, myEmail, onChange }: { company: Company; myEmail: string | null; onChange: () => void }) {
+  const [open, setOpen] = useState(false);
+  const [members, setMembers] = useState<Member[] | null>(null);
+  const [busy, setBusy] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    try {
+      const res = await call<{ members: Member[] }>(`/${company.id}/people`);
+      setMembers(res.members);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : String(err));
+    }
+  }, [company.id]);
+
+  useEffect(() => {
+    if (open) load();
+  }, [open, load]);
+
+  const act = async (key: string, run: () => Promise<unknown>, done: string) => {
+    setBusy(key);
+    try {
+      await run();
+      toast.success(done);
+      await load();
+      onChange();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const who = (m: Member) => (m.name ? `${m.name} (${m.email ?? 'no email'})` : (m.email ?? m.user_id));
+
+  return (
+    <div className="mt-3">
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        aria-expanded={open}
+        className="flex items-center gap-1.5 text-sm text-gray-300 hover:text-gray-100"
+      >
+        {open ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
+        <Users className="h-4 w-4 text-gray-500" />
+        People ({company.active_members})
+      </button>
+      {open && (
+        <div className="mt-2 flex flex-col gap-2">
+          {members === null ? (
+            <Loader2 className="h-4 w-4 animate-spin text-gray-400" />
+          ) : members.length === 0 ? (
+            <p className="text-sm text-gray-400">Nobody has joined yet.</p>
+          ) : (
+            <ul className="flex flex-col gap-2">
+              {members.map((m) => {
+                const me = !!myEmail && (m.email ?? '').toLowerCase() === myEmail.toLowerCase();
+                return (
+                  <li key={m.id} className="flex flex-wrap items-center gap-x-3 gap-y-2 rounded-md bg-gray-800/40 px-3 py-2 text-sm">
+                    <span className="min-w-0 flex-1 break-words text-gray-200">
+                      {who(m)}
+                      <span className="ml-2 text-xs text-gray-500">
+                        {m.role ?? 'member'}
+                        {m.last_sign_in_at ? `, last signed in ${m.last_sign_in_at.slice(0, 10)}` : ', never signed in'}
+                      </span>
+                      {m.blocked && <span className="ml-2 rounded bg-red-900/50 px-1.5 py-0.5 text-xs text-red-300">Blocked</span>}
+                    </span>
+                    {me ? (
+                      <span className="text-xs text-gray-500">You</span>
+                    ) : (
+                      <span className="flex flex-wrap gap-2">
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          disabled={busy !== null}
+                          onClick={() => {
+                            if (
+                              !window.confirm(
+                                `Remove ${who(m)} from ${company.name}? They are signed out now and can no longer open ${company.name}'s work. They keep any other company.`,
+                              )
+                            )
+                              return;
+                            act(
+                              `rm-${m.id}`,
+                              () => call(`/${company.id}/members/${m.id}`, { method: 'DELETE' }),
+                              `${who(m)} removed from ${company.name}`,
+                            );
+                          }}
+                        >
+                          {busy === `rm-${m.id}` ? <Loader2 className="h-4 w-4 animate-spin" /> : <UserMinus className="h-4 w-4" />}
+                          Remove from company
+                        </Button>
+                        {m.blocked ? (
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            disabled={busy !== null}
+                            onClick={() =>
+                              act(
+                                `ub-${m.id}`,
+                                () => call(`/people/${m.user_id}/block`, { method: 'DELETE' }),
+                                `${who(m)} can sign in again`,
+                              )
+                            }
+                          >
+                            {busy === `ub-${m.id}` ? <Loader2 className="h-4 w-4 animate-spin" /> : <Check className="h-4 w-4" />}
+                            Unblock
+                          </Button>
+                        ) : (
+                          <Button
+                            size="sm"
+                            variant="destructive"
+                            disabled={busy !== null}
+                            onClick={() => {
+                              if (
+                                !window.confirm(
+                                  `Block ${who(m)} from Ingabe? They are signed out now and cannot use Ingabe in any company until you unblock them. Nothing is deleted.`,
+                                )
+                              )
+                                return;
+                              act(
+                                `bl-${m.id}`,
+                                () => call(`/people/${m.user_id}/block`, { method: 'POST', body: JSON.stringify({}) }),
+                                `${who(m)} blocked`,
+                              );
+                            }}
+                          >
+                            {busy === `bl-${m.id}` ? <Loader2 className="h-4 w-4 animate-spin" /> : <Ban className="h-4 w-4" />}
+                            Block
+                          </Button>
+                        )}
+                      </span>
+                    )}
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function BlockedPeople({ blocked, onChange }: { blocked: BlockedPerson[]; onChange: () => void }) {
+  const [busy, setBusy] = useState<string | null>(null);
+  if (blocked.length === 0) return null;
+  const unblock = async (b: BlockedPerson) => {
+    setBusy(b.user_id);
+    try {
+      await call(`/people/${b.user_id}/block`, { method: 'DELETE' });
+      toast.success(`${b.email ?? b.user_id} can sign in again`);
+      onChange();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(null);
+    }
+  };
+  return (
+    <section className="flex flex-col gap-2">
+      <div>
+        <h2 className="text-base font-semibold">Blocked people</h2>
+        <p className="text-sm text-gray-400">
+          Refused everywhere in Ingabe until unblocked. Unblocking lets them sign in again; their companies are as they were.
+        </p>
+      </div>
+      <ul className="flex flex-col gap-2">
+        {blocked.map((b) => (
+          <li key={b.user_id} className="flex flex-wrap items-center gap-x-3 gap-y-2 rounded-md border border-red-900/60 px-3 py-2 text-sm">
+            <span className="min-w-0 flex-1 break-words text-gray-200">
+              {b.email ?? b.user_id}
+              <span className="ml-2 text-xs text-gray-500">
+                blocked {b.blocked_at.slice(0, 10)} by {b.blocked_by}
+                {b.reason ? `: ${b.reason}` : ''}
+              </span>
+            </span>
+            <Button size="sm" variant="ghost" disabled={busy !== null} onClick={() => unblock(b)}>
+              {busy === b.user_id ? <Loader2 className="h-4 w-4 animate-spin" /> : <Check className="h-4 w-4" />}
+              Unblock
+            </Button>
+          </li>
+        ))}
+      </ul>
+    </section>
   );
 }
 
@@ -273,18 +497,22 @@ export default function Companies() {
   const [adding, setAdding] = useState(false);
   const [resending, setResending] = useState<string | null>(null);
   const [requests, setRequests] = useState<AccessRequest[]>([]);
+  const [blocked, setBlocked] = useState<BlockedPerson[]>([]);
+  const [cancelling, setCancelling] = useState<string | null>(null);
   // The request the Add company form is filled in for: once the company is added, the request is approved.
   const [companyFor, setCompanyFor] = useState<AccessRequest | null>(null);
 
   const load = useCallback(async () => {
     try {
-      const [res, asked] = await Promise.all([
+      const [res, asked, cut] = await Promise.all([
         call<{ companies: Company[]; industries: IndustryOption[] }>(''),
         call<{ requests: AccessRequest[] }>('/access-requests'),
+        call<{ blocked: BlockedPerson[] }>('/blocked'),
       ]);
       setCompanies(res.companies);
       setIndustries(res.industries);
       setRequests(asked.requests);
+      setBlocked(cut.blocked);
       setError(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -359,6 +587,20 @@ export default function Companies() {
     }
   };
 
+  const cancelInvitation = async (company: Company, inv: Invitation) => {
+    if (!window.confirm(`Cancel ${inv.email}'s invitation to ${company.name}? Its link stops working.`)) return;
+    setCancelling(inv.id);
+    try {
+      await call(`/${company.id}/invitations/${inv.id}`, { method: 'DELETE' });
+      toast.success(`${inv.email}'s invitation cancelled`);
+      await load();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : String(err));
+    } finally {
+      setCancelling(null);
+    }
+  };
+
   if (me && !me.is_staff) {
     return (
       <div className="p-6 text-gray-300">
@@ -374,7 +616,8 @@ export default function Companies() {
         <h1 className="text-xl font-semibold">Companies</h1>
         <p className="text-sm text-gray-400">
           Add a company, its industry and its first admin. WorkOS emails the invitation; after that the company adds its own people. Its
-          people see only its industry.
+          people see only its industry. Open a company's People to take someone out of it, or to block them from Ingabe; either signs them
+          out at their next click.
         </p>
       </div>
 
@@ -486,10 +729,15 @@ export default function Companies() {
                           {resending === inv.id ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
                           Send again
                         </Button>
+                        <Button size="sm" variant="ghost" disabled={cancelling === inv.id} onClick={() => cancelInvitation(c, inv)}>
+                          {cancelling === inv.id ? <Loader2 className="h-4 w-4 animate-spin" /> : <X className="h-4 w-4" />}
+                          Cancel invitation
+                        </Button>
                       </li>
                     ))}
                   </ul>
                 )}
+                <CompanyPeople company={c} myEmail={me?.user.email ?? null} onChange={load} />
                 <div className="mt-3">
                   <InviteAdmin company={c} onDone={load} />
                 </div>
@@ -498,6 +746,8 @@ export default function Companies() {
           })}
         </ul>
       )}
+
+      <BlockedPeople blocked={blocked} onChange={load} />
 
       {requests.some((r) => r.status !== 'open') && (
         <section className="text-sm text-gray-400">

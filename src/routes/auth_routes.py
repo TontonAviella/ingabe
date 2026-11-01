@@ -36,7 +36,7 @@ from pydantic import BaseModel
 from src.database.pool import async_conn, get_async_db_connection
 from src.dependencies.session import UserContext, provision_workos_user, verify_session_required, workos_context
 from src.dependencies.workos_session import is_secure, set_session_cookie
-from src.services import project_people, workos_auth
+from src.services import access_removal, project_people, workos_auth
 
 logger = logging.getLogger(__name__)
 
@@ -313,14 +313,18 @@ async def organization_set_role(membership_id: str, body: RoleChange, request: R
 
 @api.delete("/organization/members/{membership_id}")
 async def organization_remove(membership_id: str, request: Request, session: UserContext = Depends(verify_session_required)):
+    """Take a member out of the active organization; their open sessions end at once (src/services/access_removal.py)."""
     ws_session, org = _active_org(request)
     _require_admin(ws_session)
-    members = await asyncio.to_thread(workos_auth.organization_members, org)
-    target = next((m for m in members if m["id"] == membership_id), None)
-    if target is None:
+    try:
+        async with async_conn("organization.remove_member") as conn:
+            removed = await access_removal.remove_from_company(conn, org, membership_id, ws_session.user_id,
+                                                               ws_session.email)
+    except LookupError:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not a member of this organization")
-    if target["user_id"] == ws_session.user_id:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="You cannot remove yourself")
-    await asyncio.to_thread(workos_auth.remove_member, membership_id, org)
-    _orgs_cache.pop(target["user_id"], None)
-    return {"removed": membership_id}
+    except access_removal.NotAllowed as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+    except access_removal.SessionsNotEnded as e:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(e))
+    _orgs_cache.pop(removed["user_id"], None)
+    return removed
