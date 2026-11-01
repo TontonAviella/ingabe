@@ -38,7 +38,7 @@ import logging
 import os
 import time
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from functools import lru_cache
 from typing import Any, Optional
 from urllib.parse import urlparse
@@ -589,10 +589,16 @@ def resend_invitation(invitation_id: str) -> dict[str, Any]:
     return {"id": inv.id, "email": inv.email, "state": _value(inv.state), "expires_at": str(inv.expires_at)}
 
 
+def _workos_time(when: datetime) -> str:
+    """A time as WorkOS' API takes it: UTC, milliseconds, `Z` (2026-10-30T06:06:35.147Z). It refuses Python's
+    default isoformat (microseconds, `+00:00`) as "not a valid ISO 8601 date" (2026-11-01)."""
+    return when.astimezone(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
 def list_events(kinds: list[str], after: datetime, cap: int = 1000) -> list[Any]:
     """WorkOS' log of these event kinds since `after`, oldest first (at most `cap`): Event objects with event,
     created_at and data."""
-    page = _client().events.list_events(events=kinds, range_start=after.isoformat(), order="asc", limit=100)
+    page = _client().events.list_events(events=kinds, range_start=_workos_time(after), order="asc", limit=100)
     found = []
     for ev in page:  # the SDK fetches the following pages as it goes
         found.append(ev)

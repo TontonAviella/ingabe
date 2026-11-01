@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -238,3 +239,15 @@ def test_a_cookie_signed_in_another_workos_environment_is_not_signed_in_here(mon
     session.authenticate.side_effect = jwt.PyJWKClientError("Fail to fetch data from the url, err: timed out")
     with pytest.raises(workos_auth.SessionCheckUnavailable):
         workos_auth.load("sealed")
+
+
+def test_events_are_asked_for_with_a_start_time_workos_accepts(monkeypatch):
+    """WorkOS refused Python's isoformat ("2026-10-30T06:05:41.717588+00:00") with 400 invalid_date_range_exception;
+    it took "2026-10-30T06:05:41.717Z" (both checked against the live API on 2026-11-01)."""
+    client = MagicMock()
+    client.events.list_events.return_value = []
+    monkeypatch.setattr(workos_auth, "_client", lambda: client)
+
+    workos_auth.list_events(["waitlist_user.created"], datetime(2026, 10, 30, 8, 5, 41, 717588,
+                                                                 tzinfo=timezone(timedelta(hours=2))))
+    assert client.events.list_events.call_args.kwargs["range_start"] == "2026-10-30T06:05:41.717Z"
