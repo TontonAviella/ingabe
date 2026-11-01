@@ -189,6 +189,9 @@ One entry per real mistake: date, what went wrong, the rule that prevents
 it, and the gate if there is one. Newest first. Keep each entry to three
 lines; promote a lesson that recurs into the sections above.
 
+- **2026-11-01** Maize suggestions were judged by precision at a best-F1 score cut (0.854), but the screen applied no cut and showed every
+  find from score 0.01: 37.7 boxes a tile for 14.8 plants, 31% of them plants. Rule: measure a model on what the person is shown, with the
+  same cut the screen applies, chosen on other pictures. Gate: maize `shown` evidence test in `test_answer_levels.py`; review for others.
 - **2026-10-12** The TOWERS switch leaked where a gate used `industry.serves` (industry only): replayed chat history kept tower counts
   with the switch off, Hermes registered the tower tools for every project, and the routing eval sent farm cases the unfiltered tool
   list. Rule: offering, running, replaying and showing follow `industry.available` (industry and switch). Gate: `industry-serves-gate`.

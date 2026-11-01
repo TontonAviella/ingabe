@@ -67,6 +67,31 @@ and `run_lookalike_towers.py`. The app does the same:
 These values are the measurement, not tunables: changing one is a new
 measurement in `answer_levels_targets.json`.
 
+## What a person is shown (maize: measured 2026-11-01)
+
+The precision and recall in the table below are at a score cut chosen on
+the test pictures, which the screen never applied: it showed every stored
+find (scores from 0.01, up to 50). For maize that was 37.7 boxes a tile for
+14.8 plants, boxes inside boxes, 31% of them plants (65 INRAe test tiles).
+So a target can carry a `shown` rule (`answer_levels.ShownRule`), applied
+when its suggestions are shown (`example_finder.shown_finds`, from
+`tower_inspection.suggestions_of`), measured on what is SHOWN
+(`scripts/finder_eval/run_shown.py`, rows `results/shown.json`):
+
+1. best score first, a find whose overlap covers at least 60% of the smaller
+   of it and an already shown find is not shown (`boxes.overlap_of_smaller`;
+   fixed before measuring);
+2. only finds scoring at least 0.14 times the photo's best are shown (chosen
+   on 27 calibration tiles of other photos, never the test tiles);
+3. a suggestion a person already reviewed is always shown, so a review saved
+   before the rule can be saved again.
+
+Not part of a request's identity (`Settings.as_dict`): stored jobs are shown
+with it at once. On the 65 test tiles, shown boxes a tile / share that are
+plants / share of plants found: 37.7 / 31% / 80% before, 14.1 / 65% / 62%
+with it (Nerac 86% / 78%, Blois 77% / 58%, Selommes, plants about 24 px,
+43% / 52%). Only maize_seedling has one; other targets show every find.
+
 ## The suggestion filter (on per target, only where measured)
 
 After the steps above, for a target whose measured settings turn it on
