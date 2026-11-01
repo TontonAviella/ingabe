@@ -38,7 +38,7 @@ from starlette.requests import HTTPConnection
 from starlette.responses import Response
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
-from src.services import workos_auth
+from src.services import access_removal, workos_auth
 
 logger = logging.getLogger(__name__)
 
@@ -84,6 +84,17 @@ def _share(key: str, outcome: _Outcome) -> None:
 
 
 async def load_session(cookie: str, refresh: bool = True) -> Optional[workos_auth.WorkOSSession]:
+    """The signed-in session in a cookie, or None, as `_check_cookie` decides; also None for a session that
+    src.services.access_removal ended or a person it blocked, so a cut-off applies on the next request (the cookie
+    is then cleared like any sign-out)."""
+    session = await _check_cookie(cookie, refresh)
+    if session is not None and await access_removal.is_cut_off(session.user_id, session.session_id):
+        logger.info("WorkOS session %s of %s refused: access removed", session.session_id, session.user_id)
+        return None
+    return session
+
+
+async def _check_cookie(cookie: str, refresh: bool = True) -> Optional[workos_auth.WorkOSSession]:
     """Verify a session cookie; what one refresh decided holds for every request carrying it.
 
     Refresh tokens are single-use. Requests that arrive together with the same expired

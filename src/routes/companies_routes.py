@@ -6,7 +6,8 @@ own admins manage their people on /settings/organization. A partner company's
 people work only in its industry (src/services/industry.py); Ingabe's own
 company (tier 'internal') sees every industry. Staff are listed in
 PLATFORM_ADMIN_EMAILS. People who asked to join (src/services/access_requests.py) are approved here, with an
-invitation into a company, or declined. Deeper troubleshooting (sign-in logs, branding, sign-in
+invitation into a company, or declined. Staff also take people out of a company or block them from Ingabe
+(src/services/access_removal.py), effective at the person's next request. Deeper troubleshooting (sign-in logs, branding, sign-in
 methods, paid SSO) stays in the WorkOS dashboard.
 """
 
@@ -20,7 +21,7 @@ from pydantic import BaseModel
 
 from src.database.pool import async_conn, get_async_db_connection
 from src.dependencies.session import UserContext, provision_organization, verify_session_required
-from src.services import access_requests, industry, workos_auth
+from src.services import access_removal, access_requests, industry, workos_auth
 
 router = APIRouter()
 
@@ -185,3 +186,78 @@ async def decline_access_request(request_id: int, request: Request,
     if decided is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="This request is no longer open")
     return decided
+
+
+@router.get("/{organization_id}/people")
+async def company_people(organization_id: str, request: Request, session: UserContext = Depends(verify_session_required)):
+    """A company's members (each marked if blocked) and its open invitations, for removing access."""
+    _require_staff(request)
+    members, invitations = await asyncio.gather(
+        asyncio.to_thread(workos_auth.organization_members, organization_id),
+        asyncio.to_thread(workos_auth.open_invitations, organization_id))
+    async with async_conn("access_removal.people") as conn:
+        blocked = {b["user_id"] for b in await access_removal.blocked_people(conn)}
+    for m in members:
+        m["blocked"] = m["user_id"] in blocked
+    return {"members": members, "invitations": invitations}
+
+
+@router.delete("/{organization_id}/members/{membership_id}")
+async def remove_company_member(organization_id: str, membership_id: str, request: Request,
+                                session: UserContext = Depends(verify_session_required)):
+    """Take someone out of a company; their open sessions end at once."""
+    ws_session = _require_staff(request)
+    try:
+        async with async_conn("access_removal.remove") as conn:
+            return await access_removal.remove_from_company(conn, organization_id, membership_id,
+                                                            ws_session.user_id, ws_session.email)
+    except LookupError as e:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e)) from e
+    except access_removal.NotAllowed as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e)) from e
+    except access_removal.SessionsNotEnded as e:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(e)) from e
+
+
+@router.delete("/{organization_id}/invitations/{invitation_id}")
+async def cancel_company_invitation(organization_id: str, invitation_id: str, request: Request,
+                                    session: UserContext = Depends(verify_session_required)):
+    """Cancel an invitation not yet accepted, so its link no longer lets anyone in."""
+    _require_staff(request)
+    try:
+        await asyncio.to_thread(workos_auth.revoke_invitation, invitation_id, organization_id)
+    except PermissionError as e:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e)) from e
+    return {"cancelled": invitation_id}
+
+
+@router.get("/blocked")
+async def list_blocked(request: Request, session: UserContext = Depends(verify_session_required)):
+    _require_staff(request)
+    async with async_conn("access_removal.blocked") as conn:
+        return {"blocked": await access_removal.blocked_people(conn)}
+
+
+class BlockReason(BaseModel):
+    reason: str | None = None
+
+
+@router.post("/people/{workos_user_id}/block")
+async def block_person(workos_user_id: str, body: BlockReason, request: Request,
+                       session: UserContext = Depends(verify_session_required)):
+    """Refuse this person everywhere in Ingabe from their next request, until unblocked. Nothing is deleted."""
+    ws_session = _require_staff(request)
+    try:
+        async with async_conn("access_removal.block") as conn:
+            return await access_removal.block(conn, workos_user_id, ws_session.user_id, ws_session.email, body.reason)
+    except access_removal.NotAllowed as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e)) from e
+
+
+@router.delete("/people/{workos_user_id}/block")
+async def unblock_person(workos_user_id: str, request: Request, session: UserContext = Depends(verify_session_required)):
+    _require_staff(request)
+    async with async_conn("access_removal.unblock") as conn:
+        if not await access_removal.unblock(conn, workos_user_id):
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="This person is not blocked")
+    return {"user_id": workos_user_id, "blocked": False}

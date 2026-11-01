@@ -457,9 +457,24 @@ def set_member_role(membership_id: str, organization_id: str, role: str) -> dict
     return _membership_dict(updated)
 
 
-def remove_member(membership_id: str, organization_id: str) -> None:
-    _membership_in(membership_id, organization_id)
+def remove_member(membership_id: str, organization_id: str) -> dict[str, Any]:
+    """Take a member out of an organization: the membership as it was (user_id, email, role), for the caller to end
+    the person's sessions (src/services/access_removal.py)."""
+    member = _membership_dict(_membership_in(membership_id, organization_id))
+    if not member["email"]:
+        member["email"] = _user_dict(_client().user_management.get_user(member["user_id"])).get("email")
     _client().organization_membership.delete_organization_membership(membership_id)
+    return member
+
+
+def user_email(user_id: str) -> Optional[str]:
+    return _user_dict(_client().user_management.get_user(user_id)).get("email")
+
+
+def active_session_ids(user_id: str) -> list[str]:
+    """The person's sessions WorkOS still counts as active (the sid in their access tokens)."""
+    page = _client().user_management.list_sessions(user_id, limit=100)
+    return [s.id for s in getattr(page, "data", page) if _value(getattr(s, "status", None)) == "active"]
 
 
 def accept_pending_invitations(user: dict[str, Any]) -> list[str]:

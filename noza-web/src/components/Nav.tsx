@@ -1,13 +1,14 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { INGABE_URL, SIGN_IN_URL } from "@/lib/site";
+import { INGABE_URL, REQUEST_ACCESS_URL, SIGN_IN_URL } from "@/lib/site";
 
 const LINKS = [
   { href: "#read", label: "What we read" },
   { href: "#where", label: "Where we fly" },
   { href: "#accuracy", label: "Accuracy" },
   { href: "#how", label: "How it works" },
+  { href: "#access", label: "Access" },
 ];
 
 /** The mark: the name, a small caramel point (the place we read), and "labs" in a lighter weight. */
@@ -82,6 +83,9 @@ export function Nav() {
           ))}
           <a href={SIGN_IN_URL} className="block border-b border-bitter/10 py-4 text-[17px]">
             Sign in
+          </a>
+          <a href={REQUEST_ACCESS_URL} className="block border-b border-bitter/10 py-4 text-[17px]">
+            Request access
           </a>
           <a href={INGABE_URL} className="mt-5 inline-flex items-center gap-3 rounded-full bg-bitter px-6 py-3 text-[15px] text-cream">
             Open Ingabe <Arrow diagonal />

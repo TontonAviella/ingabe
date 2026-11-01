@@ -37,7 +37,11 @@ def signed_in(monkeypatch, client):
          "link": "https://auth.example/invite?token=t"}])
     monkeypatch.setattr(workos_auth, "resend_invitation", lambda inv: calls.append(("resend", inv)) or {"id": inv})
     monkeypatch.setattr(workos_auth, "invite", lambda org, email, role, inviter: calls.append(("invite", email, role)) or {"id": "inv_2"})
-    monkeypatch.setattr(workos_auth, "remove_member", lambda mid, org: calls.append(("remove", mid)))
+    monkeypatch.setattr(workos_auth, "remove_member", lambda mid, org: calls.append(("remove", mid)) or
+                        {"id": mid, "user_id": "user_other", "email": "o@x.rw", "name": None, "picture": None,
+                         "role": "member", "status": "active", "last_sign_in_at": None})
+    monkeypatch.setattr(workos_auth, "active_session_ids", lambda user_id: [f"session_{RUN_TAG}_o"])
+    monkeypatch.setattr(workos_auth, "revoke_session", lambda session_id: calls.append(("end", session_id)))
 
     def as_role(role):
         async def fake_load(cookie):
@@ -75,10 +79,12 @@ async def test_admin_invites_and_removes_but_not_themselves(client, signed_in):
     as_role, calls = signed_in
     as_role("admin")
     assert (await client.post("/api/auth/organization/invitations", json={"email": "new@x.rw", "role": "member"})).status_code == 200
-    assert (await client.delete("/api/auth/organization/members/om_2")).status_code == 200
+    removed = await client.delete("/api/auth/organization/members/om_2")
+    assert removed.status_code == 200 and removed.json()["sessions_ended"] == 1
     assert (await client.delete("/api/auth/organization/members/om_me")).status_code == 400
     assert (await client.delete("/api/auth/organization/members/om_unknown")).status_code == 404
-    assert calls == [("invite", "new@x.rw", "member"), ("remove", "om_2")]
+    # Their open session is ended at WorkOS too; refusing yourself or an unknown member calls nothing.
+    assert calls == [("invite", "new@x.rw", "member"), ("remove", "om_2"), ("end", f"session_{RUN_TAG}_o")]
 
 
 @pytest.mark.anyio
