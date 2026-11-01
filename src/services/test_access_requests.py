@@ -133,3 +133,36 @@ async def _reading_the_workos_log(conn, monkeypatch):
     assert await access_requests.read_workos_log(conn) == 0 and len(pushed) == 1
     row = await conn.fetchrow("SELECT source, notified_at FROM access_requests WHERE email = $1", email)
     assert row["source"] == "sign_up_attempt" and row["notified_at"] is not None
+
+
+@pytest.mark.anyio
+async def test_the_log_is_never_read_further_back_than_the_lookback():
+    async with get_async_db_connection() as conn:
+        try:
+            old = datetime.now(timezone.utc) - timedelta(days=40)
+            await access_requests.record(conn, access_requests.Submission(f"old-{RUN_TAG}@x.rw"), "sign_up_attempt",
+                                         seen_at=old)
+            start = await access_requests.events_read_from(conn)
+            assert start >= datetime.now(timezone.utc) - access_requests.EVENT_LOOKBACK - timedelta(seconds=5)
+        finally:
+            await conn.execute("DELETE FROM access_requests WHERE email LIKE $1", f"%{RUN_TAG}%")
+
+
+@pytest.mark.anyio
+async def test_a_flood_is_kept_but_not_pushed(monkeypatch):
+    pushed = []
+
+    async def fake_send(title, message, click_path=None, priority=3, tags=None):
+        pushed.append(title)
+        return True
+
+    monkeypatch.setattr(phone_push, "send", fake_send)
+    monkeypatch.setattr(access_requests, "PUSHES_PER_DAY", 0)
+    async with get_async_db_connection() as conn:
+        try:
+            kept = await access_requests.record(conn, access_requests.Submission(f"flood-{RUN_TAG}@x.rw"), "form")
+            await access_requests.notify(conn, kept)
+            assert pushed == [] and await conn.fetchval(
+                "SELECT count(*) FROM access_requests WHERE email = $1", f"flood-{RUN_TAG}@x.rw") == 1
+        finally:
+            await conn.execute("DELETE FROM access_requests WHERE email LIKE $1", f"%{RUN_TAG}%")

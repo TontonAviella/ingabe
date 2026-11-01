@@ -20,6 +20,7 @@ same whether or not the address already has an account.
 from __future__ import annotations
 
 import asyncio
+import logging
 import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -30,12 +31,16 @@ import asyncpg
 from src.services import phone_push, workos_auth
 from src.services.project_people import looks_like_email
 
+logger = logging.getLogger(__name__)
+
 Source = Literal["form", "sign_up_attempt", "waitlist"]
 Decision = Literal["approved", "declined"]
 
 POLL_SECONDS = 300  # how often WorkOS' log is read for refused sign-ups and waitlist entries
 EVENT_LOOKBACK = timedelta(hours=48)  # the first read, when no event was folded in yet
 RENOTIFY_AFTER = timedelta(hours=24)  # a person still waiting is pushed again after this long
+PUSHES_PER_DAY = 30  # past this, requests are still kept (and on the Companies page) but nobody is pushed: a flood
+# of made-up addresses must not bury staff's phones
 RECENT_DECIDED = timedelta(days=30)  # decided requests stay on the page this long
 LIMITS = {"email": 254, "name": 120, "organization": 160, "reason": 1000}
 REFUSED_SIGN_UP_CODES = frozenset({"sign_up_not_allowed"})
@@ -140,10 +145,13 @@ async def decide(conn: asyncpg.Connection, request_id: int, decision: Decision, 
 
 
 async def events_read_from(conn: asyncpg.Connection) -> datetime:
-    """Where the next read of WorkOS' log starts: just after the newest event already folded in, or
-    EVENT_LOOKBACK ago the first time."""
+    """Where the next read of WorkOS' log starts: just after the newest event already folded in, but never more than
+    EVENT_LOOKBACK ago. The cursor only moves when an attempt is folded in, so after a quiet month an unbounded read
+    would page through a month of ordinary failed sign-ins (wrong codes) and stop at the cap before reaching new
+    attempts."""
     newest = await conn.fetchval("SELECT MAX(last_event_at) FROM access_requests")
-    return newest or datetime.now(timezone.utc) - EVENT_LOOKBACK
+    floor = datetime.now(timezone.utc) - EVENT_LOOKBACK
+    return max(newest, floor) if newest else floor
 
 
 def attempts_from_events(events: Iterable[Any], after: datetime) -> list[tuple[str, datetime, Source]]:
@@ -197,6 +205,11 @@ async def notify(conn: asyncpg.Connection, request: dict[str, Any]) -> None:
     """Push staff about a request that `record` said to (and remember it was pushed, so the next ask within
     RENOTIFY_AFTER stays quiet). A push that cannot be sent is tried again with the person's next ask."""
     if not request["notify"]:
+        return
+    pushed_today = await conn.fetchval(
+        "SELECT count(*) FROM access_requests WHERE notified_at > NOW() - INTERVAL '1 day'")
+    if pushed_today >= PUSHES_PER_DAY:
+        logger.warning("Access request %s kept but not pushed: %d pushes in the last day", request["id"], pushed_today)
         return
     msg = push_message(request)
     if await phone_push.send(msg["title"], msg["message"], click_path="/admin/companies", priority=4, tags=["wave"]):

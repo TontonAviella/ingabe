@@ -170,6 +170,8 @@ async def approve_access_request(request_id: int, body: Approval, request: Reque
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e)) from e
         decided = await access_requests.decide(conn, request_id, "approved", ws_session.email,
                                                f"Invited to {company} as {body.role}")
+    if decided is None:  # someone else decided it while the invitation went out
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Someone else just decided this request")
     return decided
 
 
