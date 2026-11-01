@@ -33,7 +33,7 @@ from src.routes.worldcover_router import worldcover_router
 from src.routes.cog_tile_router import cog_tile_router
 from src.routes.partner_routes import router as partner_router
 from src.routes.profile_routes import router as profile_router
-from src.routes import auth_routes, companies_routes
+from src.routes import access_request_routes, auth_routes, companies_routes
 from src.services import workos_auth
 from src.dependencies.workos_session import WorkOSSessionMiddleware
 from src.dependencies.db_pool import close_all_pools
@@ -275,10 +275,28 @@ async def lifespan(app: FastAPI):
                 logging.getLogger("src.services.project_people").warning("Guest expiry cycle failed", exc_info=True)
             await asyncio.sleep(project_people.GUEST_SWEEP_SECONDS)
 
+    async def _access_request_loop():
+        """Turn refused sign-ups and waitlist entries in WorkOS' log into access requests (src/services/access_requests.py)."""
+        from src.database.pool import async_conn
+        from src.services import access_requests
+
+        await asyncio.sleep(30)
+        while True:
+            try:
+                async with async_conn("access_requests.read_workos_log") as conn:  # no user: nobody is signed in
+                    found = await access_requests.read_workos_log(conn)
+                if found:
+                    logging.getLogger("src.services.access_requests").info("Access requests from WorkOS' log: %d", found)
+            except Exception:  # noqa: BLE001 - the loop must survive; the next cycle reads from the same place
+                logging.getLogger("src.services.access_requests").warning("Reading WorkOS' log failed", exc_info=True)
+            await asyncio.sleep(access_requests.POLL_SECONDS)
+
     workers_enabled = _background_workers_enabled()
     hook_task = asyncio.create_task(_brain_hook_loop()) if workers_enabled else None
     # Guests' time limits are enforced here, so this runs in every app process (it is idempotent).
     guest_task = asyncio.create_task(_guest_expiry_loop())
+    # One process reads WorkOS' log, so a request is pushed once.
+    access_task = asyncio.create_task(_access_request_loop()) if workers_enabled and workos_auth.enabled() else None
     # Component self-tests (src/dependencies/component_checks.py): one worker runs them, chosen by a Redis lock.
     checks_task = None
     if workers_enabled and os.environ.get("COMPONENT_CHECKS", "1").strip().lower() not in {"0", "false", "no", "off"}:
@@ -303,6 +321,8 @@ async def lifespan(app: FastAPI):
 
     workos_warm_task.cancel()
     guest_task.cancel()
+    if access_task is not None:
+        access_task.cancel()
     if checks_task is not None:
         checks_task.cancel()
     if hook_task is not None:
@@ -828,6 +848,7 @@ app.include_router(
 app.include_router(auth_routes.pages, tags=["Auth"])
 app.include_router(auth_routes.api, prefix="/api/auth", tags=["Auth"])
 app.include_router(companies_routes.router, prefix="/api/admin/companies", tags=["Companies"])
+app.include_router(access_request_routes.router, prefix="/api/access-requests", tags=["Access requests"])
 app.include_router(
     profile_router,
     prefix="/api/user",

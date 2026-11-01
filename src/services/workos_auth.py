@@ -38,6 +38,7 @@ import logging
 import os
 import time
 from dataclasses import dataclass, field
+from datetime import datetime
 from functools import lru_cache
 from typing import Any, Optional
 from urllib.parse import urlparse
@@ -506,6 +507,13 @@ def create_partner(name: str, admin_email: str) -> dict[str, Any]:
 # Companies (partner organizations), for Ingabe staff
 # ---------------------------------------------------------------------------
 
+def sign_up_open() -> bool:
+    """Whether anyone may sign up (WORKOS_SELF_SIGN_UP=1, matching the "Sign up" switch in the WorkOS dashboard).
+    Off by default: Ingabe is invite-only, and a sign-up link then leads to the Request access page instead
+    (src/services/access_requests.py)."""
+    return os.environ.get("WORKOS_SELF_SIGN_UP", "").strip().lower() in {"1", "true", "yes", "on"}
+
+
 def _platform_admins() -> list[str]:
     return [e.strip().lower() for e in os.environ.get("PLATFORM_ADMIN_EMAILS", "").split(",") if e.strip()]
 
@@ -579,3 +587,16 @@ def resend_invitation(invitation_id: str) -> dict[str, Any]:
             raise ValueError(message) from e
         raise
     return {"id": inv.id, "email": inv.email, "state": _value(inv.state), "expires_at": str(inv.expires_at)}
+
+
+def list_events(kinds: list[str], after: datetime, cap: int = 1000) -> list[Any]:
+    """WorkOS' log of these event kinds since `after`, oldest first (at most `cap`): Event objects with event,
+    created_at and data."""
+    page = _client().events.list_events(events=kinds, range_start=after.isoformat(), order="asc", limit=100)
+    found = []
+    for ev in page:  # the SDK fetches the following pages as it goes
+        found.append(ev)
+        if len(found) >= cap:
+            logger.warning("WorkOS events: stopped at %d %s events since %s", cap, kinds, after.isoformat())
+            break
+    return found

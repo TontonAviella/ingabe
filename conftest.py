@@ -35,6 +35,8 @@ os.environ["MUNDI_BACKGROUND_WORKERS_ENABLED"] = "0"
 # The local .env sets AUTH_PROVIDER=workos for the running app; tests that need
 # WorkOS turn it on themselves (monkeypatch), so the suite matches CI locally.
 os.environ.pop("AUTH_PROVIDER", None)
+# The server's .env names the private phone channel: a test must never push to Roger's phone.
+os.environ.pop("NTFY_TOPIC", None)
 from httpx_ws.transport import ASGIWebSocketTransport
 from httpx import AsyncClient
 from pathlib import Path
