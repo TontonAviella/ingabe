@@ -130,6 +130,8 @@ npm run watch                                  # Watch mode (tsc + vite)
 | Variable | Purpose |
 |----------|---------|
 | `AUTH_PROVIDER` | `workos` turns on WorkOS sign-in (needs `WORKOS_API_KEY`, `WORKOS_CLIENT_ID`, `WORKOS_COOKIE_PASSWORD`); see `src/services/workos_auth.py` |
+| `WORKOS_SELF_SIGN_UP` | Empty/`0` (default): Ingabe is invite-only (match the WorkOS dashboard's "Sign up" switch), so `/auth/login?screen_hint=sign-up` and the app's `/sign-up` lead to `/request-access`. `1`: sign-up links go to WorkOS' sign-up page. Requests, and WorkOS' refused sign-ups and waitlist entries (read every 5 minutes), reach staff by phone and are approved or declined on the Companies page (`src/services/access_requests.py`). |
+| `NTFY_TOPIC` / `NTFY_URL` / `PUBLIC_APP_URL` | The app's own phone pushes to staff (`src/services/phone_push.py`): the same private ntfy channel as the alarms; `PUBLIC_APP_URL` (e.g. `https://gis.nozalabs.rw`) makes a push open the page it names. Tests drop `NTFY_TOPIC` (conftest). |
 | `MUNDI_AUTH_MODE` | `edit` or `view_only`: the legacy single-user mode used when no sign-in provider is set |
 | `S3_*` | S3/MinIO connection (ACCESS_KEY_ID, SECRET_ACCESS_KEY, ENDPOINT_URL, BUCKET, DEFAULT_REGION) |
 | `POSTGRES_*` | Database connection (HOST, PORT, DB, USER, PASSWORD) |

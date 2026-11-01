@@ -1,4 +1,4 @@
-import { Building2, Copy, ExternalLink, Loader2, Mail, Plus, RefreshCw } from 'lucide-react';
+import { Building2, Check, Copy, ExternalLink, Loader2, Mail, Plus, RefreshCw, UserPlus, X } from 'lucide-react';
 import { type FormEvent, useCallback, useEffect, useState } from 'react';
 import { toast } from 'sonner';
 import { useWorkOSSession } from '@/components/auth/WorkOSSession';
@@ -29,6 +29,28 @@ interface Company {
   // 'all': Ingabe's own company; null: not given one yet (its first person's choice at sign-in sets it).
   industry: string | null;
 }
+
+// Someone without an invitation who asked to join (src/services/access_requests.py).
+interface AccessRequest {
+  id: number;
+  email: string;
+  name: string | null;
+  organization: string | null;
+  reason: string | null;
+  source: 'form' | 'sign_up_attempt' | 'waitlist';
+  attempts: number;
+  created_at: string;
+  status: 'open' | 'approved' | 'declined';
+  decided_by: string | null;
+  decided_at: string | null;
+  decided_how: string | null;
+}
+
+const HOW_THEY_ASKED: Record<AccessRequest['source'], string> = {
+  form: 'Asked on the Request access page',
+  sign_up_attempt: 'Tried to sign up (no code was sent: sign-up is invite-only)',
+  waitlist: 'Joined the waitlist on the sign-in page',
+};
 
 interface IndustryOption {
   key: string;
@@ -135,6 +157,111 @@ function InviteAdmin({ company, onDone }: { company: Company; onDone: () => void
   );
 }
 
+function AccessRequestRow({
+  req,
+  companies,
+  onDone,
+  onNewCompany,
+}: {
+  req: AccessRequest;
+  companies: Company[];
+  onDone: () => void;
+  onNewCompany: (req: AccessRequest) => void;
+}) {
+  const [companyId, setCompanyId] = useState('');
+  const [role, setRole] = useState<'member' | 'admin'>('member');
+  const [busy, setBusy] = useState<'approve' | 'decline' | null>(null);
+  const who = req.name || req.email;
+
+  const approve = async () => {
+    const company = companies.find((c) => c.id === companyId);
+    setBusy('approve');
+    try {
+      await call(`/access-requests/${req.id}/approve`, { method: 'POST', body: JSON.stringify({ organization_id: companyId, role }) });
+      toast.success(`${who} invited to ${company?.name ?? 'the company'}: WorkOS is emailing ${req.email}`);
+      onDone();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const decline = async () => {
+    if (!window.confirm(`Decline ${who}'s request? They are not told automatically.`)) return;
+    setBusy('decline');
+    try {
+      await call(`/access-requests/${req.id}/decline`, { method: 'POST' });
+      toast.success(`${who}'s request declined`);
+      onDone();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  return (
+    <li className="rounded-md border border-gray-700 p-4">
+      <div className="flex flex-wrap items-center gap-3">
+        <span className="text-base font-medium">{who}</span>
+        {req.name && <span className="text-sm text-gray-400">{req.email}</span>}
+        <span className="rounded bg-sky-900/50 px-2 py-0.5 text-xs text-sky-300">{HOW_THEY_ASKED[req.source]}</span>
+        <span className="ml-auto text-xs text-gray-500">
+          {req.created_at.slice(0, 10)}
+          {req.attempts > 1 ? `, ${req.attempts} times` : ''}
+        </span>
+      </div>
+      {(req.organization || req.reason) && (
+        <div className="mt-2 space-y-1 text-sm text-gray-300">
+          {req.organization && <p>From: {req.organization}</p>}
+          {req.reason && <p className="whitespace-pre-wrap text-gray-400">{req.reason}</p>}
+        </div>
+      )}
+      <div className="mt-3 flex flex-wrap items-center gap-2">
+        <select
+          className={SELECT}
+          value={companyId}
+          onChange={(e) => setCompanyId(e.target.value)}
+          aria-label={`Company to invite ${who} into`}
+        >
+          <option value="">Invite into…</option>
+          {companies.map((c) => (
+            <option key={c.id} value={c.id}>
+              {c.name}
+            </option>
+          ))}
+        </select>
+        <select
+          className={SELECT}
+          value={role}
+          onChange={(e) => setRole(e.target.value as 'member' | 'admin')}
+          aria-label={`${who}'s role`}
+        >
+          <option value="member">as member</option>
+          <option value="admin">as admin</option>
+        </select>
+        <Button size="sm" disabled={!companyId || busy !== null} onClick={approve}>
+          {busy === 'approve' ? <Loader2 className="h-4 w-4 animate-spin" /> : <Check className="h-4 w-4" />}
+          Approve
+        </Button>
+        <Button size="sm" variant="outline" disabled={busy !== null} onClick={() => onNewCompany(req)}>
+          <UserPlus className="h-4 w-4" />
+          New company for them
+        </Button>
+        <Button size="sm" variant="ghost" disabled={busy !== null} onClick={decline}>
+          {busy === 'decline' ? <Loader2 className="h-4 w-4 animate-spin" /> : <X className="h-4 w-4" />}
+          Decline
+        </Button>
+        <a href={`mailto:${req.email}`} className="ml-auto inline-flex items-center gap-1 text-sm text-emerald-400 hover:underline">
+          <Mail className="h-4 w-4" />
+          Write to them
+        </a>
+      </div>
+    </li>
+  );
+}
+
 export default function Companies() {
   const { me } = useWorkOSSession();
   const [companies, setCompanies] = useState<Company[] | null>(null);
@@ -145,17 +272,31 @@ export default function Companies() {
   const [industries, setIndustries] = useState<IndustryOption[]>([]);
   const [adding, setAdding] = useState(false);
   const [resending, setResending] = useState<string | null>(null);
+  const [requests, setRequests] = useState<AccessRequest[]>([]);
+  // The request the Add company form is filled in for: once the company is added, the request is approved.
+  const [companyFor, setCompanyFor] = useState<AccessRequest | null>(null);
 
   const load = useCallback(async () => {
     try {
-      const res = await call<{ companies: Company[]; industries: IndustryOption[] }>('');
+      const [res, asked] = await Promise.all([
+        call<{ companies: Company[]; industries: IndustryOption[] }>(''),
+        call<{ requests: AccessRequest[] }>('/access-requests'),
+      ]);
       setCompanies(res.companies);
       setIndustries(res.industries);
+      setRequests(asked.requests);
       setError(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }
   }, []);
+
+  const startCompanyFor = (req: AccessRequest) => {
+    setCompanyFor(req);
+    setName(req.organization ?? '');
+    setAdminEmail(req.email);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
 
   useEffect(() => {
     load();
@@ -169,6 +310,7 @@ export default function Companies() {
     setAdding(true);
     try {
       const res = await call<{
+        organization_id: string;
         name: string;
         created: boolean;
         invitation: { resent?: boolean };
@@ -185,6 +327,14 @@ export default function Companies() {
       toast.success(
         res.created ? `${res.name} added; ${adminEmail.trim()} ${sent}` : `${res.name} already exists; ${adminEmail.trim()} ${sent}${kept}`,
       );
+      if (companyFor && companyFor.email === adminEmail.trim().toLowerCase()) {
+        // The form just invited them as the first admin: close their request without a second email.
+        await call(`/access-requests/${companyFor.id}/approve`, {
+          method: 'POST',
+          body: JSON.stringify({ organization_id: res.organization_id, role: 'admin', already_invited: true }),
+        });
+      }
+      setCompanyFor(null);
       setName('');
       setAdminEmail('');
       setNewIndustry('');
@@ -267,7 +417,35 @@ export default function Companies() {
         </Button>
       </form>
 
+      {companyFor && (
+        <p className="-mt-4 flex items-center gap-2 text-sm text-gray-400">
+          Adding a company for {companyFor.name || companyFor.email}: choose its industry, then Add company.
+          <button type="button" onClick={() => setCompanyFor(null)} className="text-emerald-400 hover:underline">
+            Cancel
+          </button>
+        </p>
+      )}
+
       {error && <p className="rounded-md border border-red-800 bg-red-950/40 px-3 py-2 text-sm text-red-300">{error}</p>}
+
+      {requests.some((r) => r.status === 'open') && (
+        <section className="flex flex-col gap-3">
+          <div>
+            <h2 className="text-base font-semibold">People asking to join</h2>
+            <p className="text-sm text-gray-400">
+              Approve sends an invitation into the company you pick (WorkOS emails it). Decline closes the request; they are not told
+              automatically.
+            </p>
+          </div>
+          <ul className="flex flex-col gap-3">
+            {requests
+              .filter((r) => r.status === 'open')
+              .map((r) => (
+                <AccessRequestRow key={r.id} req={r} companies={companies ?? []} onDone={load} onNewCompany={startCompanyFor} />
+              ))}
+          </ul>
+        </section>
+      )}
 
       {!companies && !error ? (
         <Loader2 className="h-5 w-5 animate-spin text-gray-400" />
@@ -319,6 +497,23 @@ export default function Companies() {
             );
           })}
         </ul>
+      )}
+
+      {requests.some((r) => r.status !== 'open') && (
+        <section className="text-sm text-gray-400">
+          <p className="font-medium text-gray-300">Requests decided in the last 30 days</p>
+          <ul className="mt-2 flex flex-col gap-1">
+            {requests
+              .filter((r) => r.status !== 'open')
+              .map((r) => (
+                <li key={r.id}>
+                  {r.name ? `${r.name} (${r.email})` : r.email}: {r.decided_how}
+                  {r.decided_by ? `, by ${r.decided_by}` : ''}
+                  {r.decided_at ? ` on ${r.decided_at.slice(0, 10)}` : ''}
+                </li>
+              ))}
+          </ul>
+        </section>
       )}
 
       {/* System owner only (first email in PLATFORM_ADMIN_EMAILS). */}

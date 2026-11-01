@@ -33,6 +33,11 @@ GUEST_SWEEP_SECONDS = 30  # how often expired guests are taken off (the longest 
 _EMAIL = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
 
+def looks_like_email(address: str) -> bool:
+    """The one email-shape check for addresses people type (guests here, access requests in access_requests.py)."""
+    return bool(_EMAIL.match(address))
+
+
 class NotShareable(ValueError):
     """The email is not a colleague of the owner (not in any of their organizations), or is the owner."""
 
@@ -176,7 +181,7 @@ async def invite_guest(conn: asyncpg.Connection, project_id: str, owner_id: str,
     if days not in GUEST_DAYS:
         raise ValueError(f"days must be one of {', '.join(map(str, GUEST_DAYS))}")
     address = email.strip().lower()
-    if not _EMAIL.match(address):
+    if not looks_like_email(address):
         raise NotGuest(f"{email} is not an email address")
     owner_email = await conn.fetchval("SELECT lower(email) FROM users WHERE internal_uuid = $1", owner_id)
     if address == owner_email:

@@ -59,8 +59,11 @@ def _redirect_uri(request: Request) -> str:
 @pages.get("/auth/login")
 async def auth_login(request: Request, return_to: str = "/", organization_id: Optional[str] = None,
                      screen_hint: Optional[str] = None):
-    """Send the user to the WorkOS-hosted sign-in page."""
+    """Send the user to the WorkOS-hosted sign-in page (a sign-up, while Ingabe is invite-only, to Request access)."""
     _require_enabled()
+    if screen_hint == "sign-up" and not workos_auth.sign_up_open():
+        # WorkOS would refuse the sign-up and still ask for a code it never sends (2026-11-01).
+        return RedirectResponse("/request-access", status_code=status.HTTP_302_FOUND)
     nonce = secrets.token_urlsafe(16)
     target = base64.urlsafe_b64encode(workos_auth.safe_return_to(return_to).encode()).decode()
     url = await asyncio.to_thread(

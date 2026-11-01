@@ -39,6 +39,11 @@ services:
       - PLATFORM_ADMIN_EMAILS=${PLATFORM_ADMIN_EMAILS:-}
       # WorkOS id(s) of Ingabe's own company: it sees every industry; partner companies work in one.
       - INGABE_WORKOS_ORG_IDS=${INGABE_WORKOS_ORG_IDS:-}
+      # Invite-only unless 1 (match the WorkOS "Sign up" switch); access requests push staff (src/services/access_requests.py)
+      - WORKOS_SELF_SIGN_UP=${WORKOS_SELF_SIGN_UP:-}
+      - NTFY_TOPIC=${NTFY_TOPIC:-}
+      - NTFY_URL=${NTFY_URL:-https://ntfy.sh}
+      - PUBLIC_APP_URL=${PUBLIC_APP_URL:-}
       - S3_ACCESS_KEY_ID=${S3_ACCESS_KEY_ID:-s3user}
       - S3_SECRET_ACCESS_KEY=${S3_SECRET_ACCESS_KEY:-changeme}
       - S3_DEFAULT_REGION=${S3_DEFAULT_REGION:-us-east-1}
