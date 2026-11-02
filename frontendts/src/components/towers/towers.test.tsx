@@ -567,8 +567,9 @@ describe('photo screen: parts the trained models scan', () => {
     });
     open();
 
-    await findText('This photo can answer: what is on the tower.', 'p');
-    expect(byText(/Taken at 10:31, in daylight/)).not.toBeNull();
+    await findText(/Taken at 10:31, in daylight/);
+    // The panel says what the photo shows; no summary line is laid over the photo (simplicity pass, 2026-11-02).
+    expect(byText('This photo can answer: what is on the tower.')).toBeNull();
     expect(byText('Needs night photos')).not.toBeNull();
     click(await findButton(/Is the obstruction light working\?/));
     await findText('On this photo', 'h3');
@@ -582,7 +583,6 @@ describe('photo screen: parts the trained models scan', () => {
     click(await findButton('Technician'));
     await vi.waitFor(() => expect(called('GET', `${photoUrl(SHA)}/questions?audience=technician`)).toBeDefined());
     click(await findButton(/All questions/));
-    await findText('For the technician: what is on the tower.', 'p');
     click(await findButton(/What is on the tower\?/));
     await findText('Is this a panel antenna?', 'h2');
     await findText(/A close look: a fibre splice closure, not an antenna/, 'p');
