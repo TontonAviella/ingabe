@@ -105,9 +105,9 @@ function MessageItem({
     <>
       <div
         key={msgIndex}
-        className={`text-halfway-sm-xs ${message.role === 'user' ? 'rounded-[14px] bg-[#221813] py-1.5 px-3 max-w-[85%] ml-auto' : 'px-0.5'}`}
+        className={`text-halfway-sm-xs ${message.role === 'user' ? 'rounded-[14px] bg-raised py-1.5 px-3 max-w-[85%] ml-auto' : 'px-0.5'}`}
       >
-        <div className="flex-1 min-w-0 text-[14px] text-[#F3EDE6] [&_pre]:max-w-80 [&_pre]:overflow-x-scroll [&_pre]:my-4 [&_pre]:bg-gray-900 [&_pre]:border-gray-500 [&_pre]:border [&_pre]:rounded">
+        <div className="flex-1 min-w-0 text-[14px] text-fg [&_pre]:max-w-80 [&_pre]:overflow-x-scroll [&_pre]:my-4 [&_pre]:bg-gray-900 [&_pre]:border-gray-500 [&_pre]:border [&_pre]:rounded">
           {message.role === 'assistant' && message.content ? (
             <Answer text={message.content} />
           ) : (
@@ -201,9 +201,9 @@ interface VersionVisualizationProps {
 
 const PENDING_TITLE = 'title pending';
 const chatName = (c: Conversation | undefined) => (c?.title && c.title !== PENDING_TITLE ? c.title : 'New chat');
-const PANEL = 'bg-[#17110E] text-[#F3EDE6]';
+const PANEL = 'bg-panel text-fg';
 const ROW =
-  'flex w-full items-center gap-2.5 rounded-[9px] px-2.5 py-2 text-left text-[14px] cursor-pointer hover:bg-white/[0.06] focus-visible:outline-2 focus-visible:outline-[#D9A066]';
+  'flex w-full items-center gap-2.5 rounded-[9px] px-2.5 py-2 text-left text-[14px] cursor-pointer hover:bg-white/[0.06] focus-visible:outline-2 focus-visible:outline-caramel';
 
 export default function VersionVisualization({
   mapTree,
@@ -313,15 +313,15 @@ export default function VersionVisualization({
     return (
       <div
         key={`edit-${node.map_id}`}
-        className={`grid grid-cols-[16px_minmax(0,1fr)_auto] items-baseline gap-2 rounded-[8px] px-2.5 py-1.5 text-[13px] ${here ? 'text-[#F3EDE6]' : 'text-[#B8A99B]'}`}
+        className={`grid grid-cols-[16px_minmax(0,1fr)_auto] items-baseline gap-2 rounded-[8px] px-2.5 py-1.5 text-[13px] ${here ? 'text-fg' : 'text-fg-muted'}`}
         title={new Date(node.created_on).toLocaleString()}
       >
-        <span className="text-[#8E7F73]">{icon}</span>
+        <span className="text-fg-subtle">{icon}</span>
         <span className="truncate">
           {text}
-          {bySage && <span className="text-[#D9A066]"> · Sage</span>}
+          {bySage && <span className="text-caramel"> · Sage</span>}
         </span>
-        <span className="text-[12px] text-[#8E7F73]">{formatShortRelativeTime(node.created_on)}</span>
+        <span className="text-[12px] text-fg-subtle">{formatShortRelativeTime(node.created_on)}</span>
       </div>
     );
   };
@@ -350,7 +350,7 @@ export default function VersionVisualization({
     const open = expandedEditGroups.includes(id);
     return (
       <div key={id}>
-        <button type="button" className={`${ROW} text-[13px] text-[#B8A99B]`} onClick={() => toggleGroup(id)} aria-expanded={open}>
+        <button type="button" className={`${ROW} text-[13px] text-fg-muted`} onClick={() => toggleGroup(id)} aria-expanded={open}>
           <ChevronRight className={`size-3.5 transition-transform ${open ? 'rotate-90' : ''}`} />
           {nodes.length} map changes
         </button>
@@ -373,13 +373,13 @@ export default function VersionVisualization({
           <div className="flex flex-col gap-1 px-2.5 pt-3 pb-1">
             <div className="flex items-center gap-1">
               <button type="button" className={ROW} onClick={() => setConversationId(null)} title="Ask Sage below to start a chat">
-                <Plus className="size-4 text-[#D9A066]" />
+                <Plus className="size-4 text-caramel" />
                 New chat
               </button>
               {onClose && <CloseButton onClose={onClose} />}
             </div>
-            <label className="flex items-center gap-2.5 rounded-[9px] bg-[#221813] px-2.5 py-1.5">
-              <Search className="size-4 text-[#B8A99B]" />
+            <label className="flex items-center gap-2.5 rounded-[9px] bg-raised px-2.5 py-1.5">
+              <Search className="size-4 text-fg-muted" />
               <input
                 id="chat-search"
                 type="search"
@@ -387,16 +387,16 @@ export default function VersionVisualization({
                 onChange={(e) => setSearch(e.target.value)}
                 placeholder="Search chats"
                 aria-label="Search chats"
-                className="min-w-0 flex-1 bg-transparent text-[14px] text-[#F3EDE6] placeholder:text-[#8E7F73] outline-none"
+                className="min-w-0 flex-1 bg-transparent text-[14px] text-fg placeholder:text-fg-subtle outline-none"
               />
             </label>
             {/* Farmer, insurer, agronomist, scientist: report views for agriculture projects only (audit R1-28). */}
             {farmControls && <ReportAudienceSelect label="Answers written for" compact />}
           </div>
-          <div className="px-5 pt-3 pb-1.5 text-[12px] font-semibold text-[#8E7F73]">Recents</div>
+          <div className="px-5 pt-3 pb-1.5 text-[12px] font-semibold text-fg-subtle">Recents</div>
           <div className="min-h-0 flex-1 overflow-y-auto px-2.5" role="list" aria-label="Recent chats">
             {recent.length === 0 && (
-              <p className="m-0 px-2.5 py-2 text-[13px] text-[#8E7F73]">
+              <p className="m-0 px-2.5 py-2 text-[13px] text-fg-subtle">
                 {conversations.length === 0 ? 'No chats yet. Ask Sage below to start one.' : 'No chat matches.'}
               </p>
             )}
@@ -416,7 +416,7 @@ export default function VersionVisualization({
                     <button
                       type="button"
                       onClick={() => setConfirmDelete(null)}
-                      className="rounded-full px-3 py-1 text-[12.5px] font-semibold text-[#B8A99B] hover:bg-white/[0.06] cursor-pointer"
+                      className="rounded-full px-3 py-1 text-[12.5px] font-semibold text-fg-muted hover:bg-white/[0.06] cursor-pointer"
                     >
                       Cancel
                     </button>
@@ -432,14 +432,14 @@ export default function VersionVisualization({
                     title={`${c.message_count} messages`}
                   >
                     <span className="min-w-0 truncate">{chatName(c)}</span>
-                    <span className="shrink-0 text-[12px] text-[#8E7F73] group-hover:hidden">{formatShortRelativeTime(c.updated_at)}</span>
+                    <span className="shrink-0 text-[12px] text-fg-subtle group-hover:hidden">{formatShortRelativeTime(c.updated_at)}</span>
                   </button>
                   <button
                     type="button"
                     aria-label={`Delete “${chatName(c)}”`}
                     title="Delete chat"
                     onClick={() => setConfirmDelete(c.id)}
-                    className="absolute right-1.5 top-1/2 hidden size-7 -translate-y-1/2 items-center justify-center rounded-[7px] text-[#B8A99B] hover:bg-white/[0.08] hover:text-[#F08A7E] group-hover:flex focus-visible:flex cursor-pointer"
+                    className="absolute right-1.5 top-1/2 hidden size-7 -translate-y-1/2 items-center justify-center rounded-[7px] text-fg-muted hover:bg-white/[0.08] hover:text-[#F08A7E] group-hover:flex focus-visible:flex cursor-pointer"
                   >
                     <Trash2 className="size-4" />
                   </button>
@@ -451,13 +451,13 @@ export default function VersionVisualization({
             <div className="border-t border-white/[0.07] px-2.5 pt-1.5 pb-3">
               <button
                 type="button"
-                className={`${ROW} text-[13px] text-[#B8A99B]`}
+                className={`${ROW} text-[13px] text-fg-muted`}
                 onClick={() => setChangesOpen((v) => !v)}
                 aria-expanded={changesOpen}
               >
                 <ChevronRight className={`size-3.5 transition-transform ${changesOpen ? 'rotate-90' : ''}`} />
                 Map changes
-                <span className="ml-auto text-[12px] text-[#8E7F73]">{mapTree.tree.length}</span>
+                <span className="ml-auto text-[12px] text-fg-subtle">{mapTree.tree.length}</span>
               </button>
               {changesOpen && <div className="max-h-56 overflow-y-auto pl-3">{[...mapTree.tree].reverse().map((n) => editLine(n))}</div>}
             </div>
@@ -468,7 +468,7 @@ export default function VersionVisualization({
           <div className="flex items-center gap-1 border-b border-white/[0.07] px-2 py-2">
             <button
               type="button"
-              className="flex size-8 shrink-0 items-center justify-center rounded-[8px] text-[#B8A99B] hover:bg-white/[0.06] hover:text-[#F3EDE6] cursor-pointer"
+              className="flex size-8 shrink-0 items-center justify-center rounded-[8px] text-fg-muted hover:bg-white/[0.06] hover:text-fg cursor-pointer"
               onClick={() => setConversationId(null)}
               aria-label="All chats"
               title="All chats"
@@ -478,7 +478,7 @@ export default function VersionVisualization({
             <span className="min-w-0 flex-1 truncate text-[14px] font-semibold">{chatName(current)}</span>
             <button
               type="button"
-              className="flex size-8 shrink-0 items-center justify-center rounded-[8px] text-[#D9A066] hover:bg-white/[0.06] cursor-pointer"
+              className="flex size-8 shrink-0 items-center justify-center rounded-[8px] text-caramel hover:bg-white/[0.06] cursor-pointer"
               onClick={() => setConversationId(null)}
               aria-label="New chat"
               title="New chat"
@@ -496,8 +496,8 @@ export default function VersionVisualization({
                   : editLine(item.node),
             )}
             {working && (
-              <div className="flex items-center gap-2 px-2.5 py-1.5 text-[13px] text-[#B8A99B]">
-                <Brain className="size-4 animate-pulse text-[#D9A066]" /> Sage is working…
+              <div className="flex items-center gap-2 px-2.5 py-1.5 text-[13px] text-fg-muted">
+                <Brain className="size-4 animate-pulse text-caramel" /> Sage is working…
               </div>
             )}
           </div>
@@ -515,7 +515,7 @@ function CloseButton({ onClose }: { onClose: () => void }) {
       onClick={onClose}
       aria-label="Hide chats"
       title="Hide chats"
-      className="hidden size-8 shrink-0 items-center justify-center rounded-[8px] text-[#B8A99B] hover:bg-white/[0.06] hover:text-[#F3EDE6] xl:flex cursor-pointer"
+      className="hidden size-8 shrink-0 items-center justify-center rounded-[8px] text-fg-muted hover:bg-white/[0.06] hover:text-fg xl:flex cursor-pointer"
     >
       <PanelRightClose className="size-4" />
     </button>

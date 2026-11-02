@@ -1833,12 +1833,12 @@ export default function MapLibreMap({
         {chatsHidden && (
           <button
             type="button"
-            className="absolute top-4 right-16 z-40 hidden h-9 items-center gap-2 rounded-full border border-white/10 bg-[#17110E]/95 px-3.5 text-[13.5px] font-semibold text-[#F3EDE6] shadow-md hover:border-[#D9A066]/60 xl:flex cursor-pointer"
+            className="absolute top-4 right-16 z-40 hidden h-9 items-center gap-2 rounded-full border border-white/10 bg-panel/95 px-3.5 text-[13.5px] font-semibold text-fg shadow-md hover:border-caramel/60 xl:flex cursor-pointer"
             onClick={() => setChatsHidden(false)}
             aria-label="Show chats"
             title="Show chats"
           >
-            <PanelRightOpen className="size-4 text-[#D9A066]" />
+            <PanelRightOpen className="size-4 text-caramel" />
             Chats
           </button>
         )}
@@ -1934,10 +1934,10 @@ export default function MapLibreMap({
           centered={chatsHidden}
         />
         <div
-          className={`z-30 absolute bottom-12 left-1/2 ${chatsHidden ? '' : 'xl:left-3/5'} transform -translate-x-1/2 w-[calc(100%-1rem)] sm:w-4/5 max-w-[34rem] flex items-center min-h-12 rounded-[18px] border border-white/10 bg-[#17110E]/95 shadow-[0_12px_32px_rgba(0,0,0,0.45)] backdrop-blur-xl focus-within:border-[#D9A066]/60`}
+          className={`z-30 absolute bottom-12 left-1/2 ${chatsHidden ? '' : 'xl:left-3/5'} transform -translate-x-1/2 w-[calc(100%-1rem)] sm:w-4/5 max-w-[34rem] flex items-center min-h-12 rounded-[18px] border border-white/10 bg-panel/95 shadow-[0_12px_32px_rgba(0,0,0,0.45)] backdrop-blur-xl focus-within:border-caramel/60`}
         >
           <Input
-            className={`flex-1 h-12 border-none shadow-none !bg-transparent px-4 text-[15px] text-[#F3EDE6] placeholder:text-[#8E7F73] focus:!ring-0 focus:!ring-offset-0 focus-visible:!ring-0 focus-visible:!ring-offset-0 focus-visible:!outline-none`}
+            className={`flex-1 h-12 border-none shadow-none !bg-transparent px-4 text-[15px] text-fg placeholder:text-fg-subtle focus:!ring-0 focus:!ring-offset-0 focus-visible:!ring-0 focus-visible:!ring-offset-0 focus-visible:!outline-none`}
             placeholder={
               conversationId !== null
                 ? 'Continue this chat…'

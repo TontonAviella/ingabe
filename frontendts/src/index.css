@@ -69,65 +69,84 @@
   --color-sidebar-ring: var(--sidebar-ring);
 }
 
-/* Ingabe colours (2026-10-06): black and chocolate, one caramel accent. Tailwind's grey scales
-   become chocolate neutrals and its blue/green scales become caramel, so every panel matches the
-   question cards without editing each class. Red stays red for errors. */
+/* Ingabe colours, palette B "Basalt and Kivu" (Roger, 2026-11-02): cool basalt neutrals, one caramel
+   accent for actions, Kivu teal for data. Name a colour by its role (bg-panel, text-fg-muted,
+   border-line, bg-caramel); never type a hex value for interface colour. Data scales (crops,
+   vegetation, rain) keep their own values where they are drawn. Tailwind's grey scales are the basalt
+   ramp and its blue/green scales stay caramel, so older classes match without editing each one. */
 @theme {
-  --color-gray-50: #f8f4ef;
-  --color-gray-100: #f3ede6;
-  --color-gray-200: #e6dcd1;
-  --color-gray-300: #d8ccbf;
-  --color-gray-400: #b8a99b;
-  --color-gray-500: #8c7b6e;
-  --color-gray-600: #6b5a4e;
-  --color-gray-700: #4a3326;
-  --color-gray-800: #2a1d17;
-  --color-gray-900: #17110e;
-  --color-gray-950: #0b0908;
-  --color-slate-50: #f8f4ef;
-  --color-slate-100: #f3ede6;
-  --color-slate-200: #e6dcd1;
-  --color-slate-300: #d8ccbf;
-  --color-slate-400: #b8a99b;
-  --color-slate-500: #8c7b6e;
-  --color-slate-600: #6b5a4e;
-  --color-slate-700: #4a3326;
-  --color-slate-800: #2a1d17;
-  --color-slate-900: #17110e;
-  --color-slate-950: #0b0908;
-  --color-zinc-50: #f8f4ef;
-  --color-zinc-100: #f3ede6;
-  --color-zinc-200: #e6dcd1;
-  --color-zinc-300: #d8ccbf;
-  --color-zinc-400: #b8a99b;
-  --color-zinc-500: #8c7b6e;
-  --color-zinc-600: #6b5a4e;
-  --color-zinc-700: #4a3326;
-  --color-zinc-800: #2a1d17;
-  --color-zinc-900: #17110e;
-  --color-zinc-950: #0b0908;
-  --color-neutral-50: #f8f4ef;
-  --color-neutral-100: #f3ede6;
-  --color-neutral-200: #e6dcd1;
-  --color-neutral-300: #d8ccbf;
-  --color-neutral-400: #b8a99b;
-  --color-neutral-500: #8c7b6e;
-  --color-neutral-600: #6b5a4e;
-  --color-neutral-700: #4a3326;
-  --color-neutral-800: #2a1d17;
-  --color-neutral-900: #17110e;
-  --color-neutral-950: #0b0908;
-  --color-stone-50: #f8f4ef;
-  --color-stone-100: #f3ede6;
-  --color-stone-200: #e6dcd1;
-  --color-stone-300: #d8ccbf;
-  --color-stone-400: #b8a99b;
-  --color-stone-500: #8c7b6e;
-  --color-stone-600: #6b5a4e;
-  --color-stone-700: #4a3326;
-  --color-stone-800: #2a1d17;
-  --color-stone-900: #17110e;
-  --color-stone-950: #0b0908;
+  --color-canvas: #0d0f12;
+  --color-panel: #15181d;
+  --color-raised: #1c2027;
+  --color-line: #262b33;
+  --color-fg: #eceef1;
+  --color-fg-soft: #c7ccd3;
+  --color-fg-muted: #a1a8b3;
+  --color-fg-subtle: #6f7783;
+  --color-caramel: #d9a066;
+  --color-caramel-hi: #e9b987;
+  --color-kivu: #3fb8c4;
+  --color-ok: #4cb782;
+  --color-warn: #e2b04a;
+  --color-bad: #e5634d;
+}
+
+@theme {
+  --color-gray-50: #f5f6f8;
+  --color-gray-100: #eceef1;
+  --color-gray-200: #d5d9df;
+  --color-gray-300: #b7bdc6;
+  --color-gray-400: #959ca8;
+  --color-gray-500: #6f7783;
+  --color-gray-600: #4e5560;
+  --color-gray-700: #343a43;
+  --color-gray-800: #23272e;
+  --color-gray-900: #15181d;
+  --color-gray-950: #0d0f12;
+  --color-slate-50: #f5f6f8;
+  --color-slate-100: #eceef1;
+  --color-slate-200: #d5d9df;
+  --color-slate-300: #b7bdc6;
+  --color-slate-400: #959ca8;
+  --color-slate-500: #6f7783;
+  --color-slate-600: #4e5560;
+  --color-slate-700: #343a43;
+  --color-slate-800: #23272e;
+  --color-slate-900: #15181d;
+  --color-slate-950: #0d0f12;
+  --color-zinc-50: #f5f6f8;
+  --color-zinc-100: #eceef1;
+  --color-zinc-200: #d5d9df;
+  --color-zinc-300: #b7bdc6;
+  --color-zinc-400: #959ca8;
+  --color-zinc-500: #6f7783;
+  --color-zinc-600: #4e5560;
+  --color-zinc-700: #343a43;
+  --color-zinc-800: #23272e;
+  --color-zinc-900: #15181d;
+  --color-zinc-950: #0d0f12;
+  --color-neutral-50: #f5f6f8;
+  --color-neutral-100: #eceef1;
+  --color-neutral-200: #d5d9df;
+  --color-neutral-300: #b7bdc6;
+  --color-neutral-400: #959ca8;
+  --color-neutral-500: #6f7783;
+  --color-neutral-600: #4e5560;
+  --color-neutral-700: #343a43;
+  --color-neutral-800: #23272e;
+  --color-neutral-900: #15181d;
+  --color-neutral-950: #0d0f12;
+  --color-stone-50: #f5f6f8;
+  --color-stone-100: #eceef1;
+  --color-stone-200: #d5d9df;
+  --color-stone-300: #b7bdc6;
+  --color-stone-400: #959ca8;
+  --color-stone-500: #6f7783;
+  --color-stone-600: #4e5560;
+  --color-stone-700: #343a43;
+  --color-stone-800: #23272e;
+  --color-stone-900: #15181d;
+  --color-stone-950: #0d0f12;
   --color-blue-50: #fbf3ea;
   --color-blue-100: #f6e4cf;
   --color-blue-200: #eecba4;
@@ -254,37 +273,37 @@
 }
 
 .dark {
-  --background: #0b0908;
-  --foreground: #f3ede6;
-  --card: #17110e;
-  --card-foreground: #f3ede6;
-  --popover: #17110e;
-  --popover-foreground: #f3ede6;
-  --primary: #d9a066;
-  --primary-foreground: #140e0b;
-  --secondary: #221813;
-  --secondary-foreground: #f3ede6;
-  --muted: #221813;
-  --muted-foreground: #b8a99b;
-  --accent: #2a1d17;
-  --accent-foreground: #f3ede6;
-  --destructive: oklch(0.704 0.191 22.216);
-  --border: rgb(255 255 255 / 9%);
-  --input: rgb(255 255 255 / 14%);
-  --ring: #d9a066;
-  --chart-1: oklch(0.488 0.243 264.376);
-  --chart-2: oklch(0.696 0.17 162.48);
-  --chart-3: oklch(0.769 0.188 70.08);
-  --chart-4: oklch(0.627 0.265 303.9);
-  --chart-5: oklch(0.645 0.246 16.439);
-  --sidebar: #110c0a;
-  --sidebar-foreground: #f3ede6;
-  --sidebar-primary: #d9a066;
-  --sidebar-primary-foreground: #140e0b;
-  --sidebar-accent: #221813;
-  --sidebar-accent-foreground: #f3ede6;
-  --sidebar-border: rgb(255 255 255 / 8%);
-  --sidebar-ring: #d9a066;
+  --background: var(--color-canvas);
+  --foreground: var(--color-fg);
+  --card: var(--color-panel);
+  --card-foreground: var(--color-fg);
+  --popover: var(--color-panel);
+  --popover-foreground: var(--color-fg);
+  --primary: var(--color-caramel);
+  --primary-foreground: var(--color-canvas);
+  --secondary: var(--color-raised);
+  --secondary-foreground: var(--color-fg);
+  --muted: var(--color-raised);
+  --muted-foreground: var(--color-fg-muted);
+  --accent: var(--color-raised);
+  --accent-foreground: var(--color-fg);
+  --destructive: var(--color-bad);
+  --border: var(--color-line);
+  --input: var(--color-line);
+  --ring: var(--color-caramel);
+  --chart-1: var(--color-kivu);
+  --chart-2: var(--color-caramel);
+  --chart-3: var(--color-ok);
+  --chart-4: var(--color-warn);
+  --chart-5: var(--color-bad);
+  --sidebar: var(--color-canvas);
+  --sidebar-foreground: var(--color-fg);
+  --sidebar-primary: var(--color-caramel);
+  --sidebar-primary-foreground: var(--color-canvas);
+  --sidebar-accent: var(--color-raised);
+  --sidebar-accent-foreground: var(--color-fg);
+  --sidebar-border: var(--color-line);
+  --sidebar-ring: var(--color-caramel);
 }
 
 @layer base {
@@ -325,20 +344,20 @@
 }
 
 
-/* Drone question cards: the size label of a clicked patch, in the cards' chocolate style. */
+/* Drone question cards: the size label of a clicked patch, in the cards' panel style. */
 .drone-card-popup .maplibregl-popup-content {
-  background: #17110e;
-  color: #f3ede6;
+  background: var(--color-panel);
+  color: var(--color-fg);
   border: 1px solid rgb(255 255 255 / 0.12);
   border-radius: 12px;
   padding: 8px 12px;
   font: 600 13px/1.3 -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", system-ui, sans-serif;
   box-shadow: 0 6px 24px rgb(0 0 0 / 0.45);
 }
-.drone-card-popup.maplibregl-popup-anchor-bottom .maplibregl-popup-tip { border-top-color: #17110e; }
-.drone-card-popup.maplibregl-popup-anchor-top .maplibregl-popup-tip { border-bottom-color: #17110e; }
-.drone-card-popup.maplibregl-popup-anchor-left .maplibregl-popup-tip { border-right-color: #17110e; }
-.drone-card-popup.maplibregl-popup-anchor-right .maplibregl-popup-tip { border-left-color: #17110e; }
+.drone-card-popup.maplibregl-popup-anchor-bottom .maplibregl-popup-tip { border-top-color: var(--color-panel); }
+.drone-card-popup.maplibregl-popup-anchor-top .maplibregl-popup-tip { border-bottom-color: var(--color-panel); }
+.drone-card-popup.maplibregl-popup-anchor-left .maplibregl-popup-tip { border-right-color: var(--color-panel); }
+.drone-card-popup.maplibregl-popup-anchor-right .maplibregl-popup-tip { border-left-color: var(--color-panel); }
 
 /* Close-look bubbles: a round picture pinned to the place it shows (CloseLookBubbles). */
 .close-look-bubble {
@@ -347,8 +366,8 @@
   height: 46px;
   padding: 0;
   border-radius: 50%;
-  border: 2px solid #d9a066;
-  background: #17110e;
+  border: 2px solid var(--color-caramel);
+  background: var(--color-panel);
   box-shadow: 0 4px 14px rgb(0 0 0 / 0.5);
   cursor: pointer;
   overflow: visible;
@@ -360,11 +379,11 @@
   bottom: -8px;
   transform: translateX(-50%);
   border: 6px solid transparent;
-  border-top: 7px solid #d9a066;
+  border-top: 7px solid var(--color-caramel);
   border-bottom: 0;
 }
 .close-look-bubble img { width: 100%; height: 100%; border-radius: 50%; object-fit: cover; display: block; }
-.close-look-bubble:hover, .close-look-bubble:focus-visible { border-color: #f3ede6; outline: none; transform: scale(1.08); }
+.close-look-bubble:hover, .close-look-bubble:focus-visible { border-color: var(--color-fg); outline: none; transform: scale(1.08); }
 .close-look-badge {
   position: absolute;
   top: -6px;
@@ -373,31 +392,31 @@
   height: 18px;
   padding: 0 4px;
   border-radius: 9px;
-  background: #d9a066;
-  color: #0b0908;
+  background: var(--color-caramel);
+  color: var(--color-canvas);
   font: 800 11px/18px -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
   text-align: center;
 }
 .close-look-popup .maplibregl-popup-content {
-  background: #17110e;
-  color: #f3ede6;
+  background: var(--color-panel);
+  color: var(--color-fg);
   border: 1px solid rgb(255 255 255 / 0.12);
   border-radius: 14px;
   padding: 10px;
   box-shadow: 0 10px 30px rgb(0 0 0 / 0.5);
   font: 13px/1.4 -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", system-ui, sans-serif;
 }
-.close-look-popup .maplibregl-popup-close-button { color: #b8a99b; font-size: 18px; padding: 2px 8px; }
-.close-look-popup.maplibregl-popup-anchor-bottom .maplibregl-popup-tip { border-top-color: #17110e; }
-.close-look-popup.maplibregl-popup-anchor-top .maplibregl-popup-tip { border-bottom-color: #17110e; }
-.close-look-popup.maplibregl-popup-anchor-left .maplibregl-popup-tip { border-right-color: #17110e; }
-.close-look-popup.maplibregl-popup-anchor-right .maplibregl-popup-tip { border-left-color: #17110e; }
+.close-look-popup .maplibregl-popup-close-button { color: var(--color-fg-muted); font-size: 18px; padding: 2px 8px; }
+.close-look-popup.maplibregl-popup-anchor-bottom .maplibregl-popup-tip { border-top-color: var(--color-panel); }
+.close-look-popup.maplibregl-popup-anchor-top .maplibregl-popup-tip { border-bottom-color: var(--color-panel); }
+.close-look-popup.maplibregl-popup-anchor-left .maplibregl-popup-tip { border-right-color: var(--color-panel); }
+.close-look-popup.maplibregl-popup-anchor-right .maplibregl-popup-tip { border-left-color: var(--color-panel); }
 .close-look-pop { display: flex; flex-direction: column; gap: 8px; max-height: 60vh; min-height: 0; }
 .close-look-pop img { width: 100%; height: 170px; flex: none; object-fit: cover; border-radius: 10px; display: block; }
 .close-look-pop-title { flex: none; }
 .close-look-pop-lines { flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding-right: 4px; }
 .close-look-pop-note { flex: none; }
 .close-look-pop-title { font-weight: 700; font-size: 14px; }
-.close-look-pop-lines { margin: 0; padding-left: 16px; display: flex; flex-direction: column; gap: 4px; color: #d8ccbf; }
-.close-look-pop-lines b { color: #f3ede6; }
-.close-look-pop-note { margin: 0; font-size: 11.5px; color: #8c7d70; }
+.close-look-pop-lines { margin: 0; padding-left: 16px; display: flex; flex-direction: column; gap: 4px; color: var(--color-fg-soft); }
+.close-look-pop-lines b { color: var(--color-fg); }
+.close-look-pop-note { margin: 0; font-size: 11.5px; color: var(--color-fg-subtle); }

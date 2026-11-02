@@ -139,15 +139,15 @@ export function IndustryGate() {
   // Fail closed: if the industry cannot be loaded, say so instead of letting the app run as agriculture (R1-31).
   if (isError) {
     return (
-      <div className="fixed inset-0 z-[10000] flex items-center justify-center bg-[#0B0908] px-6 text-center text-[#F6F1EB]">
+      <div className="fixed inset-0 z-[10000] flex items-center justify-center bg-canvas px-6 text-center text-fg">
         <div className="max-w-sm">
           <p className="text-[15px]">Ingabe could not load your industry.</p>
-          <p className="mt-2 text-[13px] text-[#B8A99B]">Check your connection, then try again.</p>
+          <p className="mt-2 text-[13px] text-fg-muted">Check your connection, then try again.</p>
           <button
             type="button"
             onClick={() => refetch()}
             disabled={isFetching}
-            className="mt-5 rounded-full bg-[#D9A066] px-5 py-2 text-[14px] font-medium text-[#0B0908] disabled:opacity-60"
+            className="mt-5 rounded-full bg-caramel px-5 py-2 text-[14px] font-medium text-canvas disabled:opacity-60"
           >
             {isFetching ? 'Trying…' : 'Try again'}
           </button>
@@ -157,7 +157,7 @@ export function IndustryGate() {
   }
   if (!data || !data.can_choose || (data.industry !== null && !reopened)) return null;
   return (
-    <Suspense fallback={<div className="fixed inset-0 z-[10000] bg-[#0B0908]" />}>
+    <Suspense fallback={<div className="fixed inset-0 z-[10000] bg-canvas" />}>
       <IndustryPicker data={data} onClose={() => setReopened(false)} />
     </Suspense>
   );
