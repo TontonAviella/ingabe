@@ -1,15 +1,32 @@
-import { Clock, Plus, Trash2 } from 'lucide-react';
+import { Loader2, Plus, Trash2 } from 'lucide-react';
 import { Link } from 'react-router-dom';
+import { toast } from 'sonner';
 import { type IndustryKey, useIndustry, useIndustryKnown } from '@/components/IndustryGate';
 import { IndustryTabs } from '@/components/IndustryTabs';
-import { Checkbox } from '@/components/ui/checkbox';
+import type { MapProject } from '@/lib/types';
 import { useProjects } from '../contexts/ProjectsContext';
 import { Button } from './ui/button';
-import { Card } from './ui/card';
 import { Pagination, PaginationContent, PaginationItem, PaginationLink, PaginationNext, PaginationPrevious } from './ui/pagination';
-import { Tooltip, TooltipProvider, TooltipTrigger } from './ui/tooltip';
 
-const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
+// The home: the maps of the industry the user works in now. One title, one caramel button (New map); the industry
+// and its count are on the tabs, so the title does not repeat them. Why a list failed goes to telemetry
+// (ProjectsContext), never on screen: a person can only try again.
+
+const PLACEHOLDERS = 4;
+
+/** "Edited 3 days ago", from the map's last edit (or its creation). */
+function editedAgo(project: MapProject): string {
+  const diffSec = Math.floor((Date.now() - new Date(project.most_recent_version?.last_edited || project.created_on).getTime()) / 1000);
+  const [value, unit]: [number, Intl.RelativeTimeFormatUnit] =
+    diffSec < 60
+      ? [diffSec, 'second']
+      : diffSec < 3600
+        ? [Math.floor(diffSec / 60), 'minute']
+        : diffSec < 86400
+          ? [Math.floor(diffSec / 3600), 'hour']
+          : [Math.floor(diffSec / 86400), 'day'];
+  return `Edited ${new Intl.RelativeTimeFormat(undefined, { numeric: 'auto' }).format(-value, unit)}`;
+}
 
 export default function MapsList() {
   // A new project takes its industry at creation: wait until it is known (audit R1-31).
@@ -23,6 +40,7 @@ export default function MapsList() {
     currentPage,
     showDeleted,
     isLoading,
+    isCreating,
     error,
     setCurrentPage,
     setShowDeleted,
@@ -30,287 +48,142 @@ export default function MapsList() {
     deleteProject,
     refetchProjects,
   } = useProjects();
+  const industry = useIndustry().data;
   // Maps per industry for the tabs: the listed industry's total, and the server's count for each of the others.
-  const shownIndustry = useIndustry().data?.industry ?? null;
   const counts: Partial<Record<IndustryKey, number>> = Object.fromEntries(otherIndustries.map((o) => [o.industry, o.count]));
-  if (shownIndustry && totalItems !== null) counts[shownIndustry] = totalItems;
+  if (industry?.industry && totalItems !== null) counts[industry.industry] = totalItems;
+  // The tabs name the industry; without them (one industry only, or none chosen) the title does.
+  const tabsShown = !!industry && industry.can_choose && !industry.locked && industry.industry !== null;
+  const title = showDeleted ? 'Recently deleted' : tabsShown ? 'Maps' : (industryLabel ?? 'Maps');
 
-  const handlePageChange = (page: number) => {
-    setCurrentPage(page);
+  const handleCreateMap = async () => {
+    try {
+      await createProject();
+    } catch {
+      toast.error("Couldn't make a new map. Try again.");
+    }
   };
 
-  const renderPagination = () => {
-    if (totalPages <= 1) return null;
+  const handleDeleteMap = async (projectId: string, event: React.MouseEvent) => {
+    event.preventDefault(); // the card is a link: deleting must not open the map
+    event.stopPropagation();
+    try {
+      await deleteProject(projectId);
+    } catch {
+      toast.error("Couldn't delete the map. Try again.");
+    }
+  };
 
-    const getVisiblePages = () => {
-      const pages = [];
-      const maxVisible = 5;
-
-      if (totalPages <= maxVisible) {
-        for (let i = 1; i <= totalPages; i++) {
-          pages.push(i);
-        }
-      } else {
-        const start = Math.max(1, currentPage - 2);
-        const end = Math.min(totalPages, currentPage + 2);
-
-        for (let i = start; i <= end; i++) {
-          pages.push(i);
-        }
-      }
-
-      return pages;
-    };
-
-    const visiblePages = getVisiblePages();
-
-    return (
+  const pagination =
+    totalPages > 1 ? (
       <Pagination>
         <PaginationContent>
           <PaginationItem>
             <PaginationPrevious
-              onClick={() => currentPage > 1 && handlePageChange(currentPage - 1)}
+              onClick={() => currentPage > 1 && setCurrentPage(currentPage - 1)}
               className={currentPage <= 1 ? 'pointer-events-none opacity-50' : 'cursor-pointer'}
             />
           </PaginationItem>
-
-          {visiblePages.map((page) => (
-            <PaginationItem key={page}>
-              <PaginationLink onClick={() => handlePageChange(page)} isActive={currentPage === page} className="cursor-pointer">
-                {page}
-              </PaginationLink>
-            </PaginationItem>
-          ))}
-
+          {Array.from({ length: totalPages }, (_, i) => i + 1)
+            .filter((page) => totalPages <= 5 || Math.abs(page - currentPage) <= 2)
+            .map((page) => (
+              <PaginationItem key={page}>
+                <PaginationLink onClick={() => setCurrentPage(page)} isActive={currentPage === page} className="cursor-pointer">
+                  {page}
+                </PaginationLink>
+              </PaginationItem>
+            ))}
           <PaginationItem>
             <PaginationNext
-              onClick={() => currentPage < totalPages && handlePageChange(currentPage + 1)}
+              onClick={() => currentPage < totalPages && setCurrentPage(currentPage + 1)}
               className={currentPage >= totalPages ? 'pointer-events-none opacity-50' : 'cursor-pointer'}
             />
           </PaginationItem>
         </PaginationContent>
       </Pagination>
-    );
-  };
+    ) : null;
 
-  const handleCreateMap = async () => {
-    try {
-      await createProject();
-    } catch (err) {
-      // Error handling is managed by the context
-      console.error('Failed to create map:', err);
-    }
-  };
-
-  const handleDeleteMap = async (projectId: string, event: React.MouseEvent) => {
-    event.preventDefault(); // Prevent navigation
-    event.stopPropagation(); // Stop event bubbling
-
-    try {
-      await deleteProject(projectId);
-    } catch (err) {
-      // Error handling is managed by the context
-      console.error('Failed to delete map:', err);
-    }
-  };
+  const newMap = (
+    <Button onClick={handleCreateMap} disabled={isCreating || !industryKnown}>
+      {isCreating ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" /> : <Plus className="h-4 w-4" aria-hidden="true" />}
+      New map
+    </Button>
+  );
 
   return (
     <div className="w-full min-w-0 flex flex-col gap-6 p-4 sm:p-6 sm:min-w-xl">
-      <div className="flex flex-wrap items-center justify-between gap-3 sm:flex-nowrap sm:relative">
-        <div className="flex items-center gap-3">
-          <div className="flex flex-row items-center gap-2">
-            <Checkbox
-              checked={showDeleted}
-              onCheckedChange={(checked) => {
-                setShowDeleted(checked === true);
-              }}
-            />
-            <label className="text-sm font-normal text-gray-300 cursor-pointer">Show recently deleted</label>
-          </div>
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <h1 className="text-xl font-semibold sm:text-2xl">{title}</h1>
+        <div className="flex items-center gap-2">
+          <Button variant="ghost" aria-pressed={showDeleted} onClick={() => setShowDeleted(!showDeleted)} className="text-fg-muted">
+            {showDeleted ? 'Back to maps' : 'Recently deleted'}
+          </Button>
+          {newMap}
         </div>
-
-        {/* Phones: the title takes its own line above the controls; wider screens: centred between them. */}
-        <div className="order-first w-full sm:order-none sm:w-auto sm:absolute sm:left-1/2 sm:-translate-x-1/2">
-          <h1 className="text-xl sm:text-2xl font-bold">
-            {showDeleted ? 'Recently deleted' : 'Your'} {industryLabel ? `${industryLabel} maps` : 'maps'}
-            {totalItems !== null && (
-              <>
-                {' '}
-                <span className="text-gray-400">({plural(totalItems, 'project', 'projects')})</span>
-              </>
-            )}
-          </h1>
-        </div>
-
-        <TooltipProvider delayDuration={100}>
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <div>
-                <Button
-                  onClick={handleCreateMap}
-                  disabled={isLoading || !industryKnown}
-                  className="bg-caramel hover:bg-caramel-hi text-panel hover:cursor-pointer"
-                >
-                  <Plus className="mr-2 h-4 w-4" />
-                  {isLoading ? 'Creating...' : 'New Map'}
-                </Button>
-              </div>
-            </TooltipTrigger>
-          </Tooltip>
-        </TooltipProvider>
       </div>
 
       <IndustryTabs counts={counts} />
 
-      {/* Top pagination */}
-      {renderPagination()}
-
       {error ? (
-        <Card className="border-red-500 border-2 text-white flex flex-col items-center justify-center p-6">
-          <div className="h-8 w-8 mb-2 text-red-500 flex items-center justify-center">
-            <svg className="h-6 w-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-            </svg>
-          </div>
-          <h3 className="text-lg font-medium text-red-400">Error Loading Maps</h3>
-          <p className="text-sm text-gray-400 text-center mt-1">{error}</p>
-          <Button onClick={refetchProjects} className="mt-4 bg-caramel hover:bg-caramel-hi text-panel hover:cursor-pointer">
-            Try Again
+        <div role="alert" className="flex flex-col items-center gap-4 rounded-xl border border-line bg-panel p-8 text-center">
+          <p className="font-medium">Couldn't load your maps</p>
+          <Button variant="outline" onClick={refetchProjects}>
+            Try again
           </Button>
-        </Card>
+        </div>
       ) : isLoading ? (
-        <Card className="border-slate-500 text-white flex flex-col items-center justify-center p-6">
-          <div className="h-8 w-8 mb-2 text-gray-400 flex items-center justify-center">
-            <svg className="animate-spin h-6 w-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                strokeWidth={2}
-                d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"
-              />
-            </svg>
-          </div>
-          <h3 className="text-lg font-medium">Loading Maps...</h3>
-          <p className="text-sm text-gray-400 text-center mt-1">Please wait while we fetch your projects</p>
-        </Card>
+        <div role="status" className="grid gap-4 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-6">
+          <span className="sr-only">Loading maps</span>
+          {Array.from({ length: PLACEHOLDERS }, (_, i) => (
+            <div key={i} aria-hidden="true" className="h-[280px] animate-pulse rounded-xl border border-line bg-panel" />
+          ))}
+        </div>
       ) : projects.length === 0 ? (
-        <Card className="border-dashed border-2 border-slate-500 text-white flex flex-col items-center justify-center p-6">
-          <Plus className="h-8 w-8 mb-2 text-[#e2420d]" />
-          <h3 className="text-lg font-medium">{industryLabel ? `No ${industryLabel} maps yet` : 'No maps yet'}</h3>
-          <p className="text-sm text-gray-400 text-center mt-1">Create your first map to get started</p>
-          <Button
-            onClick={handleCreateMap}
-            disabled={isLoading || !industryKnown}
-            className="mt-4 bg-caramel hover:bg-caramel-hi text-panel hover:cursor-pointer"
-          >
-            {isLoading ? 'Creating...' : 'Create Your First Map'}
-          </Button>
-        </Card>
+        <p className="rounded-xl border border-dashed border-line bg-canvas/60 p-10 text-center text-fg-muted">
+          {showDeleted ? 'Nothing deleted recently' : 'No maps yet'}
+        </p>
       ) : (
-        <>
-          <>
-            <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-6">
-              {projects.map((project) => (
-                <Link to={`/project/${project.id}`} key={project.id}>
-                  <div
-                    key={project.id}
-                    className="relative h-[280px] border border-zinc-300 rounded-md overflow-hidden group cursor-pointer"
-                    style={
-                      project.soft_deleted_at === null
-                        ? {
-                            backgroundImage: `url(/api/projects/${project.id}/social.webp)`,
-                            backgroundSize: 'cover',
-                            backgroundPosition: 'center',
-                            backgroundRepeat: 'no-repeat',
-                          }
-                        : {
-                            backgroundImage: 'repeating-linear-gradient(45deg, #374151 0px, #374151 10px, #4b5563 10px, #4b5563 20px)',
-                          }
-                    }
+        <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-6">
+          {projects.map((project) => {
+            const deleted = project.soft_deleted_at != null;
+            return (
+              <Link
+                to={`/project/${project.id}`}
+                key={project.id}
+                className="group relative block h-[280px] overflow-hidden rounded-xl border border-line bg-panel bg-cover bg-center focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-caramel"
+                style={
+                  deleted
+                    ? {
+                        backgroundImage:
+                          'repeating-linear-gradient(45deg, var(--color-raised) 0px, var(--color-raised) 10px, var(--color-line) 10px, var(--color-line) 20px)',
+                      }
+                    : { backgroundImage: `url(/api/projects/${project.id}/social.webp)` }
+                }
+              >
+                {/* Darkens the map picture so the title reads on any map. */}
+                <div className="absolute inset-0 bg-gradient-to-b from-black/60 via-black/10 to-black/60 transition-colors group-hover:via-black/25" />
+                {!deleted && project.is_owner !== false && (
+                  <button
+                    type="button"
+                    onClick={(e) => handleDeleteMap(project.id, e)}
+                    aria-label={`Delete ${project.title}`}
+                    title="Delete map"
+                    className="absolute top-2 right-2 z-10 cursor-pointer rounded-md bg-canvas/80 p-1.5 text-fg-soft opacity-0 transition-opacity hover:text-bad focus-visible:opacity-100 group-hover:opacity-100"
                   >
-                    {/* Dark overlay for better text readability */}
-                    <div className="absolute inset-0 bg-black/40 group-hover:bg-black/50 transition-colors" />
-
-                    {/* Delete button - appears on hover */}
-                    {project.soft_deleted_at === null && project.is_owner !== false && (
-                      <button
-                        onClick={(e) => handleDeleteMap(project.id, e)}
-                        className="absolute top-2 right-2 p-1 bg-red-800 hover:bg-red-700 text-gray-200 hover:text-white rounded-md opacity-0 group-hover:opacity-100 transition-opacity z-10 cursor-pointer"
-                        title="Delete map"
-                      >
-                        <Trash2 className="h-4 w-4" />
-                      </button>
-                    )}
-
-                    {/* Content overlay */}
-                    <div className="relative h-full flex flex-col justify-between p-4 text-white">
-                      {/* Header */}
-                      <div>
-                        <h3 className="text-lg font-semibold line-clamp-2 mb-1">{project.title}</h3>
-                      </div>
-
-                      {/* Footer */}
-                      <div className="flex items-center justify-between space-x-2">
-                        <div className="flex items-center text-xs text-gray-200 text-shadow-md">
-                          <Clock className="mr-1 h-3 w-3" />
-                          {(() => {
-                            const lastEdited = new Date(project.most_recent_version?.last_edited || project.created_on);
-                            const now = new Date();
-                            const diffMs = now.getTime() - lastEdited.getTime();
-                            const diffSec = Math.floor(diffMs / 1000);
-                            const diffMin = Math.floor(diffSec / 60);
-                            const diffHour = Math.floor(diffMin / 60);
-                            const diffDay = Math.floor(diffHour / 24);
-
-                            let value, unit;
-                            if (diffSec < 60) {
-                              value = -diffSec;
-                              unit = 'second';
-                            } else if (diffMin < 60) {
-                              value = -diffMin;
-                              unit = 'minute';
-                            } else if (diffHour < 24) {
-                              value = -diffHour;
-                              unit = 'hour';
-                            } else {
-                              value = -diffDay;
-                              unit = 'day';
-                            }
-
-                            const rtf = new Intl.RelativeTimeFormat(undefined, {
-                              numeric: 'auto',
-                            });
-                            return `Last edited ${rtf.format(value, unit as Intl.RelativeTimeFormatUnit)}`;
-                          })()}
-                        </div>
-
-                        <Button size="sm" asChild className="bg-caramel hover:bg-caramel-hi text-panel">
-                          Open
-                        </Button>
-                      </div>
-                    </div>
-                  </div>
-                </Link>
-              ))}
-            </div>
-          </>
-        </>
+                    <Trash2 className="h-4 w-4" aria-hidden="true" />
+                  </button>
+                )}
+                <div className="relative flex h-full flex-col justify-between p-4 text-fg">
+                  <h3 className="line-clamp-2 pr-8 text-lg font-semibold">{project.title}</h3>
+                  <p className="text-xs text-fg-soft">{editedAgo(project)}</p>
+                </div>
+              </Link>
+            );
+          })}
+        </div>
       )}
 
-      {/* Bottom pagination */}
-      {renderPagination()}
-
-      {/* Add CSS to ensure consistent image alignment */}
-      <style>{`
-        [data-map-item] {
-          display: flex;
-          flex-direction: column;
-        }
-
-        [data-map-item] > div {
-          height: 100%;
-        }
-      `}</style>
+      {pagination}
     </div>
   );
 }
