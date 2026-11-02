@@ -1,3 +1,4 @@
+import { Loader2 } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { Accept } from 'react-dropzone';
 import { useDropzone } from 'react-dropzone';
@@ -438,7 +439,7 @@ export default function ProjectView() {
               }
             }
           }
-          toast.success('New satellite imagery available — map updated');
+          toast.success('New satellite picture on the map');
           return;
         }
 
@@ -559,7 +560,7 @@ export default function ProjectView() {
                   source_id: gl.source_id,
                   encoding: gl.geojson_encoding || 'unknown',
                 });
-                toast.error(`Could not render ${gl.name || 'map layer'}: ${message}`);
+                toast.error(`Couldn't draw ${gl.name || 'this layer'}.`);
                 return;
               }
               addSageGeoJsonLayer(map, gl, geojsonData);
@@ -1122,7 +1123,7 @@ export default function ProjectView() {
       return completePayload;
     },
     onSuccess: (response, { fileId }) => {
-      toast.success(`Layer "${response.name}" uploaded successfully! Navigating to new map...`);
+      toast.success(`${response.name} added`);
       const startedAt = uploadStartedAtRef.current.get(fileId);
       if (startedAt) {
         trackDuration('file_upload_succeeded', startedAt, {
@@ -1168,7 +1169,7 @@ export default function ProjectView() {
     onError: (error, { file, fileId }) => {
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
       updateUploadFile(fileId, { status: 'error', error: errorMessage });
-      toast.error(`Error uploading ${file.name}: ${errorMessage}`);
+      toast.error(`Couldn't upload ${file.name}: ${errorMessage}`);
       const startedAt = uploadStartedAtRef.current.get(fileId);
       trackError('file_upload_failed', error, {
         project_id: projectId,
@@ -1262,8 +1263,7 @@ export default function ProjectView() {
     return (
       <div className="flex items-center justify-center min-h-screen bg-background">
         <div className="text-center max-w-md px-6">
-          <h1 className="text-2xl font-bold mb-3">Sign in to continue</h1>
-          <p className="text-muted-foreground mb-4">Your session has expired or you need to sign in to view this project.</p>
+          <h1 className="text-xl font-medium mb-4">You're signed out</h1>
           <button
             type="button"
             className="inline-flex items-center rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90"
@@ -1282,11 +1282,11 @@ export default function ProjectView() {
 
   if (loadState.kind === 'error') {
     return (
-      <div className="p-6">
-        <h1 className="text-2xl font-bold mb-4">Error Loading Map</h1>
-        <p>Failed to load map data: {loadState.message}</p>
-        <a href="/" className="text-blue-500 hover:underline">
-          Back to Maps
+      // Why it failed is in loadState.message (and the browser's error log); a person can only go back.
+      <div role="alert" className="flex min-h-screen w-full flex-col items-center justify-center gap-4 bg-canvas p-6 text-center">
+        <h1 className="text-xl font-medium">Couldn't open this map</h1>
+        <a href="/" className="text-sm text-caramel hover:text-caramel-hi">
+          Back to maps
         </a>
       </div>
     );
@@ -1294,8 +1294,9 @@ export default function ProjectView() {
 
   if (loadState.kind === 'loading') {
     return (
-      <div className="p-6">
-        <h1 className="text-2xl font-bold mb-4">Loading your map…</h1>
+      <div role="status" className="flex min-h-screen w-full items-center justify-center bg-canvas text-fg-subtle">
+        <Loader2 className="h-5 w-5 animate-spin" aria-hidden="true" />
+        <span className="sr-only">Opening the map</span>
       </div>
     );
   }

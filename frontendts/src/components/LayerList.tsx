@@ -1,6 +1,6 @@
 import { apiFetch } from '@mundi/ee';
 import { useMutation } from '@tanstack/react-query';
-import { ChevronLeft, ChevronRight, FileText, Plus, SignalHigh, SignalLow, Upload } from 'lucide-react';
+import { ChevronLeft, ChevronRight, FileText, Plus, SignalLow, Upload } from 'lucide-react';
 import { Map as MLMap } from 'maplibre-gl';
 import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
@@ -156,43 +156,21 @@ const LayerList: React.FC<LayerListProps> = ({
     },
     onError: (error) => {
       console.error('Error renaming layer:', error);
-      toast.error(`Error renaming layer: ${error.message}`);
+      toast.error("Couldn't rename the layer. Try again.");
     },
   });
 
   return (
-    <Card className="absolute top-4 left-4 max-h-[60vh] overflow-auto py-2 rounded-sm border-0 gap-2 max-w-72 w-full">
+    <Card className="absolute top-4 left-4 max-h-[60vh] overflow-auto py-2 rounded-xl border border-line bg-panel gap-2 max-w-72 w-full">
       <CardHeader className="px-2">
         <CardTitle className="text-base flex justify-between items-center gap-2">
           <div className="flex items-center gap-2">
-            <Tooltip>
-              <TooltipTrigger>
-                {!isInConversation || readyState === ReadyState.OPEN ? (
-                  <span className="text-green-300 inline-block">
-                    <SignalHigh />
-                  </span>
-                ) : (
-                  <span className="text-red-300 inline-block">
-                    <SignalLow />
-                  </span>
-                )}
-              </TooltipTrigger>
-              <TooltipContent>
-                <div className="text-sm flex space-x-2">
-                  {isInConversation && (
-                    <div className={readyState === ReadyState.OPEN ? 'text-green-300' : 'text-red-300'}>
-                      chat:{' '}
-                      {readyState === ReadyState.OPEN ? (
-                        <SignalHigh className="inline-block h-4 w-4" />
-                      ) : (
-                        <SignalLow className="inline-block h-4 w-4" />
-                      )}
-                    </div>
-                  )}
-                </div>
-              </TooltipContent>
-            </Tooltip>
-            <EditableTitle projectId={currentMapData.project_id} title={project?.title} placeholder="Enter map title here" />
+            {isInConversation && readyState !== ReadyState.OPEN && (
+              <span role="status" aria-label="Reconnecting to Sage" title="Reconnecting to Sage" className="text-bad">
+                <SignalLow className="h-4 w-4" aria-hidden="true" />
+              </span>
+            )}
+            <EditableTitle projectId={currentMapData.project_id} title={project?.title} placeholder="Untitled map" />
             {currentMapData.project_id && <ShareProject projectId={currentMapData.project_id} />}
           </div>
         </CardTitle>
@@ -205,18 +183,15 @@ const LayerList: React.FC<LayerListProps> = ({
               const hasActiveAction = activeActions.some((action) => action.layer_id === layerDetails.id);
               const num_highlighted = 0;
 
-              const sridDisplay = layerDetails.metadata?.original_srid ? `EPSG:${layerDetails.metadata.original_srid}` : undefined;
-
+              // The picture beside the name already says what kind of layer it is; shapes show how many there are.
               const normalText =
-                layerDetails.type === 'raster'
-                  ? 'Raster'
-                  : layerDetails.type === 'point_cloud'
-                    ? 'Point Cloud'
-                    : num_highlighted > 0
-                      ? `${num_highlighted} / ${layerDetails.feature_count ?? '—'}`
-                      : String(layerDetails.feature_count ?? '—');
-
-              const hoverText = sridDisplay;
+                layerDetails.type === 'raster' || layerDetails.type === 'point_cloud'
+                  ? undefined
+                  : num_highlighted > 0
+                    ? `${num_highlighted} / ${layerDetails.feature_count ?? '—'}`
+                    : layerDetails.feature_count != null
+                      ? String(layerDetails.feature_count)
+                      : undefined;
 
               // Check for errors associated with this layer
               const layerErrors = getLayerErrors(layerDetails.id);
@@ -224,10 +199,10 @@ const LayerList: React.FC<LayerListProps> = ({
 
               const getNameClassName = () => {
                 if (hiddenLayerIDs.includes(layerDetails.id)) {
-                  return 'line-through text-gray-400';
+                  return 'line-through text-fg-subtle';
                 }
                 if (hasErrors) {
-                  return 'text-red-300';
+                  return 'text-bad';
                 }
                 return '';
               };
@@ -241,7 +216,6 @@ const LayerList: React.FC<LayerListProps> = ({
                     name={layerDetails.name}
                     nameClassName={getNameClassName()}
                     isActive={hasActiveAction}
-                    hoverText={hoverText}
                     normalText={normalText}
                     legendSymbol={
                       <LayerLegendSymbol layerDetails={layerDetails} isLoading={!!loadingLayerIDs?.includes(layerDetails.id)} />
@@ -295,9 +269,8 @@ const LayerList: React.FC<LayerListProps> = ({
                               ],
                               { padding: 50, animate: true },
                             );
-                            toast.success('Zoomed to layer');
                           } else {
-                            toast.info('Layer bounds not available for zoom.');
+                            toast.info('This layer has no extent to zoom to.');
                           }
                         },
                       },
@@ -329,7 +302,7 @@ const LayerList: React.FC<LayerListProps> = ({
                               }
                             })
                             .then((data) => {
-                              toast.success(`Layer successfully removed! Navigating to new map...`);
+                              toast.success('Layer removed');
                               // Navigate to the new child map if dag_child_map_id is present
                               if (data.dag_child_map_id) {
                                 setTimeout(() => {
@@ -342,7 +315,7 @@ const LayerList: React.FC<LayerListProps> = ({
                             })
                             .catch((err) => {
                               console.error('Error deleting layer:', err);
-                              toast.error(`Error deleting layer: ${err.message}`);
+                              toast.error("Couldn't remove the layer. Try again.");
                             });
                         },
                       },
@@ -353,50 +326,37 @@ const LayerList: React.FC<LayerListProps> = ({
             })}
           </ul>
         ) : (
-          <p className="text-sm text-slate-500 px-2">No layers to display.</p>
+          <p className="text-sm text-fg-muted px-2">No layers yet</p>
         )}
 
         {/* Upload Progress section */}
         {uploadingFiles && uploadingFiles.length > 0 && (
           <>
-            <div className="flex items-center px-2 py-2">
-              <div className="flex-1 h-px bg-gray-300 dark:bg-gray-600"></div>
-              <span className="px-3 text-xs font-medium text-gray-600 dark:text-gray-400">UPLOADING</span>
-              <div className="flex-1 h-px bg-gray-300 dark:bg-gray-600"></div>
-            </div>
-            <ul className="space-y-2 text-sm px-2">
+            <ul className="mt-2 space-y-2 text-sm px-2" aria-label="Uploads">
               {uploadingFiles.map((uploadingFile) => (
-                <li key={uploadingFile.id} className="border border-gray-200 dark:border-gray-700 rounded-lg p-2">
+                <li key={uploadingFile.id} className="border border-line rounded-lg p-2">
                   <div className="flex items-center justify-between mb-2">
-                    <span className="text-sm font-medium text-gray-900 dark:text-gray-100 truncate">{uploadingFile.file.name}</span>
-                    <span className="text-xs text-gray-500 dark:text-gray-400 flex-shrink-0">
+                    <span className="text-sm font-medium text-fg truncate">{uploadingFile.file.name}</span>
+                    <span className="text-xs text-fg-muted flex-shrink-0">
                       {uploadingFile.status === 'uploading' && `${uploadingFile.progress}%`}
-                      {uploadingFile.status === 'completed' && '✓'}
-                      {uploadingFile.status === 'error' && '✗'}
+                      {uploadingFile.status === 'completed' && <span aria-label="Uploaded">✓</span>}
+                      {uploadingFile.status === 'error' && <span aria-label="Failed">✗</span>}
                     </span>
                   </div>
 
                   {uploadingFile.status === 'uploading' && (
                     <>
-                      <div className="w-full bg-gray-200 dark:bg-gray-700 rounded-full h-1.5">
+                      <div className="w-full bg-raised rounded-full h-1.5">
                         <div
-                          className="bg-blue-600 h-1.5 rounded-full transition-all duration-300"
+                          className="bg-caramel h-1.5 rounded-full transition-all duration-300"
                           style={{ width: `${uploadingFile.progress}%` }}
                         />
                       </div>
-                      {uploadingFile.phase && (
-                        <div className="mt-1 text-xs text-gray-500 dark:text-gray-400 truncate">{uploadingFile.phase}</div>
-                      )}
+                      {uploadingFile.phase && <div className="mt-1 text-xs text-fg-muted truncate">{uploadingFile.phase}</div>}
                     </>
                   )}
 
-                  {uploadingFile.status === 'completed' && (
-                    <div className="text-xs text-green-600 dark:text-green-400">Upload completed</div>
-                  )}
-
-                  {uploadingFile.status === 'error' && (
-                    <div className="text-xs text-red-600 dark:text-red-400">{uploadingFile.error || 'Upload failed'}</div>
-                  )}
+                  {uploadingFile.status === 'error' && <div className="text-xs text-bad">{uploadingFile.error || "Couldn't upload"}</div>}
                 </li>
               ))}
             </ul>
@@ -404,14 +364,15 @@ const LayerList: React.FC<LayerListProps> = ({
         )}
       </CardContent>
       <CardFooter className="flex justify-between items-center px-2">
-        <div className="flex items-center gap-1">
+        <div className={`flex items-center gap-1 ${zoomHistory.length > 1 ? '' : 'invisible'}`}>
           <TooltipProvider>
             <Tooltip>
               <TooltipTrigger asChild>
                 <Button
                   size="sm"
                   variant="ghost"
-                  className="p-0.5 hover:cursor-pointer hover:bg-gray-200 dark:hover:bg-gray-600"
+                  className="p-0.5 hover:cursor-pointer hover:bg-raised"
+                  aria-label="Previous place"
                   disabled={zoomHistoryIndex <= 0}
                   onClick={() => {
                     if (zoomHistoryIndex > 0 && mapRef.current) {
@@ -433,22 +394,22 @@ const LayerList: React.FC<LayerListProps> = ({
                     }
                   }}
                 >
-                  <ChevronLeft className="h-4 w-4" />
+                  <ChevronLeft className="h-4 w-4" aria-hidden="true" />
                 </Button>
               </TooltipTrigger>
               <TooltipContent>
-                <p>Previous location</p>
+                <p>Previous place</p>
               </TooltipContent>
             </Tooltip>
           </TooltipProvider>
-          <span className="text-xs text-slate-500 dark:text-gray-400">Zoom</span>
           <TooltipProvider>
             <Tooltip>
               <TooltipTrigger asChild>
                 <Button
                   size="sm"
                   variant="ghost"
-                  className="p-0.5 hover:cursor-pointer hover:bg-gray-200 dark:hover:bg-gray-600"
+                  className="p-0.5 hover:cursor-pointer hover:bg-raised"
+                  aria-label="Next place"
                   disabled={zoomHistoryIndex >= zoomHistory.length - 1}
                   onClick={() => {
                     if (zoomHistoryIndex < zoomHistory.length - 1 && mapRef.current) {
@@ -470,11 +431,11 @@ const LayerList: React.FC<LayerListProps> = ({
                     }
                   }}
                 >
-                  <ChevronRight className="h-4 w-4" />
+                  <ChevronRight className="h-4 w-4" aria-hidden="true" />
                 </Button>
               </TooltipTrigger>
               <TooltipContent>
-                <p>Next location</p>
+                <p>Next place</p>
               </TooltipContent>
             </Tooltip>
           </TooltipProvider>
@@ -485,8 +446,8 @@ const LayerList: React.FC<LayerListProps> = ({
               <Tooltip>
                 <TooltipTrigger asChild>
                   <DropdownMenuTrigger asChild>
-                    <Button size="sm" variant="ghost" className="p-0.5 hover:cursor-pointer hover:bg-gray-200 dark:hover:bg-gray-600">
-                      <Plus className="h-4 w-4" />
+                    <Button size="sm" variant="ghost" aria-label="Add data" className="p-0.5 hover:cursor-pointer hover:bg-raised">
+                      <Plus className="h-4 w-4" aria-hidden="true" />
                     </Button>
                   </DropdownMenuTrigger>
                 </TooltipTrigger>
@@ -510,7 +471,7 @@ const LayerList: React.FC<LayerListProps> = ({
                   <FileText className="h-4 w-4 mr-2 mt-0.5 shrink-0" />
                   <span>
                     <span className="block">Add documents for Sage</span>
-                    <span className="block text-xs text-muted-foreground">Reports, policies or guides Sage can read and quote</span>
+                    <span className="block text-xs text-muted-foreground">PDF, Word, Excel, PowerPoint, text or CSV</span>
                   </span>
                 </DropdownMenuItem>
               </DropdownMenuContent>

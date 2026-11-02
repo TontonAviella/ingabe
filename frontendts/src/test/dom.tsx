@@ -79,12 +79,16 @@ export function unnamedControls(): string[] {
       const pressable = el instanceof HTMLInputElement && ['submit', 'button', 'reset'].includes(el.type);
       const field = !pressable && (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement || el instanceof HTMLSelectElement);
       // A field is named by its <label>s, never by what was typed in it; an <input type="submit"> by its value;
-      // anything else by its text, including the alt text of a picture inside it.
+      // anything else by its text, including the name of a picture inside it (alt, or a named role="img" like the logo).
       const text = field
         ? [...(el.labels ?? [])].map((l) => l.textContent).join(' ')
         : pressable
           ? (el as HTMLInputElement).value
-          : [el.textContent, ...[...el.querySelectorAll('img[alt]')].map((img) => img.getAttribute('alt'))].join(' ');
+          : [
+              el.textContent,
+              ...[...el.querySelectorAll('img[alt]')].map((img) => img.getAttribute('alt')),
+              ...[...el.querySelectorAll('[role="img"][aria-label]')].map((img) => img.getAttribute('aria-label')),
+            ].join(' ');
       return !normalise([el.getAttribute('aria-label'), labelledBy, text, el.getAttribute('title')].join(' '));
     })
     .map((el) => el.outerHTML.slice(0, 120));

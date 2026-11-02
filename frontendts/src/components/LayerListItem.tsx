@@ -155,6 +155,7 @@ export const LayerListItem: React.FC<LayerListItemProps> = ({
             <Input
               value={nameValue}
               onChange={handleNameChange}
+              aria-label="Layer name"
               className={`border-0 rounded-none !bg-transparent p-0 h-auto !text-sm font-medium focus-visible:ring-0 focus-visible:ring-offset-0 shadow-none outline-none flex-1 ${nameClassName}`}
               title={name}
             />
@@ -226,13 +227,15 @@ export const LayerListItem: React.FC<LayerListItemProps> = ({
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <button
-                className="w-5 h-5 flex items-center justify-center rounded cursor-pointer opacity-0 group-hover:opacity-100 transition-all hover:bg-slate-200 dark:hover:bg-gray-500"
+                type="button"
+                aria-label={`Options for ${name}`}
+                className="w-5 h-5 flex items-center justify-center rounded cursor-pointer opacity-0 group-hover:opacity-100 focus-visible:opacity-100 data-[state=open]:opacity-100 transition-all hover:bg-raised"
                 onClick={(e) => {
                   e.stopPropagation();
                   onClick?.(e);
                 }}
               >
-                <MoreHorizontal className="w-4 h-4 text-gray-400 hover:text-white transition-colors" />
+                <MoreHorizontal className="w-4 h-4 text-fg-muted hover:text-fg transition-colors" aria-hidden="true" />
               </button>
             </DropdownMenuTrigger>
             <DropdownMenuContent>
