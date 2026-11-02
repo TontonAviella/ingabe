@@ -20,6 +20,8 @@ interface ProjectsContextValue {
   industryLabel: string | null;
   otherIndustries: ProjectList['other_industries'];
   isLoading: boolean;
+  // True only while a new map is being made (not while the list loads).
+  isCreating: boolean;
   error: string | null;
 
   // Actions
@@ -200,6 +202,7 @@ export function ProjectsProvider({ children }: ProjectsProviderProps) {
     industryLabel: paginatedData ? paginatedData.industry_label : loadingLabel,
     otherIndustries: paginatedData?.other_industries ?? [],
     isLoading: isLoading || waitingForIndustry,
+    isCreating: createProjectMutation.isPending,
     error: queryError instanceof Error ? queryError.message : null,
 
     createProject: async () => {
