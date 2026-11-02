@@ -1,7 +1,7 @@
 import { act } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { CardsPanel } from '@/components/CardAnswer';
-import { waitingOnPhoto } from '@/components/DroneCards';
+import { StatusLine, waitingOnPhoto } from '@/components/DroneCards';
 import type { DroneCard } from '@/hooks/useDroneCards';
 import { byButton, click, mount, unmountAll } from '@/test/dom';
 
@@ -109,5 +109,23 @@ describe('what the hidden button says about a drone photo', () => {
     expect(waiting.label).toBe('1 question about this photo');
     expect(waiting.teasers.map((t) => t.id)).toEqual(['a']);
     expect(waitingOnPhoto(null).label).toBe('Reading your photo');
+  });
+});
+
+// Roger, 2026-11-02 (simplicity pass): five cards each saying "Answer ready" was noise. Ready is the normal case.
+describe("a card's status line", () => {
+  it('says nothing for a ready answer', () => {
+    show(<StatusLine card={card('a', 'ready', { status_label: 'Answer ready' })} />);
+    expect(document.body.textContent).toBe('');
+  });
+
+  it('says "New" alone for a new ready answer', () => {
+    show(<StatusLine card={card('a', 'ready', { status_label: 'Answer ready', new: true })} />);
+    expect(document.body.textContent).toBe('New');
+  });
+
+  it('keeps the words when the answer is not (fully) ready', () => {
+    show(<StatusLine card={card('a', 'partly', { status_label: 'Partly answered' })} />);
+    expect(document.body.textContent).toBe('Partly answered');
   });
 });

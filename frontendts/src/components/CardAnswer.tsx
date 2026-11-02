@@ -78,7 +78,7 @@ export function CardButton({
     <button
       type="button"
       onClick={onClick}
-      className="w-full text-left flex flex-col gap-1.5 rounded-[18px] bg-raised border border-white/[0.07] px-4 py-3.5 hover:border-caramel/50 focus-visible:outline-2 focus-visible:outline-caramel transition-colors cursor-pointer"
+      className="w-full text-left flex flex-col gap-1.5 rounded-[18px] bg-raised border border-line px-4 py-3.5 hover:border-caramel/50 focus-visible:outline-2 focus-visible:outline-caramel transition-colors cursor-pointer"
     >
       {status}
       <span className="text-[17px] font-bold leading-snug tracking-[-0.01em] text-fg">{title}</span>
@@ -415,7 +415,8 @@ export function CardsPanel({
   children,
 }: {
   ariaLabel: string;
-  heading: string;
+  /** A small label above the content; left out when the content's own title says what the panel is. */
+  heading?: string;
   hideLabel: string;
   collapsed: boolean;
   /** What is waiting, on the button while the panel is hidden ("4 answers ready"). */
@@ -449,20 +450,25 @@ export function CardsPanel({
     <section
       aria-label={ariaLabel}
       style={{ fontFamily: PANEL_FONT }}
-      className={`absolute z-30 inset-x-2 bottom-[100px] max-h-[52vh] sm:inset-auto sm:bottom-auto ${panelTop} sm:right-14 sm:w-[372px] sm:max-h-[calc(100%-328px)] flex flex-col rounded-[26px] bg-canvas/[0.9] backdrop-blur-2xl border border-white/[0.09] shadow-2xl text-fg ${historyOpen ? 'max-xl:hidden' : ''}`}
+      className={`absolute z-30 inset-x-2 bottom-[100px] max-h-[52vh] sm:inset-auto sm:bottom-auto ${panelTop} sm:right-14 sm:w-[372px] sm:max-h-[calc(100%-328px)] flex flex-col rounded-[26px] bg-canvas/[0.9] backdrop-blur-2xl border border-line shadow-2xl text-fg ${historyOpen ? 'max-xl:hidden' : ''}`}
     >
-      <div className="flex items-center justify-between px-5 pt-4 pb-1">
-        <span className="text-[12px] font-semibold uppercase tracking-[0.08em] text-caramel">{heading}</span>
+      <div className={`flex items-center px-5 pt-4 pb-1 ${heading ? 'justify-between' : 'absolute top-0 right-0 z-10 px-3 pt-3'}`}>
+        {heading && <span className="text-[12px] font-semibold uppercase tracking-[0.08em] text-caramel">{heading}</span>}
         <button
           type="button"
           aria-label={hideLabel}
           onClick={() => onCollapsedChange(true)}
           className="flex size-8 items-center justify-center rounded-full text-fg-muted hover:bg-white/10 hover:text-fg cursor-pointer"
         >
-          <X className="size-4" />
+          <X className="size-4" aria-hidden="true" />
         </button>
       </div>
-      <div className="overflow-y-auto px-5 pb-5 pt-1">{children}</div>
+      {/* The bottom edge fades, so a list that goes on reads as one to scroll, not as cut off. */}
+      <div
+        className={`overflow-y-auto px-5 pb-6 ${heading ? 'pt-1' : 'pt-5'} [mask-image:linear-gradient(to_bottom,black_calc(100%-28px),transparent)]`}
+      >
+        {children}
+      </div>
     </section>
   );
 }

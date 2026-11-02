@@ -151,14 +151,16 @@ function byZoom<T>(far: Paint<T>, near: Paint<T>): ExpressionSpecification {
   return ['interpolate', ['linear'], ['zoom'], FAR_ZOOM, far, NEAR_ZOOM, near] as ExpressionSpecification;
 }
 
-function StatusLine({ card }: { card: DroneCard }) {
+export function StatusLine({ card }: { card: DroneCard }) {
+  // Ready is the normal case: a card says nothing about its state unless it is new or not (fully) answered yet.
+  if (card.status === 'ready' && !card.new) return null;
   return (
     <span className="inline-flex items-center gap-1.5 text-[12px] font-semibold text-fg-soft">
       {card.new && (
         <span className="rounded-full bg-caramel px-1.5 py-px text-[10.5px] font-bold uppercase tracking-[0.04em] text-panel">New</span>
       )}
       <StatusIcon status={card.status} />
-      {card.status_label}
+      {card.status !== 'ready' && card.status_label}
     </span>
   );
 }
@@ -435,7 +437,7 @@ function DeckView({
             aria-label="Drone photo"
             value={layerId}
             onChange={(e) => onPickPhoto(e.target.value)}
-            className="bg-transparent text-[22px] font-bold tracking-[-0.015em] text-fg outline-none cursor-pointer max-w-full"
+            className="bg-transparent text-[22px] font-bold tracking-[-0.015em] text-fg outline-none cursor-pointer max-w-full pr-8"
           >
             {photos.map((p) => (
               <option key={p.id} value={p.id} className="bg-panel text-base">
@@ -444,7 +446,7 @@ function DeckView({
             ))}
           </select>
         ) : (
-          <h2 className="m-0 text-[22px] font-bold leading-tight tracking-[-0.015em] text-fg break-words">{photo.name}</h2>
+          <h2 className="m-0 pr-8 text-[22px] font-bold leading-tight tracking-[-0.015em] text-fg break-words">{photo.name}</h2>
         )}
         {photo.place && <span className="text-[13px] text-fg-soft">{photo.place}</span>}
         <span className="text-[13px] text-fg-muted">{photo.summary}</span>
@@ -467,24 +469,21 @@ function DeckView({
       </label>
 
       <div className="flex flex-col gap-2.5">
-        <div className="flex items-center justify-between">
-          <span className="text-[13px] font-semibold text-fg-muted">For this photo</span>
-          <button
-            type="button"
-            onClick={onShuffle}
-            className="inline-flex items-center gap-1.5 min-h-8 px-2.5 rounded-full text-[13px] font-semibold text-caramel hover:bg-white/5 cursor-pointer"
-          >
-            <Shuffle className="size-3.5" />
-            Other questions
-          </button>
-        </div>
         {deck.for_you.map((card) => (
           <DroneCardButton key={card.id} card={card} onOpen={onOpen} />
         ))}
+        <button
+          type="button"
+          onClick={onShuffle}
+          className="inline-flex items-center gap-1.5 self-start min-h-8 px-2.5 rounded-full text-[13px] font-semibold text-fg-muted hover:bg-white/5 hover:text-fg cursor-pointer"
+        >
+          <Shuffle className="size-3.5" aria-hidden="true" />
+          Other questions
+        </button>
       </div>
 
       <div className="flex flex-col gap-2.5">
-        <AskSageChips asks={deck.ask_sage} onAsk={onAskSage} label="Ask Sage about this photo" />
+        <AskSageChips asks={deck.ask_sage} onAsk={onAskSage} label="Ask Sage" />
         <AskSageBox othersAsked={othersAsked.data?.questions ?? []} onAsk={askOwn} />
       </div>
 
@@ -499,18 +498,16 @@ function DeckView({
           <ChevronDown className={`size-5 text-fg-muted transition-transform ${servicesOpen ? 'rotate-180' : ''}`} />
         </button>
         {servicesOpen && (
-          <div className="flex flex-col rounded-[18px] bg-canvas border border-white/[0.06]">
+          <div className="flex flex-col rounded-[18px] bg-canvas border border-line">
             {deck.services.map((service) =>
               service.cards.map((card) => (
                 <button
                   key={card.id}
                   type="button"
                   onClick={() => onOpen(card.id)}
-                  className="flex flex-col gap-0.5 text-left px-4 py-3 border-b border-white/[0.07] last:border-b-0 hover:bg-white/[0.03] cursor-pointer"
+                  className="flex flex-col gap-0.5 text-left px-4 py-3 border-b border-line last:border-b-0 hover:bg-white/[0.03] cursor-pointer"
                 >
-                  <span className="text-[11px] font-semibold uppercase tracking-[0.06em] text-caramel">
-                    {service.service} · {service.name}
-                  </span>
+                  <span className="text-[12px] text-fg-muted">{service.name}</span>
                   <span className="text-[14px] font-semibold text-fg">{card.question}</span>
                   <StatusLine card={card} />
                 </button>
@@ -723,7 +720,6 @@ export function DroneCards({
   return (
     <CardsPanel
       ariaLabel="Questions for this drone photo"
-      heading="Ask this photo"
       hideLabel="Hide the questions"
       collapsed={collapsed}
       collapsedLabel={waiting.label}
