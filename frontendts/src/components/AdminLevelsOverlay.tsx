@@ -116,7 +116,7 @@ class AdminOutlinesControl implements IControl {
     this._button.title = label;
     this._button.setAttribute('aria-label', label);
     this._button.setAttribute('aria-pressed', String(on));
-    this._button.style.background = on ? '#fde68a' : 'transparent';
+    this._button.style.background = on ? 'var(--color-caramel)' : 'transparent';
   }
 }
 

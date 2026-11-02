@@ -9,7 +9,6 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
-  DropdownMenuLabel,
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
@@ -19,7 +18,6 @@ import {
   SidebarFooter,
   SidebarGroup,
   SidebarGroupContent,
-  SidebarGroupLabel,
   SidebarHeader,
   SidebarMenu,
   SidebarMenuButton,
@@ -41,16 +39,12 @@ function IndustryMenu() {
     <SidebarMenuItem>
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
-          <SidebarMenuButton tooltip={`Your industry: ${current?.label ?? ''}`}>
+          <SidebarMenuButton tooltip={current?.label} aria-label={`Industry: ${current?.label ?? ''}`}>
             {pending ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Mountain className="w-4 h-4 mr-2" />}
-            <span className="flex min-w-0 flex-col text-left leading-tight">
-              <span className="text-xs text-gray-500">Your industry</span>
-              <span className="truncate text-sm">{current?.label}</span>
-            </span>
+            <span className="truncate text-sm">{current?.label}</span>
           </SidebarMenuButton>
         </DropdownMenuTrigger>
         <DropdownMenuContent side="right" align="start" className="min-w-52">
-          <DropdownMenuLabel>Switch industry</DropdownMenuLabel>
           {data.options.map((option) => (
             <DropdownMenuItem
               key={option.key}
@@ -92,12 +86,18 @@ export function AppSidebar() {
             </a>
             <Tooltip>
               <TooltipTrigger asChild>
-                <Button variant="ghost" size="icon" onClick={toggleSidebar} className="w-8 h-8 mt-2 cursor-pointer">
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  onClick={toggleSidebar}
+                  aria-label="Open sidebar"
+                  className="w-8 h-8 mt-2 cursor-pointer"
+                >
                   <PanelRightOpen className="w-4 h-4 scale-x-[-1]" />
                 </Button>
               </TooltipTrigger>
               <TooltipContent side="right">
-                <p>Expand Sidebar</p>
+                <p>Open sidebar</p>
               </TooltipContent>
             </Tooltip>
           </>
@@ -109,12 +109,12 @@ export function AppSidebar() {
             </a>
             <Tooltip>
               <TooltipTrigger asChild>
-                <Button variant="ghost" size="icon" onClick={toggleSidebar} className="w-8 h-8 cursor-pointer">
+                <Button variant="ghost" size="icon" onClick={toggleSidebar} aria-label="Close sidebar" className="w-8 h-8 cursor-pointer">
                   <PanelRightClose className="w-4 h-4 scale-x-[-1]" />
                 </Button>
               </TooltipTrigger>
               <TooltipContent side="right">
-                <p>Collapse Sidebar</p>
+                <p>Close sidebar</p>
               </TooltipContent>
             </Tooltip>
           </div>
@@ -122,7 +122,6 @@ export function AppSidebar() {
       </SidebarHeader>
       <SidebarContent>
         <SidebarGroup>
-          <SidebarGroupLabel>Projects</SidebarGroupLabel>
           <SidebarGroupContent>
             <SidebarMenu>
               <SidebarMenuItem>
@@ -139,7 +138,7 @@ export function AppSidebar() {
                     <SidebarMenuItem key={project.id}>
                       <SidebarMenuButton asChild>
                         <Link to={`/project/${project.id}`} className="flex items-center justify-between w-full">
-                          <span className="text-sm">{project.title || `Untitled Map`}</span>
+                          <span className="text-sm">{project.title || 'Untitled map'}</span>
                           <span className="text-xs text-muted-foreground ml-2">
                             {formatRelativeTime(project.most_recent_version?.last_edited)}
                           </span>
@@ -166,19 +165,17 @@ export function AppSidebar() {
           <AccountMenu />
         </Suspense>
       </SidebarContent>
-      <SidebarFooter className="p-1 border-t border-border border-gray-700">
-        <div className="text-center">
-          <span className="text-muted-foreground text-xs">
-            {state === 'collapsed' ? (
-              <IngabeIcon className="w-6 h-6 mx-auto my-2" />
-            ) : (
-              <a href={import.meta.env.VITE_NOZA_SITE_URL || 'https://nozalabs.rw'} className="hover:text-foreground">
-                © {new Date().getFullYear()} Noza Labs
-              </a>
-            )}
-          </span>
-        </div>
-      </SidebarFooter>
+      {/* Collapsed, the footer would only repeat the logo at the top. */}
+      {state === 'expanded' && (
+        <SidebarFooter className="p-1 border-t border-line">
+          <a
+            href={import.meta.env.VITE_NOZA_SITE_URL || 'https://nozalabs.rw'}
+            className="block py-1 text-center text-xs text-fg-subtle hover:text-fg"
+          >
+            © {new Date().getFullYear()} Noza Labs
+          </a>
+        </SidebarFooter>
+      )}
     </Sidebar>
   );
 }
