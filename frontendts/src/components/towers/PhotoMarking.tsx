@@ -81,26 +81,23 @@ const LINK = 'bg-transparent border-0 p-0 text-[13px] text-fg-muted underline un
 const EYEBROW = 'text-[11px] font-bold uppercase tracking-[0.12em] text-caramel';
 const ALERT = 'm-0 rounded-[12px] bg-caramel-hi/10 border border-caramel-hi/30 px-3 py-2 text-[14px] text-caramel-hi';
 
-/** How a question's status looks: the pill's colours by the server's status. */
+/** How a question's status looks. Caramel only where the reader has something to do (or it is being worked on);
+ * every other state is one quiet pill, and a ready answer shows none: ready is the normal case. */
 const PILL: Record<string, string> = {
   needs_check: 'bg-caramel text-canvas',
-  ready: 'bg-fg text-canvas',
-  partly: 'bg-fg/80 text-canvas',
   working: 'border border-caramel/50 text-caramel-hi',
-  needs_flight: 'border border-[#8FD3FF]/40 bg-[#8FD3FF]/10 text-[#8FD3FF]',
-  needs_camera: 'border border-[#FF8FB4]/40 bg-[#FF8FB4]/10 text-[#FF8FB4]',
-  to_build: 'border border-white/15 text-fg-muted',
-  cant_tell: 'border border-white/15 text-fg-muted',
+  cant_tell: 'border border-line text-fg-muted',
 };
 
 function takenLine(photo: InspectionPhoto): string | null {
   if (!photo.taken_at) return null;
   const when = new Date(photo.taken_at);
-  return `Taken ${Number.isNaN(when.getTime()) ? photo.taken_at : when.toLocaleString()}`;
+  // Day month year (6 Oct 2020): "10/6/2020" reads as June in Rwanda; the time of day adds nothing here.
+  return `Taken ${Number.isNaN(when.getTime()) ? photo.taken_at : when.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}`;
 }
 
 function Pill({ status, label }: { status: string; label: string }) {
-  if (!label) return null;
+  if (!label || status === 'ready') return null;
   return (
     <span className={`shrink-0 whitespace-nowrap rounded-full px-2 py-[3px] text-[11px] font-bold ${PILL[status] ?? PILL.cant_tell}`}>
       {label}
@@ -365,7 +362,7 @@ function QuestionDetail({
         </section>
       )}
       {(question.needs || answer.data?.todo) && (
-        <section className="flex flex-col gap-1 rounded-[12px] border border-[#8FD3FF]/25 bg-[#8FD3FF]/[0.07] px-3 py-2.5">
+        <section className="flex flex-col gap-1 rounded-[12px] border border-line bg-raised px-3 py-2.5">
           <h3 className="m-0 text-[11px] font-bold uppercase tracking-[0.1em] text-fg-subtle">
             {question.needs ? 'What would answer it' : 'What to do'}
           </h3>
@@ -851,9 +848,8 @@ function PhotoWorkspace({
   // --- The line on the photo ---
   const suggested = suggestedLine(work.data, scanned);
   let sentence: React.ReactNode = null;
-  if (view.kind === 'questions') sentence = questions.data?.summary ?? null;
-  else if (view.kind === 'question' && question) sentence = question.on_photo;
-  else if (view.kind === 'check' && shownStep !== 'done' && suggested.some)
+  // On the questions the panel already says what the photo shows; the photo carries a line only while checking.
+  if (view.kind === 'check' && shownStep !== 'done' && suggested.some)
     sentence = (
       <>
         The model suggests <b>{suggested.some}</b> here
@@ -907,10 +903,7 @@ function PhotoWorkspace({
   } else if (view.kind === 'questions' && questions.data) {
     panel = (
       <div className="flex flex-col gap-3">
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <span className={EYEBROW}>This photo · {questions.data.questions.length} questions</span>
-          <ReaderSwitch audience={audience} onChange={onAudience} />
-        </div>
+        <ReaderSwitch audience={audience} onChange={onAudience} />
         <ul className="m-0 flex list-none flex-col gap-2 p-0">
           {questions.data.questions.map((q) => (
             <li key={q.id}>
@@ -923,7 +916,7 @@ function PhotoWorkspace({
                       : { kind: 'question', id: q.id },
                   )
                 }
-                className="grid w-full grid-cols-[minmax(0,1fr)_auto] items-center gap-x-2.5 gap-y-1 rounded-[14px] border border-white/[0.06] bg-raised px-3.5 py-3 text-left hover:border-caramel/45 cursor-pointer"
+                className="grid w-full grid-cols-[minmax(0,1fr)_auto] items-center gap-x-2.5 gap-y-1 rounded-[14px] border border-line bg-raised px-3.5 py-3 text-left hover:border-caramel/45 cursor-pointer"
               >
                 <span className="text-[14.5px] font-semibold leading-snug text-fg">
                   {q.new && <NewMark />}
@@ -937,7 +930,7 @@ function PhotoWorkspace({
         </ul>
         {sage && (
           <div className="flex flex-col gap-2.5 border-t border-white/[0.07] pt-3">
-            <span className={EYEBROW}>Ask Sage about this photo</span>
+            <span className="text-[13px] font-semibold text-fg-muted">Ask Sage</span>
             {asked && <p className="m-0 text-[14.5px] font-semibold leading-snug text-fg">{asked.question}</p>}
             {asked && <SageAnswerHere sage={sage} since={asked.since} />}
             <AskSageBox othersAsked={othersAsked.data?.questions ?? []} onAsk={askSage} busy={sage.waiting || !!sage.streamingText} />
