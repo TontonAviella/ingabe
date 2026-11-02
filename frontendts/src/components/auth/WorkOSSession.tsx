@@ -2,6 +2,7 @@ import { Building, Building2, Check, ChevronsUpDown, Loader2, LogOut, User, User
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { IngabeIcon } from '@/components/Brand';
+import { Button } from '@/components/ui/button';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -120,34 +121,25 @@ export function WorkOSRequireAuth({ children }: React.PropsWithChildren) {
   }, [status, notice]);
   if (status === 'signedIn') return <>{children}</>;
   if (status === 'signedOut' && notice) {
+    // Why a sign-in failed is in the server log; the person only needs to try again.
     const text =
-      notice === 'failed'
-        ? {
-            title: 'Sign-in did not complete',
-            body: 'Your account was recognised, but the app could not start your session. Try again; if it keeps failing, the server log says why.',
-            action: 'Try again',
-          }
-        : { title: 'You are signed out', body: 'Sign in again to get back to your maps.', action: 'Sign in' };
+      notice === 'failed' ? { title: "Sign-in didn't finish", action: 'Try again' } : { title: "You're signed out", action: 'Sign in' };
     return (
-      <div className="flex min-h-screen items-center justify-center bg-background p-4">
-        <div className="max-w-sm rounded-lg border border-gray-700 bg-gray-900 p-6 text-center text-gray-100">
+      <div className="flex min-h-screen items-center justify-center bg-canvas p-4">
+        <div className="w-full max-w-sm rounded-xl border border-line bg-panel p-6 text-center text-fg">
           <IngabeIcon className="mx-auto mb-4 h-10 w-10" />
-          <p className="font-medium">{text.title}</p>
-          <p className="mt-2 text-sm text-gray-400">{text.body}</p>
-          <a
-            href={signInUrl('/')}
-            className="mt-4 inline-block rounded-md bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-500"
-          >
-            {text.action}
-          </a>
+          <h1 className="font-medium">{text.title}</h1>
+          <Button asChild className="mt-4">
+            <a href={signInUrl('/')}>{text.action}</a>
+          </Button>
         </div>
       </div>
     );
   }
   return (
-    <div className="flex min-h-screen items-center justify-center bg-background text-muted-foreground">
-      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-      <span className="text-sm">{status === 'loading' ? 'Checking your session…' : 'Redirecting to sign in…'}</span>
+    <div role="status" className="flex min-h-screen items-center justify-center bg-canvas text-fg-subtle">
+      <Loader2 className="h-5 w-5 animate-spin" aria-hidden="true" />
+      <span className="sr-only">{status === 'loading' ? 'Checking your session' : 'Opening sign-in'}</span>
     </div>
   );
 }
