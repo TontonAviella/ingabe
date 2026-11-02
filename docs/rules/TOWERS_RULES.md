@@ -51,7 +51,9 @@ Parts: `tower_dish`, `tower_antenna`, `tower_radio_unit` (answer_levels' targets
 - **Suggestions**: the finds of the part's finder job, best first, as `{id, box, score}`; the id names the job
   (`<job id[:12]>-<n>`), so an id from older marks is refused, never taken for another suggestion. For antennas
   and radio units they are the finder's filtered finds (its suggestion filter, on where it was measured not to
-  lower AP50; dishes not: `EXAMPLE_FINDER_RULES.md`).
+  lower AP50; dishes not: `EXAMPLE_FINDER_RULES.md`). For maize plants only the ones the measured `shown` rule
+  picks are suggested (boxes inside a better box and boxes far below the photo's best score are not), and a
+  suggestion already reviewed is always shown (`tower_inspection.suggestions_of`, `example_finder.shown_finds`).
 - **Review**: the person keeps, rejects or fixes (a new box) each suggestion and adds the ones the finder missed.
   A review replaces the last one; every id must be a suggestion of the current job, given once. A review before the
   finder has finished is 409.

@@ -160,6 +160,10 @@ AP50 without -> with the filter:
 | weed | 0.447 -> 0.402 | off (fell) |
 | building, row_crop_plant, tree crowns, banana_mat | not measured | off |
 
+An optional `shown` entry (`nested_overlap`, `relative_score`, `evidence`, `note`; exposed as
+`Target.shown_rule`, maize_seedling only) then picks which of the stored finds a person sees, measured on
+what is shown rather than AP50 (2026-11-01, `results/shown.json`; `EXAMPLE_FINDER_RULES.md`).
+
 The levels and values above stay the measured ones without the filter: the
 filter changes which finds a person is shown, not how far an answer may go.
 

@@ -477,3 +477,17 @@ def test_suggestions_below_the_measured_floor_are_not_shown_and_ids_keep_their_p
     shown = tower_inspection.suggestions_of(job, 0.4)
     assert [(s.id[-2:], s.score) for s in shown] == [("-1", 0.9), ("-3", 0.45)]
     assert len(tower_inspection.suggestions_of(job)) == 3
+
+
+def test_the_measured_rule_hides_nested_and_weak_suggestions_but_never_one_already_reviewed():
+    job = example_finder.Job(job_id="b" * 32, status=example_finder.DONE,
+                             finds=[{"box_px": [0, 0, 20, 20], "score": 0.9},  # -1
+                                    {"box_px": [5, 5, 15, 15], "score": 0.8},  # -2: inside -1
+                                    {"box_px": [100, 0, 120, 20], "score": 0.05},  # -3: below 0.14 x 0.9
+                                    {"box_px": [200, 0, 220, 20], "score": 0.3}])  # -4
+    rule = answer_levels.ShownRule(nested_overlap=0.6, relative_score=0.14)
+    shown = tower_inspection.suggestions_of(job, None, rule)
+    assert [s.id[-2:] for s in shown] == ["-1", "-4"]
+    kept_before = f"{'b' * 12}-2"
+    again = tower_inspection.suggestions_of(job, None, rule, {kept_before})
+    assert [s.id[-2:] for s in again] == ["-1", "-2", "-4"]  # best first, the reviewed one included

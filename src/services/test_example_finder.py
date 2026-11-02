@@ -342,6 +342,43 @@ def test_with_the_filter_off_the_finds_are_given_as_they_are():
     # Through the finder, dishes (off) still get every find not on a mark: test_the_model_is_called_as_measured...
 
 
+RULE = answer_levels.ShownRule(nested_overlap=0.6, relative_score=0.14)
+
+
+def _stored(*boxes_scores):
+    return [{"box_px": list(box), "score": score} for box, score in boxes_scores]
+
+
+def test_a_box_inside_a_better_box_is_not_shown():
+    """A plant boxed twice, the small box inside the big one: IoU 0.25 passes the suggestion filter, but the small
+    box lies wholly inside the better one, so it is the same plant. A box covering 41% of the smaller stays."""
+    finds = _stored(((0, 0, 20, 20), 0.9), ((5, 5, 15, 15), 0.8), ((100, 0, 120, 20), 0.7),
+                    ((111.8, 0, 131.8, 20), 0.6))
+    assert boxes.iou(finds[0]["box_px"], finds[1]["box_px"]) == 0.25
+    assert boxes.overlap_of_smaller(finds[0]["box_px"], finds[1]["box_px"]) == 1.0
+    assert round(boxes.overlap_of_smaller(finds[2]["box_px"], finds[3]["box_px"]), 2) == 0.41
+    assert example_finder.shown_finds(finds, RULE) == [0, 2, 3]
+
+
+def test_a_box_scoring_far_below_the_photos_best_is_not_shown():
+    finds = _stored(((300, 0, 320, 20), 0.069), ((0, 0, 20, 20), 0.5), ((100, 0, 120, 20), 0.07))
+    assert example_finder.shown_finds(finds, RULE) == [1, 2]  # 0.14 x 0.5 = 0.07: the bound is shown
+
+
+def test_without_a_rule_every_find_is_shown_best_first():
+    finds = _stored(((0, 0, 20, 20), 0.2), ((5, 5, 15, 15), 0.9), ((100, 0, 120, 20), 0.01))
+    assert example_finder.shown_finds(finds, None) == [1, 0, 2]
+    assert example_finder.shown_finds([], RULE) == []
+
+
+def test_only_maize_has_a_shown_rule_and_it_is_not_part_of_a_requests_identity():
+    rules = {t.name: example_finder.settings(t.name).shown_rule for t in answer_levels.targets()
+             if t.finder_input_px is not None and t.finder_model == example_finder.MODEL_NAME}
+    assert {name for name, rule in rules.items() if rule is not None} == {"maize_seedling"}
+    maize = example_finder.settings("maize_seedling")
+    assert dataclasses.replace(maize, shown_rule=None).as_dict() == maize.as_dict()  # old jobs stay found
+
+
 def test_content_sha_changes_with_every_input():
     s = example_finder.settings("tower_dish")
     base = example_finder.content_sha("p", [tuple(MARKS[0])], [], s)

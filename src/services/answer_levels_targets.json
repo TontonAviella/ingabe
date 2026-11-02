@@ -127,6 +127,7 @@
       "object_size_note": "Changes with the plants' age; the gate uses the user's marks.",
       "finder": {"model": "yoloe-11s-seg", "look_alike_marks": false, "note": "640 px tiles read at 640 and 1280 px: 1280 scored better on both fields (Selommes at 1920 px: 0.469, but 52 s per picture). Look-alike marks not tried."},
       "suggestion_filter": {"on": true, "evidence": {"source": "results/postfilter.jsonl", "task": "maize_nerac", "imgsz": 1280}, "note": "Measured on Nerac only, the same 20 tiles and marks read at 1280 px: AP50 0.787 without the filter, 0.821 with it. Selommes was not measured with the filter."},
+      "shown": {"nested_overlap": 0.6, "relative_score": 0.14, "evidence": {"source": "results/shown.json", "task": "maize_shown"}, "note": "What a person sees, measured 2026-11-01 on 65 INRAe test tiles (3 marks each, read at 1280 px): with the suggestion filter alone 37.7 boxes a tile for 14.8 plants, 31% of them plants, 80% of the plants found; with this rule 14.1 boxes, 65% plants, 62% found (Nerac 86% / 78%, Blois 77% / 58%, Selommes, the smallest plants, 43% / 52%). The 0.14 was chosen on 27 calibration tiles from other photos; the 0.6 was fixed before measuring."},
       "max_level": "ROUGH",
       "size_evidence": ["maize_nerac", "maize_selommes"],
       "measured": {
