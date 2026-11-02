@@ -61,6 +61,35 @@ export function byRole(role: string, name?: string | RegExp): HTMLElement | null
   return els.find((el) => name === undefined || matches(normalise(el.getAttribute('aria-label') ?? el.textContent), name)) ?? null;
 }
 
+const CONTROLS = 'button, a[href], input:not([type="hidden"]), textarea, select, [role="button"], [role="link"]';
+
+/**
+ * Every button, link and field on the page that a screen reader would announce with no name: no text, no
+ * aria-label, no aria-labelledby, no title (an icon-only button that lost its aria-label lands here). Controls
+ * hidden from screen readers (aria-hidden, a bot trap) are skipped. A test asserts this is empty.
+ */
+export function unnamedControls(): string[] {
+  return [...document.body.querySelectorAll<HTMLElement>(CONTROLS)]
+    .filter((el) => !el.closest('[aria-hidden="true"]'))
+    .filter((el) => {
+      const labelledBy = (el.getAttribute('aria-labelledby') ?? '')
+        .split(/\s+/)
+        .map((id) => document.getElementById(id)?.textContent ?? '')
+        .join(' ');
+      const pressable = el instanceof HTMLInputElement && ['submit', 'button', 'reset'].includes(el.type);
+      const field = !pressable && (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement || el instanceof HTMLSelectElement);
+      // A field is named by its <label>s, never by what was typed in it; an <input type="submit"> by its value;
+      // anything else by its text, including the alt text of a picture inside it.
+      const text = field
+        ? [...(el.labels ?? [])].map((l) => l.textContent).join(' ')
+        : pressable
+          ? (el as HTMLInputElement).value
+          : [el.textContent, ...[...el.querySelectorAll('img[alt]')].map((img) => img.getAttribute('alt'))].join(' ');
+      return !normalise([el.getAttribute('aria-label'), labelledBy, text, el.getAttribute('title')].join(' '));
+    })
+    .map((el) => el.outerHTML.slice(0, 120));
+}
+
 /** Waits until `find` returns an element. */
 export function findBy<T>(find: () => T | null, what: string): Promise<T> {
   return vi.waitFor(

@@ -11,16 +11,20 @@ import { Textarea } from '@/components/ui/textarea';
 // (WorkOS emails an invitation) or decline on the Companies page (src/services/access_requests.py). The website's
 // and the app's sign-up links lead here, so nobody waits for a code WorkOS will never send.
 
-const CARD = 'w-full max-w-sm rounded-lg border border-gray-700 bg-gray-900 p-6 text-gray-100';
+const CARD = 'w-full max-w-sm rounded-xl border border-line bg-panel p-6 text-fg';
+
+// The server's own check (looks_like_email, src/services/project_people.py): something@something.something, no spaces.
+const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 function Shell({ children }: React.PropsWithChildren) {
-  return <div className="flex min-h-screen w-full items-center justify-center bg-background p-4">{children}</div>;
+  return <div className="flex min-h-screen w-full items-center justify-center bg-canvas p-4">{children}</div>;
 }
 
 export default function RequestAccess() {
   const { status } = useWorkOSSession();
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
+  const [emailTouched, setEmailTouched] = useState(false);
   const [organization, setOrganization] = useState('');
   const [reason, setReason] = useState('');
   const [website, setWebsite] = useState(''); // hidden: only a bot fills it in
@@ -33,13 +37,10 @@ export default function RequestAccess() {
       <Shell>
         <div className={`${CARD} text-center`}>
           <IngabeIcon className="mx-auto mb-4 h-10 w-10" />
-          <p className="font-medium">You are already signed in</p>
-          <Link
-            to="/"
-            className="mt-4 inline-block rounded-md bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-500"
-          >
-            Go to your maps
-          </Link>
+          <p className="font-medium">You're already signed in</p>
+          <Button asChild className="mt-4">
+            <Link to="/">Open your maps</Link>
+          </Button>
         </div>
       </Shell>
     );
@@ -50,14 +51,16 @@ export default function RequestAccess() {
       <Shell>
         <div className={`${CARD} text-center`}>
           <IngabeIcon className="mx-auto mb-4 h-10 w-10" />
-          <p className="font-medium">Thank you, we have your request</p>
-          <p className="mt-2 text-sm text-gray-400">
-            Once we say yes, an invitation arrives at {sentTo}. Open it to sign in. There is no code to wait for until then.
-          </p>
+          <p className="font-medium">Request sent</p>
+          <p className="mt-2 text-sm text-fg-muted">Your invitation will arrive at {sentTo}.</p>
         </div>
       </Shell>
     );
   }
+
+  const emailOk = EMAIL.test(email.trim());
+  // Say what is wrong with the email as soon as someone leaves the field, not after they press the button.
+  const emailWrong = emailTouched && email.trim() !== '' && !emailOk;
 
   const submit = async (e: FormEvent) => {
     e.preventDefault();
@@ -78,7 +81,7 @@ export default function RequestAccess() {
       });
       if (!res.ok) {
         const body = await res.json().catch(() => null);
-        throw new Error(typeof body?.detail === 'string' ? body.detail : `Something went wrong (${res.status}). Please try again.`);
+        throw new Error(typeof body?.detail === 'string' ? body.detail : "Your request didn't go through. Try again.");
       }
       setSentTo(email.trim());
     } catch (err) {
@@ -90,12 +93,9 @@ export default function RequestAccess() {
 
   return (
     <Shell>
-      <form onSubmit={submit} className={CARD}>
+      <form onSubmit={submit} className={CARD} noValidate>
         <IngabeIcon className="mx-auto mb-4 h-10 w-10" />
-        <p className="text-center font-medium">Request access to Ingabe</p>
-        <p className="mt-2 text-center text-sm text-gray-400">
-          Ingabe is invite-only for now. Tell us who you are, and once we say yes, an invitation arrives in your email.
-        </p>
+        <h1 className="text-center font-medium">Request access</h1>
         <div className="mt-5 flex flex-col gap-3">
           <Input
             required
@@ -103,28 +103,42 @@ export default function RequestAccess() {
             onChange={(e) => setName(e.target.value)}
             placeholder="Your name"
             aria-label="Your name"
+            autoComplete="name"
             maxLength={120}
           />
-          <Input
-            required
-            type="email"
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
-            placeholder="Your email"
-            aria-label="Your email"
-            maxLength={254}
-          />
+          <div>
+            <Input
+              required
+              type="email"
+              inputMode="email"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              onBlur={() => setEmailTouched(true)}
+              placeholder="you@company.rw"
+              aria-label="Your email"
+              aria-invalid={emailWrong || undefined}
+              aria-describedby={emailWrong ? 'email-problem' : undefined}
+              autoComplete="email"
+              maxLength={254}
+            />
+            {emailWrong && (
+              <p id="email-problem" className="mt-1 text-xs text-bad">
+                Use an email like you@company.rw
+              </p>
+            )}
+          </div>
           <Input
             value={organization}
             onChange={(e) => setOrganization(e.target.value)}
-            placeholder="Your organization (optional)"
+            placeholder="Organization (optional)"
             aria-label="Your organization"
+            autoComplete="organization"
             maxLength={160}
           />
           <Textarea
             value={reason}
             onChange={(e) => setReason(e.target.value)}
-            placeholder="What would you like to use Ingabe for? (optional)"
+            placeholder="What for? (optional)"
             aria-label="What you would like to use Ingabe for"
             maxLength={1000}
             rows={3}
@@ -140,21 +154,18 @@ export default function RequestAccess() {
             className="hidden"
           />
         </div>
-        {error && <p className="mt-3 rounded-md border border-red-800 bg-red-950/40 px-3 py-2 text-sm text-red-300">{error}</p>}
-        <Button
-          type="submit"
-          disabled={busy || !name.trim() || !email.trim()}
-          className="mt-4 w-full bg-emerald-600 text-white hover:bg-emerald-500"
-        >
+        {error && (
+          <p role="alert" className="mt-3 rounded-md border border-bad/40 bg-bad/10 px-3 py-2 text-sm text-bad">
+            {error}
+          </p>
+        )}
+        <Button type="submit" disabled={busy || !name.trim() || !emailOk} className="mt-4 w-full">
           {busy && <Loader2 className="h-4 w-4 animate-spin" />}
           Request access
         </Button>
-        <p className="mt-4 text-center text-sm text-gray-400">
-          Already invited?{' '}
-          <a href={signInUrl('/')} className="text-emerald-400 hover:underline">
-            Sign in
-          </a>
-        </p>
+        <a href={signInUrl('/')} className="mt-4 block text-center text-sm text-fg-muted hover:text-fg">
+          Sign in
+        </a>
       </form>
     </Shell>
   );
