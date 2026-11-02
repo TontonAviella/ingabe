@@ -128,7 +128,6 @@ import {
   type MapOptions,
   Map as MLMap,
   NavigationControl,
-  ScaleControl,
   type SourceSpecification,
 } from 'maplibre-gl';
 import type { ChatCompletionUserMessageParam } from 'openai/resources/chat/completions';
@@ -151,6 +150,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip
 import VersionVisualization from '@/components/VersionVisualization';
 import { featureFieldRows } from '@/lib/featureFields';
 import { inspectionPhotoUrl } from '@/lib/inspectionPhoto';
+import { addScale } from '@/lib/mapScale';
 import { createAnalyticsTurnId, track, trackDuration, trackError } from '../lib/analytics';
 import type { ErrorEntry, UploadingFile } from '../lib/frontend-types';
 import { isServerTileFailure, reportMapHealth, stopWatchingGraphics, watchGraphics } from '../lib/mapHealth';
@@ -888,7 +888,7 @@ export default function MapLibreMap({
       // Add navigation controls immediately — they're pure-DOM controls
       // that don't need the style to be loaded.
       newMap.addControl(new NavigationControl(), 'top-right');
-      newMap.addControl(new ScaleControl(), 'bottom-left');
+      addScale(newMap);
 
       // Signal dependent effects (controls, basemap, click handler) to re-attach
       setMapInstanceId((id) => id + 1);
