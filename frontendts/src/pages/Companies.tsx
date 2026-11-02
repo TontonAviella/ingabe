@@ -612,13 +612,20 @@ export default function Companies() {
 
   return (
     <div className="flex w-full max-w-5xl flex-col gap-6 p-6 text-gray-100">
-      <div>
+      <div className="flex items-baseline justify-between gap-4">
         <h1 className="text-xl font-semibold">Companies</h1>
-        <p className="text-sm text-gray-400">
-          Add a company, its industry and its first admin. WorkOS emails the invitation; after that the company adds its own people. Its
-          people see only its industry. Open a company's People to take someone out of it, or to block them from Ingabe; either signs them
-          out at their next click.
-        </p>
+        {/* System owner only (first email in PLATFORM_ADMIN_EMAILS): sign-in logs, the sign-in page, API keys and
+            corporate logins live in WorkOS. */}
+        {me?.is_owner && (
+          <a
+            href={WORKOS_DASHBOARD}
+            target="_blank"
+            rel="noreferrer"
+            className="inline-flex items-center gap-1 text-sm text-fg-muted hover:text-fg"
+          >
+            WorkOS dashboard <ExternalLink className="h-3.5 w-3.5" aria-hidden="true" />
+          </a>
+        )}
       </div>
 
       <form onSubmit={add} className="flex flex-wrap items-center gap-2 rounded-md border border-gray-700 bg-gray-800/40 p-3">
@@ -763,27 +770,6 @@ export default function Companies() {
                 </li>
               ))}
           </ul>
-        </section>
-      )}
-
-      {/* System owner only (first email in PLATFORM_ADMIN_EMAILS). */}
-      {me?.is_owner && (
-        <section className="rounded-md border border-gray-800 bg-gray-900/50 p-4 text-sm text-gray-400">
-          <p className="font-medium text-gray-200">When to open the WorkOS dashboard instead</p>
-          <ul className="mt-2 list-disc space-y-1 pl-5">
-            <li>Someone cannot sign in: its sign-in logs say why (wrong email, expired code, blocked attempt).</li>
-            <li>Changing the sign-in page: logo, colours, and which ways to sign in (Google, email code, password).</li>
-            <li>Rotating the WorkOS API key.</li>
-            <li>A company asks to sign in with its own corporate login (paid, per company).</li>
-          </ul>
-          <a
-            href={WORKOS_DASHBOARD}
-            target="_blank"
-            rel="noreferrer"
-            className="mt-3 inline-flex items-center gap-1 text-emerald-400 hover:underline"
-          >
-            Open the WorkOS dashboard <ExternalLink className="h-3.5 w-3.5" />
-          </a>
         </section>
       )}
     </div>

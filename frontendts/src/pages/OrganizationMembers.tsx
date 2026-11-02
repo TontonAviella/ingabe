@@ -184,11 +184,7 @@ export default function OrganizationMembers() {
         </span>
         <div>
           <h1 className="text-xl font-semibold">{org.name}</h1>
-          <p className="text-sm text-gray-400">
-            {manage
-              ? 'Invite people by email. They sign in with Google or Microsoft, or with that email address.'
-              : 'Only admins can change who is here.'}
-          </p>
+          {!manage && <p className="text-sm text-gray-400">Only admins can change who is here.</p>}
         </div>
       </div>
 
@@ -239,7 +235,7 @@ export default function OrganizationMembers() {
       )}
 
       <section>
-        <h2 className="mb-2 text-sm font-medium uppercase tracking-wide text-gray-400">Members{data ? ` (${data.members.length})` : ''}</h2>
+        <h2 className="mb-2 text-sm font-medium text-gray-400">Members{data ? ` · ${data.members.length}` : ''}</h2>
         {!data && !error ? (
           <Loader2 className="h-5 w-5 animate-spin text-gray-400" />
         ) : (
@@ -298,9 +294,7 @@ export default function OrganizationMembers() {
 
       {manage && data && data.invitations.length > 0 && (
         <section>
-          <h2 className="mb-2 text-sm font-medium uppercase tracking-wide text-gray-400">
-            Invited, not joined yet ({data.invitations.length})
-          </h2>
+          <h2 className="mb-2 text-sm font-medium text-gray-400">Invited · {data.invitations.length}</h2>
           <ul className="divide-y divide-gray-800 rounded-md border border-gray-700">
             {data.invitations.map((inv) => (
               <li key={inv.id} className="flex flex-wrap items-center gap-x-3 gap-y-1 px-3 py-2">
