@@ -42,21 +42,21 @@ export function panelOffset(): [number, number] {
 export function StatusIcon({ status }: { status: string }) {
   switch (status) {
     case 'ready':
-      return <Check className="size-3.5 text-[#D9A066]" strokeWidth={2.5} />;
+      return <Check className="size-3.5 text-caramel" strokeWidth={2.5} />;
     case 'partly':
-      return <CircleDashed className="size-3.5 text-[#D9A066]" strokeWidth={2.5} />;
+      return <CircleDashed className="size-3.5 text-caramel" strokeWidth={2.5} />;
     case 'needs_flight':
-      return <Plane className="size-3.5 text-[#B8A99B]" strokeWidth={2.2} />;
+      return <Plane className="size-3.5 text-fg-muted" strokeWidth={2.2} />;
     case 'needs_camera':
-      return <Camera className="size-3.5 text-[#B8A99B]" strokeWidth={2.2} />;
+      return <Camera className="size-3.5 text-fg-muted" strokeWidth={2.2} />;
     case 'cant_tell':
-      return <EyeOff className="size-3.5 text-[#B8A99B]" strokeWidth={2.2} />;
+      return <EyeOff className="size-3.5 text-fg-muted" strokeWidth={2.2} />;
     case 'to_build':
-      return <Hammer className="size-3.5 text-[#8C7B6E]" strokeWidth={2.2} />;
+      return <Hammer className="size-3.5 text-fg-subtle" strokeWidth={2.2} />;
     case 'learn':
-      return <BookOpen className="size-3.5 text-[#D9A066]" strokeWidth={2.2} />;
+      return <BookOpen className="size-3.5 text-caramel" strokeWidth={2.2} />;
     case 'working':
-      return <LoaderCircle className="size-3.5 text-[#D9A066] animate-spin" strokeWidth={2.5} />;
+      return <LoaderCircle className="size-3.5 text-caramel animate-spin" strokeWidth={2.5} />;
     default:
       return null;
   }
@@ -78,11 +78,11 @@ export function CardButton({
     <button
       type="button"
       onClick={onClick}
-      className="w-full text-left flex flex-col gap-1.5 rounded-[18px] bg-[#221813] border border-white/[0.07] px-4 py-3.5 hover:border-[#D9A066]/50 focus-visible:outline-2 focus-visible:outline-[#D9A066] transition-colors cursor-pointer"
+      className="w-full text-left flex flex-col gap-1.5 rounded-[18px] bg-raised border border-white/[0.07] px-4 py-3.5 hover:border-caramel/50 focus-visible:outline-2 focus-visible:outline-caramel transition-colors cursor-pointer"
     >
       {status}
-      <span className="text-[17px] font-bold leading-snug tracking-[-0.01em] text-[#F3EDE6]">{title}</span>
-      <span className="text-[14px] leading-snug text-[#B8A99B]">{preview}</span>
+      <span className="text-[17px] font-bold leading-snug tracking-[-0.01em] text-fg">{title}</span>
+      <span className="text-[14px] leading-snug text-fg-muted">{preview}</span>
     </button>
   );
 }
@@ -91,7 +91,7 @@ function SureBars({ bars }: { bars: number }) {
   return (
     <span className="flex gap-[3px]" aria-hidden="true">
       {[1, 2, 3].map((i) => (
-        <span key={i} className={`h-4 w-[6px] rounded-[3px] ${i <= bars ? 'bg-[#D9A066]' : 'bg-[#F3EDE6]/20'}`} />
+        <span key={i} className={`h-4 w-[6px] rounded-[3px] ${i <= bars ? 'bg-caramel' : 'bg-fg/20'}`} />
       ))}
     </span>
   );
@@ -100,7 +100,7 @@ function SureBars({ bars }: { bars: number }) {
 function Section({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div className="flex flex-col gap-1 px-4 py-3 border-b border-white/[0.07] last:border-b-0">
-      <span className="text-[11px] font-semibold uppercase tracking-[0.05em] text-[#B8A99B]">{label}</span>
+      <span className="text-[11px] font-semibold uppercase tracking-[0.05em] text-fg-muted">{label}</span>
       {children}
     </div>
   );
@@ -110,7 +110,7 @@ export function AskSageChips({ asks, onAsk, label }: { asks: AskSage[]; onAsk: (
   if (asks.length === 0) return null;
   return (
     <div className="flex flex-col gap-2">
-      <span className="text-[13px] font-semibold text-[#B8A99B]">{label}</span>
+      <span className="text-[13px] font-semibold text-fg-muted">{label}</span>
       <div className="flex flex-col gap-1.5">
         {asks.map((ask) => (
           <button
@@ -118,9 +118,9 @@ export function AskSageChips({ asks, onAsk, label }: { asks: AskSage[]; onAsk: (
             type="button"
             title={ask.prompt}
             onClick={() => onAsk(ask.prompt)}
-            className="flex items-center gap-2.5 min-h-11 px-3.5 rounded-[14px] text-left text-[14px] font-semibold text-[#F3EDE6] bg-[#D9A066]/[0.1] border border-[#D9A066]/35 hover:bg-[#D9A066]/[0.18] cursor-pointer"
+            className="flex items-center gap-2.5 min-h-11 px-3.5 rounded-[14px] text-left text-[14px] font-semibold text-fg bg-caramel/[0.1] border border-caramel/35 hover:bg-caramel/[0.18] cursor-pointer"
           >
-            <MessageCircle className="size-4 shrink-0 text-[#D9A066]" />
+            <MessageCircle className="size-4 shrink-0 text-caramel" />
             <span className="leading-snug">{ask.label}</span>
           </button>
         ))}
@@ -134,12 +134,9 @@ function Progress({ progress }: { progress: AnswerProgress }) {
   return (
     <div className="flex flex-col gap-1.5" role="status">
       <div className="h-1.5 rounded-full bg-white/10 overflow-hidden">
-        <div
-          className="h-full rounded-full bg-[#D9A066] transition-[width] duration-700"
-          style={{ width: `${Math.max(4, share * 100)}%` }}
-        />
+        <div className="h-full rounded-full bg-caramel transition-[width] duration-700" style={{ width: `${Math.max(4, share * 100)}%` }} />
       </div>
-      <span className="text-[12px] text-[#B8A99B] tabular-nums">
+      <span className="text-[12px] text-fg-muted tabular-nums">
         Part {progress.done} of {progress.parts}
         {progress.minutes_left !== null && ` · about ${progress.minutes_left} min left`}
       </span>
@@ -168,12 +165,12 @@ function ItemRow({ item }: { item: AnswerItem }) {
           src={item.picture}
           alt={`What the vision model saw of ${item.title}`}
           loading="lazy"
-          className="size-14 shrink-0 rounded-[10px] object-cover border border-white/10 bg-[#221813]"
+          className="size-14 shrink-0 rounded-[10px] object-cover border border-white/10 bg-raised"
         />
       )}
       <span className="flex flex-col flex-1 min-w-0">
-        <span className="text-[15px] font-semibold text-[#F3EDE6]">{item.title}</span>
-        <span className="text-[13px] leading-snug text-[#B8A99B] tabular-nums">{item.detail}</span>
+        <span className="text-[15px] font-semibold text-fg">{item.title}</span>
+        <span className="text-[13px] leading-snug text-fg-muted tabular-nums">{item.detail}</span>
       </span>
     </>
   );
@@ -191,9 +188,9 @@ export function AnswerBody({
   openItem?: (item: AnswerItem) => (() => void) | null;
 }) {
   return (
-    <div className="flex flex-col rounded-[18px] bg-[#1E1612] border border-white/[0.06]">
+    <div className="flex flex-col rounded-[18px] bg-panel border border-white/[0.06]">
       <Section label="What and where">
-        <p className="m-0 text-[15px] leading-snug text-[#F3EDE6]">{answer.what}</p>
+        <p className="m-0 text-[15px] leading-snug text-fg">{answer.what}</p>
         {answer.progress && (
           <div className="mt-2">
             <Progress progress={answer.progress} />
@@ -202,7 +199,7 @@ export function AnswerBody({
       </Section>
       {answer.items.length > 0 && (
         <div className="flex flex-col py-1 border-b border-white/[0.07]">
-          <span className="px-4 pt-2 pb-1 text-[11px] font-semibold uppercase tracking-[0.05em] text-[#B8A99B]">Go here first</span>
+          <span className="px-4 pt-2 pb-1 text-[11px] font-semibold uppercase tracking-[0.05em] text-fg-muted">Go here first</span>
           {answer.items.map((item) => {
             // One photo can be listed twice (once per part), so the id alone is not a key.
             const key = `${item.id} ${item.detail}`;
@@ -215,7 +212,7 @@ export function AnswerBody({
                 className="flex items-center justify-between gap-3 min-h-11 px-4 py-1.5 text-left hover:bg-white/[0.04] cursor-pointer"
               >
                 <ItemRow item={item} />
-                <ChevronRight className="size-4 shrink-0 text-[#B8A99B]" />
+                <ChevronRight className="size-4 shrink-0 text-fg-muted" />
               </button>
             ) : (
               <div key={key} className="flex items-center justify-between gap-3 min-h-11 px-4 py-1.5">
@@ -229,29 +226,29 @@ export function AnswerBody({
         <div className="flex flex-col px-4 py-2 border-b border-white/[0.07]">
           {answer.facts.map((fact) => (
             <div key={fact.label} className="flex justify-between gap-3 py-1 text-[14px]">
-              <span className="text-[#B8A99B]">{fact.label}</span>
-              <span className="font-semibold text-[#F3EDE6] text-right tabular-nums">{fact.value}</span>
+              <span className="text-fg-muted">{fact.label}</span>
+              <span className="font-semibold text-fg text-right tabular-nums">{fact.value}</span>
             </div>
           ))}
         </div>
       )}
       <Section label="Why it matters">
-        <p className="m-0 text-[15px] leading-snug text-[#F3EDE6]">{answer.why}</p>
+        <p className="m-0 text-[15px] leading-snug text-fg">{answer.why}</p>
       </Section>
       <Section label="What to do">
-        <p className="m-0 text-[15px] leading-snug text-[#F3EDE6]">{answer.todo}</p>
+        <p className="m-0 text-[15px] leading-snug text-fg">{answer.todo}</p>
       </Section>
       <Section label="How sure">
         <div className="flex items-center gap-2.5">
           <SureBars bars={answer.how_sure.bars} />
-          <span className="text-[15px] font-bold text-[#F3EDE6]">{answer.how_sure.label}</span>
+          <span className="text-[15px] font-bold text-fg">{answer.how_sure.label}</span>
         </div>
-        <ul className="m-0 mt-1 pl-4 list-disc text-[13px] leading-snug text-[#B8A99B]">
+        <ul className="m-0 mt-1 pl-4 list-disc text-[13px] leading-snug text-fg-muted">
           {answer.how_sure.because.map((reason) => (
             <li key={reason}>{reason}</li>
           ))}
         </ul>
-        {answer.how_sure.surer && <p className="m-0 mt-1 text-[13px] leading-snug text-[#E9B987]">To be surer: {answer.how_sure.surer}</p>}
+        {answer.how_sure.surer && <p className="m-0 mt-1 text-[13px] leading-snug text-caramel-hi">To be surer: {answer.how_sure.surer}</p>}
       </Section>
     </div>
   );
@@ -261,16 +258,16 @@ export function AnswerDownloads({ downloads }: { downloads: AnswerDownload[] }) 
   if (downloads.length === 0) return null;
   return (
     <div className="flex flex-col gap-2">
-      <span className="text-[13px] font-semibold text-[#B8A99B]">Take it with you</span>
+      <span className="text-[13px] font-semibold text-fg-muted">Take it with you</span>
       <div className="flex flex-wrap gap-2">
         {downloads.map((d) => (
           <a
             key={d.href}
             href={d.href}
             download
-            className="inline-flex items-center gap-1.5 min-h-9 px-3.5 rounded-full text-[13px] font-semibold bg-white/[0.06] text-[#F3EDE6] border border-white/10 hover:bg-white/10 no-underline"
+            className="inline-flex items-center gap-1.5 min-h-9 px-3.5 rounded-full text-[13px] font-semibold bg-white/[0.06] text-fg border border-white/10 hover:bg-white/10 no-underline"
           >
-            <Download className="size-3.5 text-[#D9A066]" />
+            <Download className="size-3.5 text-caramel" />
             {d.label}
           </a>
         ))}
@@ -290,7 +287,7 @@ export function AnswerTerms({ terms }: { terms: AnswerTerm[] }) {
   if (terms.length === 0) return null;
   return (
     <div className="flex flex-col gap-2">
-      <span className="text-[13px] font-semibold text-[#B8A99B]">Words in this answer</span>
+      <span className="text-[13px] font-semibold text-fg-muted">Words in this answer</span>
       <div className="flex flex-wrap gap-2">
         {terms.map((t) => (
           <button
@@ -299,9 +296,7 @@ export function AnswerTerms({ terms }: { terms: AnswerTerm[] }) {
             aria-expanded={openTerm === t.id}
             onClick={() => setOpenTerm(openTerm === t.id ? null : t.id)}
             className={`min-h-9 px-3.5 rounded-full text-[13px] font-semibold border cursor-pointer ${
-              openTerm === t.id
-                ? 'bg-[#F3EDE6] text-[#140E0B] border-transparent'
-                : 'bg-white/[0.06] text-[#F3EDE6] border-white/10 hover:bg-white/10'
+              openTerm === t.id ? 'bg-fg text-panel border-transparent' : 'bg-white/[0.06] text-fg border-white/10 hover:bg-white/10'
             }`}
           >
             {t.word}
@@ -309,10 +304,10 @@ export function AnswerTerms({ terms }: { terms: AnswerTerm[] }) {
         ))}
       </div>
       {term && (
-        <div ref={termRef} className="flex flex-col gap-2 rounded-[16px] bg-[#D9A066]/[0.12] border border-[#D9A066]/30 px-4 py-3">
-          <span className="text-[15px] font-bold text-[#F3EDE6]">{term.word}</span>
-          <p className="m-0 text-[14px] leading-snug text-[#F3EDE6]">{term.simple}</p>
-          <p className="m-0 text-[14px] leading-snug text-[#E6DCD1]">
+        <div ref={termRef} className="flex flex-col gap-2 rounded-[16px] bg-caramel/[0.12] border border-caramel/30 px-4 py-3">
+          <span className="text-[15px] font-bold text-fg">{term.word}</span>
+          <p className="m-0 text-[14px] leading-snug text-fg">{term.simple}</p>
+          <p className="m-0 text-[14px] leading-snug text-fg-soft">
             <span className="font-semibold">Why it helps you: </span>
             {term.why}
           </p>
@@ -383,14 +378,14 @@ function CollapsedPanelButton({
       onBlur={() => setPaused(false)}
       aria-label={teaser ? `${label}: ${teaser.text}` : label}
       style={{ fontFamily: PANEL_FONT }}
-      className={`${className} group flex items-center gap-3 max-w-[min(340px,calc(100%-2rem))] min-h-11 py-2 pl-3.5 pr-2.5 rounded-[20px] bg-[#110C0A]/90 backdrop-blur-xl border border-[#D9A066]/40 text-left text-[#F3EDE6] shadow-[0_10px_28px_rgba(0,0,0,0.45)] hover:border-[#D9A066]/80 cursor-pointer`}
+      className={`${className} group flex items-center gap-3 max-w-[min(340px,calc(100%-2rem))] min-h-11 py-2 pl-3.5 pr-2.5 rounded-[20px] bg-canvas/90 backdrop-blur-xl border border-caramel/40 text-left text-fg shadow-[0_10px_28px_rgba(0,0,0,0.45)] hover:border-caramel/80 cursor-pointer`}
     >
       <span className="relative flex size-2.5 shrink-0" aria-hidden="true">
-        <span className="absolute inline-flex size-full rounded-full bg-[#D9A066] opacity-70 motion-safe:[animation:ping_1s_cubic-bezier(0,0,0.2,1)_3_forwards]" />
-        <span className="relative inline-flex size-2.5 rounded-full bg-[#D9A066]" />
+        <span className="absolute inline-flex size-full rounded-full bg-caramel opacity-70 motion-safe:[animation:ping_1s_cubic-bezier(0,0,0.2,1)_3_forwards]" />
+        <span className="relative inline-flex size-2.5 rounded-full bg-caramel" />
       </span>
       <span className="flex min-w-0 flex-col">
-        <span className="text-[11.5px] font-bold uppercase tracking-[0.07em] text-[#D9A066]">{label}</span>
+        <span className="text-[11.5px] font-bold uppercase tracking-[0.07em] text-caramel">{label}</span>
         {teaser && (
           <span
             key={teaser.id}
@@ -400,7 +395,7 @@ function CollapsedPanelButton({
           </span>
         )}
       </span>
-      <ChevronRight className="size-4 shrink-0 text-[#D9A066] transition-transform group-hover:translate-x-0.5" aria-hidden="true" />
+      <ChevronRight className="size-4 shrink-0 text-caramel transition-transform group-hover:translate-x-0.5" aria-hidden="true" />
     </button>
   );
 }
@@ -454,15 +449,15 @@ export function CardsPanel({
     <section
       aria-label={ariaLabel}
       style={{ fontFamily: PANEL_FONT }}
-      className={`absolute z-30 inset-x-2 bottom-[100px] max-h-[52vh] sm:inset-auto sm:bottom-auto ${panelTop} sm:right-14 sm:w-[372px] sm:max-h-[calc(100%-328px)] flex flex-col rounded-[26px] bg-[#110C0A]/[0.9] backdrop-blur-2xl border border-white/[0.09] shadow-2xl text-[#F3EDE6] ${historyOpen ? 'max-xl:hidden' : ''}`}
+      className={`absolute z-30 inset-x-2 bottom-[100px] max-h-[52vh] sm:inset-auto sm:bottom-auto ${panelTop} sm:right-14 sm:w-[372px] sm:max-h-[calc(100%-328px)] flex flex-col rounded-[26px] bg-canvas/[0.9] backdrop-blur-2xl border border-white/[0.09] shadow-2xl text-fg ${historyOpen ? 'max-xl:hidden' : ''}`}
     >
       <div className="flex items-center justify-between px-5 pt-4 pb-1">
-        <span className="text-[12px] font-semibold uppercase tracking-[0.08em] text-[#D9A066]">{heading}</span>
+        <span className="text-[12px] font-semibold uppercase tracking-[0.08em] text-caramel">{heading}</span>
         <button
           type="button"
           aria-label={hideLabel}
           onClick={() => onCollapsedChange(true)}
-          className="flex size-8 items-center justify-center rounded-full text-[#B8A99B] hover:bg-white/10 hover:text-[#F3EDE6] cursor-pointer"
+          className="flex size-8 items-center justify-center rounded-full text-fg-muted hover:bg-white/10 hover:text-fg cursor-pointer"
         >
           <X className="size-4" />
         </button>

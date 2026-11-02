@@ -221,7 +221,7 @@ function ShareDialog({ projectId, onClose }: { projectId: string; onClose: () =>
                     <option value="editor">{ROLE_WORDS.editor}</option>
                     <option value="viewer">{ROLE_WORDS.viewer}</option>
                   </select>
-                  <Button type="submit" disabled={!email || change.isPending} className="bg-[#D9A066] text-[#140E0B] hover:bg-[#E9B987]">
+                  <Button type="submit" disabled={!email || change.isPending} className="bg-caramel text-panel hover:bg-caramel-hi">
                     {change.isPending ? 'Sharing…' : 'Share'}
                   </Button>
                 </form>
@@ -281,7 +281,7 @@ function ShareDialog({ projectId, onClose }: { projectId: string; onClose: () =>
                   <Button
                     type="submit"
                     disabled={!guestEmail.trim() || change.isPending}
-                    className="ml-auto bg-[#D9A066] text-[#140E0B] hover:bg-[#E9B987]"
+                    className="ml-auto bg-caramel text-panel hover:bg-caramel-hi"
                   >
                     {change.isPending ? 'Inviting…' : 'Invite'}
                   </Button>

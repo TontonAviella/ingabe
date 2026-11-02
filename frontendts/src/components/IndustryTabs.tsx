@@ -28,15 +28,13 @@ export function IndustryTabs({ counts }: { counts: Partial<Record<IndustryKey, n
             onClick={() => switchTo(option.key, option.label)}
             className={`inline-flex items-center gap-2 rounded-full border px-4 py-1.5 text-sm transition-colors ${
               current
-                ? 'border-[#D9A066] bg-[#D9A066] font-medium text-[#140E0B]'
-                : 'cursor-pointer border-gray-600 text-gray-300 hover:border-[#D9A066] hover:text-white disabled:cursor-wait disabled:opacity-60'
+                ? 'border-caramel bg-caramel font-medium text-panel'
+                : 'cursor-pointer border-gray-600 text-gray-300 hover:border-caramel hover:text-white disabled:cursor-wait disabled:opacity-60'
             }`}
           >
             {busy && <Loader2 aria-hidden className="h-3.5 w-3.5 animate-spin" />}
             {option.label}
-            {count !== undefined && count > 0 && (
-              <span className={`text-xs ${current ? 'text-[#140E0B]/70' : 'text-gray-400'}`}>{count}</span>
-            )}
+            {count !== undefined && count > 0 && <span className={`text-xs ${current ? 'text-panel/70' : 'text-gray-400'}`}>{count}</span>}
           </button>
         );
       })}

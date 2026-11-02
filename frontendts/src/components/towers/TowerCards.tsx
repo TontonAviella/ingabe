@@ -48,7 +48,7 @@ function AnswerView({
       <button
         type="button"
         onClick={onBack}
-        className="self-start inline-flex items-center gap-1 min-h-9 pr-3 pl-1 rounded-full text-[14px] font-semibold text-[#D9A066] hover:bg-white/5 cursor-pointer"
+        className="self-start inline-flex items-center gap-1 min-h-9 pr-3 pl-1 rounded-full text-[14px] font-semibold text-caramel hover:bg-white/5 cursor-pointer"
       >
         <ChevronLeft className="size-5" /> Checks
       </button>
@@ -56,7 +56,7 @@ function AnswerView({
         <span className="mt-2">
           <StatusIcon status={answer.status} />
         </span>
-        <h3 className="m-0 text-[22px] font-bold leading-tight tracking-[-0.015em] text-[#F3EDE6]">{answer.title}</h3>
+        <h3 className="m-0 text-[22px] font-bold leading-tight tracking-[-0.015em] text-fg">{answer.title}</h3>
       </div>
       <AnswerBody answer={answer} onGoTo={onGoTo} openItem={openItem} />
       <AskSageChips asks={answer.ask_sage ?? []} onAsk={onAskSage} label="Ask Sage for more" />
@@ -189,26 +189,26 @@ export function TowerCards({
                     setLayerId(e.target.value);
                     setOpenCard(null);
                   }}
-                  className="bg-transparent text-[22px] font-bold tracking-[-0.015em] text-[#F3EDE6] outline-none cursor-pointer max-w-full"
+                  className="bg-transparent text-[22px] font-bold tracking-[-0.015em] text-fg outline-none cursor-pointer max-w-full"
                 >
                   {inspections.map((l) => (
-                    <option key={l.id} value={l.id} className="bg-[#17110E] text-base">
+                    <option key={l.id} value={l.id} className="bg-panel text-base">
                       {l.name}
                     </option>
                   ))}
                 </select>
               ) : (
-                <h2 className="m-0 text-[22px] font-bold leading-tight tracking-[-0.015em] text-[#F3EDE6] break-words">{layer?.name}</h2>
+                <h2 className="m-0 text-[22px] font-bold leading-tight tracking-[-0.015em] text-fg break-words">{layer?.name}</h2>
               )}
               {photos.data && (
-                <span className="text-[13px] text-[#B8A99B] tabular-nums">
+                <span className="text-[13px] text-fg-muted tabular-nums">
                   {photoList.length} {photoList.length === 1 ? 'photo' : 'photos'}
                 </span>
               )}
             </div>
 
             {!noCards && (
-              <div className="grid grid-cols-3 gap-[2px] rounded-[12px] bg-[#221813] p-[3px]" role="group" aria-label="Who is reading">
+              <div className="grid grid-cols-3 gap-[2px] rounded-[12px] bg-raised p-[3px]" role="group" aria-label="Who is reading">
                 {TOWER_AUDIENCES.map((a) => (
                   <button
                     key={a.id}
@@ -216,7 +216,7 @@ export function TowerCards({
                     aria-pressed={audience === a.id}
                     onClick={() => setAudience(a.id)}
                     className={`min-h-8 rounded-[9px] text-[12px] cursor-pointer ${
-                      audience === a.id ? 'bg-[#3A2A21] text-[#F3EDE6] font-bold' : 'text-[#B8A99B] font-semibold hover:text-[#F3EDE6]'
+                      audience === a.id ? 'bg-raised text-fg font-bold' : 'text-fg-muted font-semibold hover:text-fg'
                     }`}
                   >
                     {a.label}
@@ -230,29 +230,29 @@ export function TowerCards({
                 type="button"
                 disabled={searching || photoList.length === 0}
                 onClick={checkPhotos}
-                className="inline-flex items-center justify-center gap-2 min-h-11 px-4 rounded-[14px] text-[15px] font-semibold bg-[#D9A066] text-[#140E0B] hover:bg-[#E9B987] disabled:opacity-60 cursor-pointer"
+                className="inline-flex items-center justify-center gap-2 min-h-11 px-4 rounded-[14px] text-[15px] font-semibold bg-caramel text-panel hover:bg-caramel-hi disabled:opacity-60 cursor-pointer"
               >
                 {searching ? <LoaderCircle className="size-4 animate-spin" /> : <ScanSearch className="size-4" />}
                 {searching ? 'Finding the next photo to check…' : 'Check photos'}
               </button>
-              {photos.error && <p className="m-0 text-[13px] text-[#E9B987]">{photos.error.message}</p>}
+              {photos.error && <p className="m-0 text-[13px] text-caramel-hi">{photos.error.message}</p>}
               {searchError && (
-                <p role="alert" className="m-0 text-[13px] text-[#E9B987]">
+                <p role="alert" className="m-0 text-[13px] text-caramel-hi">
                   {searchError}
                 </p>
               )}
             </div>
 
             {scan.data && scan.data.parts.length > 0 && scan.data.scanned < scan.data.photos && (
-              <p role="status" className="m-0 flex items-center gap-2 text-[14px] text-[#D8CCBF] tabular-nums">
-                {scanning && <LoaderCircle className="size-4 shrink-0 animate-spin text-[#D9A066]" />}
+              <p role="status" className="m-0 flex items-center gap-2 text-[14px] text-fg-soft tabular-nums">
+                {scanning && <LoaderCircle className="size-4 shrink-0 animate-spin text-caramel" />}
                 {scanning
                   ? `Scanning the photos: ${scan.data.scanned} of ${scan.data.photos} done. Their suggestions appear as each one finishes.`
                   : `${scan.data.scanned} of ${scan.data.photos} photos scanned.`}
               </p>
             )}
-            {cards.isPending && !noCards && <p className="m-0 py-2 text-[15px] text-[#D8CCBF]">Loading the checks…</p>}
-            {cards.error && !noCards && <p className="m-0 py-2 text-[15px] text-[#E9B987]">{cards.error.message}</p>}
+            {cards.isPending && !noCards && <p className="m-0 py-2 text-[15px] text-fg-soft">Loading the checks…</p>}
+            {cards.error && !noCards && <p className="m-0 py-2 text-[15px] text-caramel-hi">{cards.error.message}</p>}
             {cards.data && (
               <div className="flex flex-col gap-2.5">
                 {cards.data.cards.map((card) => (
@@ -268,14 +268,14 @@ export function TowerCards({
             )}
           </div>
         )}
-        {openCard && answer.isPending && <p className="m-0 py-6 text-[15px] text-[#D8CCBF]">Working out the answer…</p>}
+        {openCard && answer.isPending && <p className="m-0 py-6 text-[15px] text-fg-soft">Working out the answer…</p>}
         {openCard && answer.error && (
           <div className="flex flex-col gap-3 py-4">
-            <p className="m-0 text-[15px] text-[#E9B987]">{answer.error.message}</p>
+            <p className="m-0 text-[15px] text-caramel-hi">{answer.error.message}</p>
             <button
               type="button"
               onClick={() => setOpenCard(null)}
-              className="self-start text-[14px] font-semibold text-[#D9A066] cursor-pointer"
+              className="self-start text-[14px] font-semibold text-caramel cursor-pointer"
             >
               Back to the checks
             </button>

@@ -149,7 +149,7 @@ export default function MapsList() {
                 <Button
                   onClick={handleCreateMap}
                   disabled={isLoading || !industryKnown}
-                  className="bg-[#D9A066] hover:bg-[#E9B987] text-[#140E0B] hover:cursor-pointer"
+                  className="bg-caramel hover:bg-caramel-hi text-panel hover:cursor-pointer"
                 >
                   <Plus className="mr-2 h-4 w-4" />
                   {isLoading ? 'Creating...' : 'New Map'}
@@ -174,7 +174,7 @@ export default function MapsList() {
           </div>
           <h3 className="text-lg font-medium text-red-400">Error Loading Maps</h3>
           <p className="text-sm text-gray-400 text-center mt-1">{error}</p>
-          <Button onClick={refetchProjects} className="mt-4 bg-[#D9A066] hover:bg-[#E9B987] text-[#140E0B] hover:cursor-pointer">
+          <Button onClick={refetchProjects} className="mt-4 bg-caramel hover:bg-caramel-hi text-panel hover:cursor-pointer">
             Try Again
           </Button>
         </Card>
@@ -201,7 +201,7 @@ export default function MapsList() {
           <Button
             onClick={handleCreateMap}
             disabled={isLoading || !industryKnown}
-            className="mt-4 bg-[#D9A066] hover:bg-[#E9B987] text-[#140E0B] hover:cursor-pointer"
+            className="mt-4 bg-caramel hover:bg-caramel-hi text-panel hover:cursor-pointer"
           >
             {isLoading ? 'Creating...' : 'Create Your First Map'}
           </Button>
@@ -284,7 +284,7 @@ export default function MapsList() {
                           })()}
                         </div>
 
-                        <Button size="sm" asChild className="bg-[#D9A066] hover:bg-[#E9B987] text-[#140E0B]">
+                        <Button size="sm" asChild className="bg-caramel hover:bg-caramel-hi text-panel">
                           Open
                         </Button>
                       </div>

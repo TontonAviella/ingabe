@@ -19,23 +19,23 @@ export interface SageError {
 
 const MARKDOWN: Components = {
   p: ({ children }) => <p className="m-0 mb-2.5 last:mb-0">{children}</p>,
-  strong: ({ children }) => <strong className="font-semibold text-[#F3EDE6]">{children}</strong>,
-  em: ({ children }) => <em className="not-italic text-[#D8CCBF]">{children}</em>,
+  strong: ({ children }) => <strong className="font-semibold text-fg">{children}</strong>,
+  em: ({ children }) => <em className="not-italic text-fg-soft">{children}</em>,
   ul: ({ children }) => <ul className="m-0 mb-2.5 p-0 list-none flex flex-col gap-1.5 last:mb-0">{children}</ul>,
-  ol: ({ children }) => <ol className="m-0 mb-2.5 pl-5 flex flex-col gap-1.5 marker:text-[#D9A066] last:mb-0">{children}</ol>,
+  ol: ({ children }) => <ol className="m-0 mb-2.5 pl-5 flex flex-col gap-1.5 marker:text-caramel last:mb-0">{children}</ol>,
   li: ({ children }) => (
-    <li className="relative pl-4 [ul>&]:before:absolute [ul>&]:before:left-0 [ul>&]:before:top-[0.62em] [ul>&]:before:size-1.5 [ul>&]:before:rounded-full [ul>&]:before:bg-[#D9A066]">
+    <li className="relative pl-4 [ul>&]:before:absolute [ul>&]:before:left-0 [ul>&]:before:top-[0.62em] [ul>&]:before:size-1.5 [ul>&]:before:rounded-full [ul>&]:before:bg-caramel">
       {children}
     </li>
   ),
   a: ({ children, href }) => (
-    <a href={href} target="_blank" rel="noreferrer" className="text-[#E9B987] underline decoration-[#D9A066]/50 underline-offset-2">
+    <a href={href} target="_blank" rel="noreferrer" className="text-caramel-hi underline decoration-caramel/50 underline-offset-2">
       {children}
     </a>
   ),
-  h1: ({ children }) => <p className="m-0 mt-1 mb-1.5 text-[11px] font-semibold uppercase tracking-[0.07em] text-[#D9A066]">{children}</p>,
-  h2: ({ children }) => <p className="m-0 mt-1 mb-1.5 text-[11px] font-semibold uppercase tracking-[0.07em] text-[#D9A066]">{children}</p>,
-  h3: ({ children }) => <p className="m-0 mt-1 mb-1.5 text-[11px] font-semibold uppercase tracking-[0.07em] text-[#D9A066]">{children}</p>,
+  h1: ({ children }) => <p className="m-0 mt-1 mb-1.5 text-[11px] font-semibold uppercase tracking-[0.07em] text-caramel">{children}</p>,
+  h2: ({ children }) => <p className="m-0 mt-1 mb-1.5 text-[11px] font-semibold uppercase tracking-[0.07em] text-caramel">{children}</p>,
+  h3: ({ children }) => <p className="m-0 mt-1 mb-1.5 text-[11px] font-semibold uppercase tracking-[0.07em] text-caramel">{children}</p>,
   code: ({ children }) => <code className="rounded-[6px] bg-white/[0.08] px-1.5 py-0.5 text-[13px]">{children}</code>,
   table: ({ children }) => (
     <div className="mb-2.5 overflow-x-auto rounded-[12px] border border-white/[0.08]">
@@ -43,7 +43,7 @@ const MARKDOWN: Components = {
     </div>
   ),
   th: ({ children }) => (
-    <th className="border-b border-white/[0.08] bg-white/[0.04] px-2.5 py-1.5 font-semibold text-[#B8A99B]">{children}</th>
+    <th className="border-b border-white/[0.08] bg-white/[0.04] px-2.5 py-1.5 font-semibold text-fg-muted">{children}</th>
   ),
   td: ({ children }) => <td className="border-b border-white/[0.05] px-2.5 py-1.5 align-top">{children}</td>,
   img: ({ src, alt }) => (
@@ -55,11 +55,11 @@ const MARKDOWN: Components = {
  * panel (VersionVisualization). */
 export function Answer({ text, streaming }: { text: string; streaming?: boolean }) {
   return (
-    <div className="text-[15px] leading-[1.5] text-[#E8DED4] [&>p:first-child]:text-[16.5px] [&>p:first-child]:leading-snug [&>p:first-child]:text-[#F3EDE6] [&>p:first-child]:font-semibold">
+    <div className="text-[15px] leading-[1.5] text-fg-soft [&>p:first-child]:text-[16.5px] [&>p:first-child]:leading-snug [&>p:first-child]:text-fg [&>p:first-child]:font-semibold">
       <ReactMarkdown remarkPlugins={[remarkGfm]} components={MARKDOWN}>
         {text}
       </ReactMarkdown>
-      {streaming && <span className="ml-0.5 inline-block h-4 w-1.5 animate-pulse rounded-full bg-[#D9A066] align-text-bottom" />}
+      {streaming && <span className="ml-0.5 inline-block h-4 w-1.5 animate-pulse rounded-full bg-caramel align-text-bottom" />}
     </div>
   );
 }
@@ -100,7 +100,7 @@ function AnswerRating({ mapId, messageId }: { mapId: string; messageId: number }
       disabled={state === 'sending'}
       onClick={() => (value === 'up' ? send('up') : (setRating('down'), setState('asking')))}
       className={`flex size-8 items-center justify-center rounded-full cursor-pointer hover:bg-white/[0.06] disabled:opacity-50 ${
-        rating === value ? 'text-[#D9A066] bg-white/[0.06]' : 'text-[#B8A99B] hover:text-[#F3EDE6]'
+        rating === value ? 'text-caramel bg-white/[0.06]' : 'text-fg-muted hover:text-fg'
       }`}
     >
       <Icon className="size-4" />
@@ -109,7 +109,7 @@ function AnswerRating({ mapId, messageId }: { mapId: string; messageId: number }
 
   if (state === 'sent') {
     return (
-      <p className="m-0 border-t border-white/[0.06] px-4 py-2.5 text-[12px] text-[#B8A99B]">
+      <p className="m-0 border-t border-white/[0.06] px-4 py-2.5 text-[12px] text-fg-muted">
         {rating === 'up' ? 'Thanks.' : 'Thanks. Ingabe will look at this answer and the steps Sage took.'}
       </p>
     );
@@ -117,7 +117,7 @@ function AnswerRating({ mapId, messageId }: { mapId: string; messageId: number }
   return (
     <div className="flex flex-col gap-2 border-t border-white/[0.06] px-4 py-2">
       <div className="flex items-center gap-1">
-        <span className="mr-1 text-[12px] text-[#8E7F73]">Was this answer right?</span>
+        <span className="mr-1 text-[12px] text-fg-subtle">Was this answer right?</span>
         {button('up', 'Yes, this answer was right', ThumbsUp)}
         {button('down', 'No, this answer was wrong', ThumbsDown)}
         {state === 'failed' && <span className="ml-1 text-[12px] text-[#F3C9B4]">Not saved. Try again.</span>}
@@ -131,13 +131,13 @@ function AnswerRating({ mapId, messageId }: { mapId: string; messageId: number }
             rows={2}
             placeholder="What was wrong? (optional)"
             aria-label="What was wrong with this answer (optional)"
-            className="min-h-[2.5rem] flex-1 resize-none rounded-[12px] border border-white/10 bg-white/[0.04] px-3 py-2 text-[13px] text-[#F3EDE6] placeholder:text-[#8E7F73] focus:border-[#D9A066]/60 focus:outline-none"
+            className="min-h-[2.5rem] flex-1 resize-none rounded-[12px] border border-white/10 bg-white/[0.04] px-3 py-2 text-[13px] text-fg placeholder:text-fg-subtle focus:border-caramel/60 focus:outline-none"
           />
           <button
             type="button"
             disabled={state === 'sending'}
             onClick={() => send('down', note)}
-            className="min-h-8 rounded-full bg-[#D9A066] px-3 text-[12px] font-semibold text-[#17110E] hover:bg-[#E9B987] disabled:opacity-60 cursor-pointer"
+            className="min-h-8 rounded-full bg-caramel px-3 text-[12px] font-semibold text-panel hover:bg-caramel-hi disabled:opacity-60 cursor-pointer"
           >
             {state === 'sending' ? 'Sending…' : 'Send'}
           </button>
@@ -151,9 +151,9 @@ function Sources({ sources }: { sources: string[] }) {
   if (sources.length === 0) return null;
   return (
     <div className="flex flex-wrap items-center gap-1.5 border-t border-white/[0.06] px-4 py-2.5">
-      <span className="mr-0.5 text-[11px] font-semibold uppercase tracking-[0.07em] text-[#8E7F73]">Sources</span>
+      <span className="mr-0.5 text-[11px] font-semibold uppercase tracking-[0.07em] text-fg-subtle">Sources</span>
       {sources.map((source) => (
-        <span key={source} className="rounded-full border border-white/10 bg-white/[0.05] px-2.5 py-0.5 text-[12px] text-[#D8CCBF]">
+        <span key={source} className="rounded-full border border-white/10 bg-white/[0.05] px-2.5 py-0.5 text-[12px] text-fg-soft">
           {source}
         </span>
       ))}
@@ -220,26 +220,26 @@ export function SageReply({
     <section
       aria-label="Sage's answer"
       aria-live="polite"
-      className={`z-30 absolute bottom-[100px] left-1/2 ${centered ? '' : 'xl:left-3/5'} -translate-x-1/2 w-[calc(100%-1rem)] sm:w-4/5 max-w-[34rem] flex flex-col overflow-hidden rounded-[22px] border border-white/[0.08] bg-[#17110E]/95 text-[#F3EDE6] shadow-[0_18px_48px_rgba(0,0,0,0.5)] backdrop-blur-xl`}
+      className={`z-30 absolute bottom-[100px] left-1/2 ${centered ? '' : 'xl:left-3/5'} -translate-x-1/2 w-[calc(100%-1rem)] sm:w-4/5 max-w-[34rem] flex flex-col overflow-hidden rounded-[22px] border border-white/[0.08] bg-panel/95 text-fg shadow-[0_18px_48px_rgba(0,0,0,0.5)] backdrop-blur-xl`}
       style={{ fontFamily: "-apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Helvetica Neue', system-ui, sans-serif" }}
     >
       <header className="flex items-center justify-between gap-3 px-4 pt-3 pb-1.5">
         <span className="flex items-center gap-2">
-          <span className="flex size-6 items-center justify-center rounded-full bg-[#D9A066]/15">
-            <Sparkles className="size-3.5 text-[#D9A066]" />
+          <span className="flex size-6 items-center justify-center rounded-full bg-caramel/15">
+            <Sparkles className="size-3.5 text-caramel" />
           </span>
-          <span className="text-[11px] font-semibold uppercase tracking-[0.08em] text-[#D9A066]">Sage</span>
-          {working && <span className="text-[12px] text-[#B8A99B]">{streamingText ? 'writing…' : 'working…'}</span>}
+          <span className="text-[11px] font-semibold uppercase tracking-[0.08em] text-caramel">Sage</span>
+          {working && <span className="text-[12px] text-fg-muted">{streamingText ? 'writing…' : 'working…'}</span>}
         </span>
         <span className="flex items-center gap-1">
           {working &&
             (cancelling ? (
-              <span className="text-[12px] text-[#B8A99B]">Stopping…</span>
+              <span className="text-[12px] text-fg-muted">Stopping…</span>
             ) : (
               <button
                 type="button"
                 onClick={onCancel}
-                className="min-h-8 rounded-full px-3 text-[12px] font-semibold text-[#E9B987] hover:bg-white/[0.06] cursor-pointer"
+                className="min-h-8 rounded-full px-3 text-[12px] font-semibold text-caramel-hi hover:bg-white/[0.06] cursor-pointer"
               >
                 Stop
               </button>
@@ -249,7 +249,7 @@ export function SageReply({
               type="button"
               onClick={() => setHidden(true)}
               aria-label="Close the answer"
-              className="flex size-8 items-center justify-center rounded-full text-[#B8A99B] hover:bg-white/[0.06] hover:text-[#F3EDE6] cursor-pointer"
+              className="flex size-8 items-center justify-center rounded-full text-fg-muted hover:bg-white/[0.06] hover:text-fg cursor-pointer"
             >
               <X className="size-4" />
             </button>
@@ -266,7 +266,7 @@ export function SageReply({
           <button
             type="button"
             onClick={() => onDismissError(error.id)}
-            className="shrink-0 text-[12px] font-semibold text-[#E9B987] hover:underline cursor-pointer"
+            className="shrink-0 text-[12px] font-semibold text-caramel-hi hover:underline cursor-pointer"
           >
             Dismiss
           </button>
@@ -276,7 +276,7 @@ export function SageReply({
       {!streamingText && actions.length > 0 && (
         <ol className="m-0 mx-4 mb-3 flex list-none flex-col gap-1.5 p-0">
           {actions.map((action) => (
-            <li key={action.action_id} className="flex items-center text-[14px] text-[#D8CCBF] [&_svg]:text-[#D9A066]">
+            <li key={action.action_id} className="flex items-center text-[14px] text-fg-soft [&_svg]:text-caramel">
               {actionIcon(action.action)}
               <span>{action.action}</span>
             </li>
@@ -290,7 +290,7 @@ export function SageReply({
             <Answer text={answer} streaming={!!streamingText} />
           </div>
           {overflows && !expanded && (
-            <div className="pointer-events-none absolute inset-x-0 bottom-0 h-10 bg-gradient-to-t from-[#17110E] to-transparent" />
+            <div className="pointer-events-none absolute inset-x-0 bottom-0 h-10 bg-gradient-to-t from-panel to-transparent" />
           )}
         </div>
       )}
@@ -298,7 +298,7 @@ export function SageReply({
         <button
           type="button"
           onClick={() => setExpanded((v) => !v)}
-          className="mx-4 mb-2 self-start inline-flex items-center gap-1 rounded-full px-2 py-1 text-[12px] font-semibold text-[#D9A066] hover:bg-white/[0.05] cursor-pointer"
+          className="mx-4 mb-2 self-start inline-flex items-center gap-1 rounded-full px-2 py-1 text-[12px] font-semibold text-caramel hover:bg-white/[0.05] cursor-pointer"
         >
           {expanded ? <ChevronUp className="size-3.5" /> : <ChevronDown className="size-3.5" />}
           {expanded ? 'Show less' : 'Show all'}
@@ -307,8 +307,8 @@ export function SageReply({
       {!streamingText && <Sources sources={sources} />}
       {!working && text && replyMessageId !== undefined && <AnswerRating mapId={mapId} messageId={replyMessageId} />}
       {working && !text && actions.length === 0 && (
-        <div className="flex items-center gap-2 px-4 pb-3 text-[14px] text-[#B8A99B]">
-          <LoaderCircle className="size-4 animate-spin text-[#D9A066]" /> Thinking…
+        <div className="flex items-center gap-2 px-4 pb-3 text-[14px] text-fg-muted">
+          <LoaderCircle className="size-4 animate-spin text-caramel" /> Thinking…
         </div>
       )}
     </section>
@@ -342,14 +342,14 @@ export function SageAnswerHere({ sage, since }: { sage: SageLink; since: number 
     <section
       aria-label="Sage's answer"
       aria-live="polite"
-      className="flex flex-col overflow-hidden rounded-[18px] border border-white/[0.08] bg-[#17110E]/95 text-[#F3EDE6]"
+      className="flex flex-col overflow-hidden rounded-[18px] border border-white/[0.08] bg-panel/95 text-fg"
     >
       <header className="flex items-center gap-2 px-4 pt-3 pb-1.5">
-        <span className="flex size-6 items-center justify-center rounded-full bg-[#D9A066]/15">
-          <Sparkles className="size-3.5 text-[#D9A066]" />
+        <span className="flex size-6 items-center justify-center rounded-full bg-caramel/15">
+          <Sparkles className="size-3.5 text-caramel" />
         </span>
-        <span className="text-[11px] font-semibold uppercase tracking-[0.08em] text-[#D9A066]">Sage</span>
-        {!answered && <span className="text-[12px] text-[#B8A99B]">{sage.streamingText ? 'writing…' : 'working…'}</span>}
+        <span className="text-[11px] font-semibold uppercase tracking-[0.08em] text-caramel">Sage</span>
+        {!answered && <span className="text-[12px] text-fg-muted">{sage.streamingText ? 'writing…' : 'working…'}</span>}
       </header>
       {sage.errors.map((error) => (
         <p
@@ -372,12 +372,12 @@ export function SageAnswerHere({ sage, since }: { sage: SageLink; since: number 
           <Answer text={sage.streamingText} streaming />
         </div>
       ) : sage.errors.length === 0 ? (
-        <div className="flex flex-col gap-1.5 px-4 pb-3 text-[14px] text-[#B8A99B]">
+        <div className="flex flex-col gap-1.5 px-4 pb-3 text-[14px] text-fg-muted">
           {sage.actions.map((action) => (
             <span key={action.action_id}>{action.action}</span>
           ))}
           <span className="flex items-center gap-2">
-            <LoaderCircle className="size-4 animate-spin text-[#D9A066]" /> Thinking…
+            <LoaderCircle className="size-4 animate-spin text-caramel" /> Thinking…
           </span>
         </div>
       ) : null}

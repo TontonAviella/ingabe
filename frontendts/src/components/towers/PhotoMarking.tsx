@@ -72,25 +72,25 @@ import {
 
 const BUTTON =
   'inline-flex items-center justify-center gap-1.5 min-h-10 px-3.5 rounded-full text-[14px] font-semibold cursor-pointer disabled:opacity-50 disabled:cursor-default';
-const PRIMARY = `${BUTTON} bg-[#D9A066] text-[#140E0B] hover:bg-[#E9B987]`;
-const SECONDARY = `${BUTTON} bg-white/[0.07] text-[#F3EDE6] border border-white/10 hover:bg-white/[0.12]`;
+const PRIMARY = `${BUTTON} bg-caramel text-panel hover:bg-caramel-hi`;
+const SECONDARY = `${BUTTON} bg-white/[0.07] text-fg border border-white/10 hover:bg-white/[0.12]`;
 const SMALL = 'inline-flex items-center gap-1 min-h-9 px-3 rounded-full text-[13px] font-bold shadow-lg cursor-pointer';
 const BIG =
   'inline-flex items-center justify-center gap-2 min-h-12 rounded-[14px] text-[16px] font-bold cursor-pointer disabled:opacity-50';
-const LINK = 'bg-transparent border-0 p-0 text-[13px] text-[#B8A99B] underline underline-offset-[3px] hover:text-[#F3EDE6] cursor-pointer';
-const EYEBROW = 'text-[11px] font-bold uppercase tracking-[0.12em] text-[#D9A066]';
-const ALERT = 'm-0 rounded-[12px] bg-[#E9B987]/10 border border-[#E9B987]/30 px-3 py-2 text-[14px] text-[#E9B987]';
+const LINK = 'bg-transparent border-0 p-0 text-[13px] text-fg-muted underline underline-offset-[3px] hover:text-fg cursor-pointer';
+const EYEBROW = 'text-[11px] font-bold uppercase tracking-[0.12em] text-caramel';
+const ALERT = 'm-0 rounded-[12px] bg-caramel-hi/10 border border-caramel-hi/30 px-3 py-2 text-[14px] text-caramel-hi';
 
 /** How a question's status looks: the pill's colours by the server's status. */
 const PILL: Record<string, string> = {
-  needs_check: 'bg-[#D9A066] text-[#0B0908]',
-  ready: 'bg-[#F3EDE6] text-[#0B0908]',
-  partly: 'bg-[#F3EDE6]/80 text-[#0B0908]',
-  working: 'border border-[#D9A066]/50 text-[#E9B987]',
+  needs_check: 'bg-caramel text-canvas',
+  ready: 'bg-fg text-canvas',
+  partly: 'bg-fg/80 text-canvas',
+  working: 'border border-caramel/50 text-caramel-hi',
   needs_flight: 'border border-[#8FD3FF]/40 bg-[#8FD3FF]/10 text-[#8FD3FF]',
   needs_camera: 'border border-[#FF8FB4]/40 bg-[#FF8FB4]/10 text-[#FF8FB4]',
-  to_build: 'border border-white/15 text-[#B8A99B]',
-  cant_tell: 'border border-white/15 text-[#B8A99B]',
+  to_build: 'border border-white/15 text-fg-muted',
+  cant_tell: 'border border-white/15 text-fg-muted',
 };
 
 function takenLine(photo: InspectionPhoto): string | null {
@@ -195,7 +195,7 @@ function PartCrop({
 /** "New": the answer changed since this reader last looked. */
 function NewMark() {
   return (
-    <span className="mr-1.5 inline-block rounded-full bg-[#D9A066] px-1.5 py-px align-[1px] text-[10.5px] font-bold uppercase tracking-[0.04em] text-[#17110E]">
+    <span className="mr-1.5 inline-block rounded-full bg-caramel px-1.5 py-px align-[1px] text-[10.5px] font-bold uppercase tracking-[0.04em] text-panel">
       New
     </span>
   );
@@ -203,7 +203,7 @@ function NewMark() {
 
 function ReaderSwitch({ audience, onChange }: { audience: TowerAudience; onChange: (a: TowerAudience) => void }) {
   return (
-    <div className="inline-grid grid-cols-3 gap-[2px] rounded-[10px] bg-[#221813] p-[3px]" role="group" aria-label="Reading as">
+    <div className="inline-grid grid-cols-3 gap-[2px] rounded-[10px] bg-raised p-[3px]" role="group" aria-label="Reading as">
       {TOWER_AUDIENCES.map(({ id, label }) => (
         <button
           key={id}
@@ -211,7 +211,7 @@ function ReaderSwitch({ audience, onChange }: { audience: TowerAudience; onChang
           aria-pressed={audience === id}
           onClick={() => onChange(id)}
           className={`rounded-[8px] px-2.5 py-1 text-[12.5px] cursor-pointer ${
-            audience === id ? 'bg-[#3A2A21] font-bold text-[#F3EDE6]' : 'font-semibold text-[#B8A99B] hover:text-[#F3EDE6]'
+            audience === id ? 'bg-raised font-bold text-fg' : 'font-semibold text-fg-muted hover:text-fg'
           }`}
         >
           {label}
@@ -285,8 +285,8 @@ function CloseLookBlock({ look, questionId, url }: { look: PhotoCloseLook | unde
   if (!look || look.status === 'off') return null;
   if (look.status === 'working' || look.status === 'none')
     return (
-      <p role="status" className="m-0 flex items-center gap-2 text-[13px] text-[#B8A99B]">
-        <LoaderCircle className="size-4 animate-spin text-[#D9A066]" /> A close look at this photo is on its way…
+      <p role="status" className="m-0 flex items-center gap-2 text-[13px] text-fg-muted">
+        <LoaderCircle className="size-4 animate-spin text-caramel" /> A close look at this photo is on its way…
       </p>
     );
   const result = look.result;
@@ -295,35 +295,35 @@ function CloseLookBlock({ look, questionId, url }: { look: PhotoCloseLook | unde
   const regions = CLOSE_UPS_FOR.has(questionId) ? result.regions : [];
   if (!worry && regions.length === 0) return null;
   return (
-    <section className="flex flex-col gap-2 rounded-[12px] border border-[#D9A066]/25 bg-[#D9A066]/[0.06] px-3 py-2.5">
-      <h3 className="m-0 text-[11px] font-bold uppercase tracking-[0.1em] text-[#D9A066]">A close look at this photo</h3>
+    <section className="flex flex-col gap-2 rounded-[12px] border border-caramel/25 bg-caramel/[0.06] px-3 py-2.5">
+      <h3 className="m-0 text-[11px] font-bold uppercase tracking-[0.1em] text-caramel">A close look at this photo</h3>
       {worry && (
-        <p className="m-0 text-[14px] leading-snug text-[#F3EDE6]">
-          <span className="mr-1.5 rounded-full border border-white/15 px-1.5 py-[1px] text-[11px] font-bold text-[#B8A99B]">
+        <p className="m-0 text-[14px] leading-snug text-fg">
+          <span className="mr-1.5 rounded-full border border-white/15 px-1.5 py-[1px] text-[11px] font-bold text-fg-muted">
             {worry.can_see === 'yes' ? 'can see' : worry.can_see === 'partly' ? 'partly in view' : 'not in this photo'}
           </span>
           {worry.answer}
-          {worry.can_see !== 'yes' && worry.needs ? <span className="text-[#B8A99B]"> What would show it: {worry.needs}</span> : null}
+          {worry.can_see !== 'yes' && worry.needs ? <span className="text-fg-muted"> What would show it: {worry.needs}</span> : null}
         </p>
       )}
       {regions.map((r) => (
         <div key={r.n} className="flex flex-col gap-1.5">
           <RegionCrop url={url} region={r} />
-          <p className="m-0 text-[13px] font-semibold text-[#F3EDE6]">{r.name}</p>
-          <ul className="m-0 flex list-none flex-col gap-1 p-0 text-[13px] leading-snug text-[#D8CCBF]">
+          <p className="m-0 text-[13px] font-semibold text-fg">{r.name}</p>
+          <ul className="m-0 flex list-none flex-col gap-1 p-0 text-[13px] leading-snug text-fg-soft">
             {r.findings
               .filter((f) => f.can_see !== 'no')
               .map((f) => (
                 <li key={`${r.n}-${f.kind}`}>
-                  {f.flag && <b className="mr-1 text-[#E9B987]">Check:</b>}
+                  {f.flag && <b className="mr-1 text-caramel-hi">Check:</b>}
                   {f.kind}
-                  {f.where ? <span className="text-[#8C7D70]"> · {f.where}</span> : null}
+                  {f.where ? <span className="text-fg-subtle"> · {f.where}</span> : null}
                 </li>
               ))}
           </ul>
         </div>
       ))}
-      <p className="m-0 text-[11.5px] text-[#8C7D70]">{CLOSE_LOOK_NOTE}</p>
+      <p className="m-0 text-[11.5px] text-fg-subtle">{CLOSE_LOOK_NOTE}</p>
     </section>
   );
 }
@@ -354,28 +354,28 @@ function QuestionDetail({
       </div>
       <h2 className="m-0 text-[21px] font-bold leading-tight text-balance">{question.question}</h2>
       <section className="flex flex-col gap-1">
-        <h3 className="m-0 text-[11px] font-bold uppercase tracking-[0.1em] text-[#8C7D70]">On this photo</h3>
-        <p className="m-0 text-[14.5px] leading-snug text-[#F3EDE6]">{question.on_photo}</p>
+        <h3 className="m-0 text-[11px] font-bold uppercase tracking-[0.1em] text-fg-subtle">On this photo</h3>
+        <p className="m-0 text-[14.5px] leading-snug text-fg">{question.on_photo}</p>
       </section>
       <CloseLookBlock look={look} questionId={question.id} url={photoUrl} />
       {answer.data && (
         <section className="flex flex-col gap-1">
-          <h3 className="m-0 text-[11px] font-bold uppercase tracking-[0.1em] text-[#8C7D70]">Why it matters</h3>
-          <p className="m-0 text-[14.5px] leading-snug text-[#F3EDE6]">{answer.data.why}</p>
+          <h3 className="m-0 text-[11px] font-bold uppercase tracking-[0.1em] text-fg-subtle">Why it matters</h3>
+          <p className="m-0 text-[14.5px] leading-snug text-fg">{answer.data.why}</p>
         </section>
       )}
       {(question.needs || answer.data?.todo) && (
         <section className="flex flex-col gap-1 rounded-[12px] border border-[#8FD3FF]/25 bg-[#8FD3FF]/[0.07] px-3 py-2.5">
-          <h3 className="m-0 text-[11px] font-bold uppercase tracking-[0.1em] text-[#8C7D70]">
+          <h3 className="m-0 text-[11px] font-bold uppercase tracking-[0.1em] text-fg-subtle">
             {question.needs ? 'What would answer it' : 'What to do'}
           </h3>
-          <p className="m-0 text-[14.5px] leading-snug text-[#F3EDE6]">{question.needs ?? answer.data?.todo}</p>
+          <p className="m-0 text-[14.5px] leading-snug text-fg">{question.needs ?? answer.data?.todo}</p>
         </section>
       )}
       {answer.data && answer.data.how_sure.because.length > 0 && (
-        <section className="flex flex-col gap-1 border-l-2 border-[#4A3326] pl-2.5">
-          <h3 className="m-0 text-[11px] font-bold uppercase tracking-[0.1em] text-[#8C7D70]">How sure · {answer.data.how_sure.label}</h3>
-          <ul className="m-0 flex list-none flex-col gap-1 p-0 text-[12.5px] leading-snug text-[#B8A99B]">
+        <section className="flex flex-col gap-1 border-l-2 border-line pl-2.5">
+          <h3 className="m-0 text-[11px] font-bold uppercase tracking-[0.1em] text-fg-subtle">How sure · {answer.data.how_sure.label}</h3>
+          <ul className="m-0 flex list-none flex-col gap-1 p-0 text-[12.5px] leading-snug text-fg-muted">
             {answer.data.how_sure.because.map((line) => (
               <li key={line}>{line}</li>
             ))}
@@ -816,13 +816,13 @@ function PhotoWorkspace({
       <button
         type="button"
         onClick={() => act({ type: 'review/undo', part: partView, id: selectedSuggestion })}
-        className={`${SMALL} bg-[#F3EDE6] text-[#140E0B]`}
+        className={`${SMALL} bg-fg text-panel`}
       >
         <Undo2 className="size-4" /> Undo
       </button>
     ) : (
       <>
-        <button type="button" onClick={() => decidePart(selectedSuggestion, 'keep')} className={`${SMALL} bg-[#D9A066] text-[#0B0908]`}>
+        <button type="button" onClick={() => decidePart(selectedSuggestion, 'keep')} className={`${SMALL} bg-caramel text-canvas`}>
           <Check className="size-4" strokeWidth={3} /> Keep
         </button>
         <button type="button" onClick={() => decidePart(selectedSuggestion, 'reject')} className={`${SMALL} bg-[#FF4D1A] text-white`}>
@@ -832,7 +832,7 @@ function PhotoWorkspace({
     );
   } else if (selected && (selected.startsWith('a:') || (partView && selected.startsWith('m:') && !partReviewing))) {
     controls = (
-      <button type="button" onClick={removeSelected} className={`${SMALL} bg-[#F3EDE6] text-[#140E0B]`}>
+      <button type="button" onClick={removeSelected} className={`${SMALL} bg-fg text-panel`}>
         <Trash2 className="size-4" /> Remove
       </button>
     );
@@ -858,7 +858,7 @@ function PhotoWorkspace({
       <>
         The model suggests <b>{suggested.some}</b> here
         {suggested.none.length > 0 && <>, and is not sure of any {suggested.none.join(' or ')}</>}.{' '}
-        <span className="text-[#B8A99B]">Nothing is counted until you check.</span>
+        <span className="text-fg-muted">Nothing is counted until you check.</span>
       </>
     );
 
@@ -889,7 +889,7 @@ function PhotoWorkspace({
   const back = (
     <button
       type="button"
-      className="inline-flex items-center gap-1.5 self-start bg-transparent p-0 text-[13px] text-[#B8A99B] hover:text-[#F3EDE6] cursor-pointer border-0"
+      className="inline-flex items-center gap-1.5 self-start bg-transparent p-0 text-[13px] text-fg-muted hover:text-fg cursor-pointer border-0"
       onClick={() => {
         setView({ kind: 'questions' });
         setSelected(null);
@@ -903,7 +903,7 @@ function PhotoWorkspace({
 
   let panel: React.ReactNode;
   if (work.isPending) {
-    panel = <p className="m-0 text-[15px] text-[#D8CCBF]">Loading this photo…</p>;
+    panel = <p className="m-0 text-[15px] text-fg-soft">Loading this photo…</p>;
   } else if (view.kind === 'questions' && questions.data) {
     panel = (
       <div className="flex flex-col gap-3">
@@ -923,14 +923,14 @@ function PhotoWorkspace({
                       : { kind: 'question', id: q.id },
                   )
                 }
-                className="grid w-full grid-cols-[minmax(0,1fr)_auto] items-center gap-x-2.5 gap-y-1 rounded-[14px] border border-white/[0.06] bg-[#221813] px-3.5 py-3 text-left hover:border-[#D9A066]/45 cursor-pointer"
+                className="grid w-full grid-cols-[minmax(0,1fr)_auto] items-center gap-x-2.5 gap-y-1 rounded-[14px] border border-white/[0.06] bg-raised px-3.5 py-3 text-left hover:border-caramel/45 cursor-pointer"
               >
-                <span className="text-[14.5px] font-semibold leading-snug text-[#F3EDE6]">
+                <span className="text-[14.5px] font-semibold leading-snug text-fg">
                   {q.new && <NewMark />}
                   {q.question}
                 </span>
                 <Pill status={q.status} label={q.status_label} />
-                <span className="col-span-2 text-[12.5px] leading-snug text-[#B8A99B]">{q.on_photo}</span>
+                <span className="col-span-2 text-[12.5px] leading-snug text-fg-muted">{q.on_photo}</span>
               </button>
             </li>
           ))}
@@ -938,7 +938,7 @@ function PhotoWorkspace({
         {sage && (
           <div className="flex flex-col gap-2.5 border-t border-white/[0.07] pt-3">
             <span className={EYEBROW}>Ask Sage about this photo</span>
-            {asked && <p className="m-0 text-[14.5px] font-semibold leading-snug text-[#F3EDE6]">{asked.question}</p>}
+            {asked && <p className="m-0 text-[14.5px] font-semibold leading-snug text-fg">{asked.question}</p>}
             {asked && <SageAnswerHere sage={sage} since={asked.since} />}
             <AskSageBox othersAsked={othersAsked.data?.questions ?? []} onAsk={askSage} busy={sage.waiting || !!sage.streamingText} />
           </div>
@@ -970,7 +970,7 @@ function PhotoWorkspace({
         <div className="flex flex-col gap-3">
           {hasQuestions && back}
           <h2 className="m-0 text-[21px] font-bold leading-tight">This photo was not scanned</h2>
-          <p className="m-0 text-[14px] leading-snug text-[#B8A99B]">
+          <p className="m-0 text-[14px] leading-snug text-fg-muted">
             This photo was not scanned for {notScanned.map((p) => p.plural).join(' or ')} (it has no camera angle, or could not be read).
             Draw a box around one you see, then let the model find the rest.
           </p>
@@ -987,8 +987,8 @@ function PhotoWorkspace({
       panel = (
         <div className="flex flex-col gap-3">
           {hasQuestions && back}
-          <p role="status" className="m-0 flex items-center gap-2 text-[14px] leading-snug text-[#D8CCBF]">
-            <LoaderCircle className="size-4 shrink-0 animate-spin text-[#D9A066]" />
+          <p role="status" className="m-0 flex items-center gap-2 text-[14px] leading-snug text-fg-soft">
+            <LoaderCircle className="size-4 shrink-0 animate-spin text-caramel" />
             The models are looking at this photo. Their suggestions show here as soon as they are done.
           </p>
         </div>
@@ -1011,9 +1011,9 @@ function PhotoWorkspace({
           </span>
           <PartCrop url={photo.url} part={item.part} box={item.suggestion.box} outline={item.suggestion.outline} useBox={!!useBox[key]} />
           <h2 className="m-0 text-[21px] font-bold leading-tight">Is this a {label(item.part).label.toLowerCase()}?</h2>
-          <span className="inline-flex items-center gap-2 text-[12.5px] text-[#B8A99B]">
-            <span className="inline-block h-1.5 w-16 overflow-hidden rounded-full bg-[#221813]">
-              <span className="block h-full bg-[#D9A066]" style={{ width: `${Math.round(item.suggestion.score * 100)}%` }} />
+          <span className="inline-flex items-center gap-2 text-[12.5px] text-fg-muted">
+            <span className="inline-block h-1.5 w-16 overflow-hidden rounded-full bg-raised">
+              <span className="block h-full bg-caramel" style={{ width: `${Math.round(item.suggestion.score * 100)}%` }} />
             </span>
             {scoreWords(item.suggestion.score)}
           </span>
@@ -1023,7 +1023,7 @@ function PhotoWorkspace({
             return (
               <p
                 className={`m-0 rounded-[10px] border px-2.5 py-2 text-[13px] leading-snug ${
-                  check.agrees === 'no' ? 'border-[#E9B987]/40 bg-[#E9B987]/10 text-[#E9B987]' : 'border-white/10 text-[#D8CCBF]'
+                  check.agrees === 'no' ? 'border-caramel-hi/40 bg-caramel-hi/10 text-caramel-hi' : 'border-white/10 text-fg-soft'
                 }`}
               >
                 <b>A close look: </b>
@@ -1036,8 +1036,8 @@ function PhotoWorkspace({
             const inBox = countedInside(counted, item.part, item.suggestion.box);
             if (inBox.length < 2) return null;
             return (
-              <div className="flex flex-col gap-2 rounded-[10px] border border-[#D9A066]/40 bg-[#D9A066]/10 px-2.5 py-2">
-                <p className="m-0 text-[13px] leading-snug text-[#F3EDE6]">
+              <div className="flex flex-col gap-2 rounded-[10px] border border-caramel/40 bg-caramel/10 px-2.5 py-2">
+                <p className="m-0 text-[13px] leading-snug text-fg">
                   <b>
                     A close look sees {inBox.length} {label(item.part).plural.toLowerCase()} in this box.
                   </b>{' '}
@@ -1052,12 +1052,12 @@ function PhotoWorkspace({
           <div className="grid grid-cols-2 gap-2">
             <button
               type="button"
-              className={`${BIG} border border-white/15 bg-white/[0.06] text-[#F3EDE6] hover:bg-[#FF4D1A]/20`}
+              className={`${BIG} border border-white/15 bg-white/[0.06] text-fg hover:bg-[#FF4D1A]/20`}
               onClick={() => answer('reject')}
             >
               No <kbd className="rounded border border-current px-1 font-mono text-[11px] opacity-60">N</kbd>
             </button>
-            <button type="button" className={`${BIG} bg-[#D9A066] text-[#0B0908] hover:bg-[#E9B987]`} onClick={() => answer('keep')}>
+            <button type="button" className={`${BIG} bg-caramel text-canvas hover:bg-caramel-hi`} onClick={() => answer('keep')}>
               Yes <kbd className="rounded border border-current px-1 font-mono text-[11px] opacity-60">Y</kbd>
             </button>
           </div>
@@ -1067,9 +1067,9 @@ function PhotoWorkspace({
                 {useBox[key] ? 'Show the traced outline' : 'Outline wrong? Show the box'}
               </button>
             ) : (
-              <span className="text-[12px] text-[#8C7D70]">Tap the box on the photo to fix its corners</span>
+              <span className="text-[12px] text-fg-subtle">Tap the box on the photo to fix its corners</span>
             )}
-            <span className="text-[12px] text-[#8C7D70]">Each answer is kept as you give it</span>
+            <span className="text-[12px] text-fg-subtle">Each answer is kept as you give it</span>
           </div>
           <div className="flex flex-wrap gap-[5px]" role="group" aria-label="Every suggestion on this photo">
             {deck.map((d, i) => {
@@ -1086,8 +1086,8 @@ function PhotoWorkspace({
                     }
                   }}
                   className={`grid size-[18px] place-items-center rounded-[6px] border-2 p-0 text-[10px] font-extrabold cursor-pointer ${
-                    d.key === item.key ? 'outline outline-2 outline-offset-2 outline-[#F3EDE6]' : ''
-                  } ${decision?.kind === 'rejected' ? 'opacity-35 text-[#B8A99B]' : 'text-[#0B0908]'}`}
+                    d.key === item.key ? 'outline outline-2 outline-offset-2 outline-fg' : ''
+                  } ${decision?.kind === 'rejected' ? 'opacity-35 text-fg-muted' : 'text-canvas'}`}
                   style={{
                     borderColor: PART_COLOR[d.part],
                     background: decision && decision.kind !== 'rejected' ? PART_COLOR[d.part] : 'transparent',
@@ -1122,29 +1122,25 @@ function PhotoWorkspace({
             point={c.check === null ? undefined : c.point}
           />
           <h2 className="m-0 text-[21px] font-bold leading-tight">Is this a {name}?</h2>
-          <p className="m-0 text-[14px] leading-snug text-[#B8A99B]">
+          <p className="m-0 text-[14px] leading-snug text-fg-muted">
             {c.check === null
               ? `A close look found and outlined it; the model did not suggest it.`
               : `A close look marked a ${name} here, but its outline was not kept (${c.check}). If it is one, draw its box.`}
           </p>
           {drawingMissed ? (
-            <p role="status" className="m-0 rounded-[12px] border border-white/10 bg-[#221813] px-3 py-2 text-[14px] text-[#F3EDE6]">
+            <p role="status" className="m-0 rounded-[12px] border border-white/10 bg-raised px-3 py-2 text-[14px] text-fg">
               Drag a box around the {name} on the photo.
             </p>
           ) : (
             <div className="grid grid-cols-2 gap-2">
               <button
                 type="button"
-                className={`${BIG} border border-white/15 bg-white/[0.06] text-[#F3EDE6] hover:bg-[#FF4D1A]/20`}
+                className={`${BIG} border border-white/15 bg-white/[0.06] text-fg hover:bg-[#FF4D1A]/20`}
                 onClick={() => answerMissed('reject')}
               >
                 No <kbd className="rounded border border-current px-1 font-mono text-[11px] opacity-60">N</kbd>
               </button>
-              <button
-                type="button"
-                className={`${BIG} bg-[#D9A066] text-[#0B0908] hover:bg-[#E9B987]`}
-                onClick={() => answerMissed('keep')}
-              >
+              <button type="button" className={`${BIG} bg-caramel text-canvas hover:bg-caramel-hi`} onClick={() => answerMissed('keep')}>
                 {c.check === null ? 'Yes' : 'Yes: draw its box'}{' '}
                 <kbd className="rounded border border-current px-1 font-mono text-[11px] opacity-60">Y</kbd>
               </button>
@@ -1154,9 +1150,9 @@ function PhotoWorkspace({
             <button type="button" className={LINK} onClick={() => skipMissed(missed.map((m) => m.key))}>
               Skip the rest
             </button>
-            <span className="text-[12px] text-[#8C7D70]">Only what you keep is counted</span>
+            <span className="text-[12px] text-fg-subtle">Only what you keep is counted</span>
           </div>
-          <p className="m-0 text-[11.5px] text-[#8C7D70]">{CLOSE_LOOK_NOTE}</p>
+          <p className="m-0 text-[11.5px] text-fg-subtle">{CLOSE_LOOK_NOTE}</p>
         </div>
       );
     } else if (shownStep !== 'done') {
@@ -1167,7 +1163,7 @@ function PhotoWorkspace({
           <h2 className="m-0 text-[21px] font-bold leading-tight">
             {drawInstead ? 'Draw a box around it' : 'Tap a part the model missed'}
           </h2>
-          <p className="m-0 text-[14px] leading-snug text-[#B8A99B]">
+          <p className="m-0 text-[14px] leading-snug text-fg-muted">
             {drawInstead
               ? 'Drag a box around the part on the photo.'
               : 'Pick what it is, then tap it on the photo: its outline is traced for you to see before you keep it.'}
@@ -1183,7 +1179,7 @@ function PhotoWorkspace({
                   setTraced(null);
                 }}
                 className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-[13px] font-semibold cursor-pointer ${
-                  addKind === id ? 'border-[#F3EDE6] bg-[#F3EDE6] text-[#0B0908]' : 'border-white/15 text-[#F3EDE6]'
+                  addKind === id ? 'border-fg bg-fg text-canvas' : 'border-white/15 text-fg'
                 }`}
               >
                 <Dot part={id} /> {name}
@@ -1191,8 +1187,8 @@ function PhotoWorkspace({
             ))}
           </div>
           {trace.isPending && (
-            <p role="status" className="m-0 flex items-center gap-2 text-[14px] text-[#D8CCBF]">
-              <LoaderCircle className="size-4 animate-spin text-[#D9A066]" /> Tracing…
+            <p role="status" className="m-0 flex items-center gap-2 text-[14px] text-fg-soft">
+              <LoaderCircle className="size-4 animate-spin text-caramel" /> Tracing…
             </p>
           )}
           {trace.error && (
@@ -1201,8 +1197,8 @@ function PhotoWorkspace({
             </p>
           )}
           {traced && (
-            <div className="flex flex-col gap-2 rounded-[12px] border border-white/10 bg-[#221813] p-3">
-              <p className="m-0 text-[14px] text-[#F3EDE6]">Is the white outline the {label(traced.part).label.toLowerCase()}?</p>
+            <div className="flex flex-col gap-2 rounded-[12px] border border-white/10 bg-raised p-3">
+              <p className="m-0 text-[14px] text-fg">Is the white outline the {label(traced.part).label.toLowerCase()}?</p>
               <div className="flex flex-wrap gap-2">
                 <button type="button" className={PRIMARY} onClick={keepTraced}>
                   <Check className="size-4" /> Keep it
@@ -1226,16 +1222,16 @@ function PhotoWorkspace({
             </button>
           )}
           {look.data?.counting ? (
-            <p role="status" className="m-0 flex items-center gap-2 text-[13px] text-[#B8A99B]">
-              <LoaderCircle className="size-4 animate-spin text-[#D9A066]" /> A close look is counting the parts on this photo…
+            <p role="status" className="m-0 flex items-center gap-2 text-[13px] text-fg-muted">
+              <LoaderCircle className="size-4 animate-spin text-caramel" /> A close look is counting the parts on this photo…
             </p>
           ) : countedWords(counted, scanned) ? (
-            <p className="m-0 text-[12.5px] leading-snug text-[#8C7D70]">
+            <p className="m-0 text-[12.5px] leading-snug text-fg-subtle">
               A close look: {countedWords(counted, scanned)}. Suggestions only: the count is what you kept.
             </p>
           ) : null}
           {scanned.some(({ id }) => draft[id].review.added.length > 0) && (
-            <p className="m-0 text-[13px] text-[#B8A99B]">
+            <p className="m-0 text-[13px] text-fg-muted">
               Added by you:{' '}
               {scanned
                 .filter(({ id }) => draft[id].review.added.length > 0)
@@ -1279,7 +1275,7 @@ function PhotoWorkspace({
             {scanned.map(({ id, plural }) => {
               const w = work.data?.parts[id];
               return (
-                <div key={id} className="flex items-center justify-between rounded-[12px] bg-[#221813] px-3 py-2.5 text-[15px]">
+                <div key={id} className="flex items-center justify-between rounded-[12px] bg-raised px-3 py-2.5 text-[15px]">
                   <span className="inline-flex items-center gap-2 capitalize">
                     <Dot part={id} /> {plural}
                   </span>
@@ -1289,15 +1285,15 @@ function PhotoWorkspace({
             })}
           </div>
           {look.data?.counting ? (
-            <p role="status" className="m-0 flex items-center gap-2 text-[13px] text-[#B8A99B]">
-              <LoaderCircle className="size-4 animate-spin text-[#D9A066]" /> A close look is counting the parts on this photo…
+            <p role="status" className="m-0 flex items-center gap-2 text-[13px] text-fg-muted">
+              <LoaderCircle className="size-4 animate-spin text-caramel" /> A close look is counting the parts on this photo…
             </p>
           ) : countedWords(counted, scanned) ? (
-            <p className="m-0 text-[12.5px] leading-snug text-[#8C7D70]">
+            <p className="m-0 text-[12.5px] leading-snug text-fg-subtle">
               A close look: {countedWords(counted, scanned)}. Suggestions only: the count is what you kept.
             </p>
           ) : null}
-          <p className="m-0 text-[12.5px] leading-snug text-[#8C7D70]">
+          <p className="m-0 text-[12.5px] leading-snug text-fg-subtle">
             Photos overlap, so the tower's count is the most seen on one photo, not a sum. Comparing with the tenant list (what each
             contract allows) is coming.
           </p>
@@ -1336,7 +1332,7 @@ function PhotoWorkspace({
                 aria-checked={partView === id}
                 onClick={() => setView({ kind: 'part', part: id })}
                 className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-[13px] font-semibold cursor-pointer ${
-                  partView === id ? 'border-[#F3EDE6] bg-[#F3EDE6] text-[#0B0908]' : 'border-white/15 text-[#F3EDE6]'
+                  partView === id ? 'border-fg bg-fg text-canvas' : 'border-white/15 text-fg'
                 }`}
               >
                 {name}
@@ -1347,11 +1343,11 @@ function PhotoWorkspace({
         {!partReviewing ? (
           <>
             <h2 className="m-0 text-[21px] font-bold leading-tight">Mark {partLabel.plural}</h2>
-            <p className="m-0 text-[14px] leading-snug text-[#B8A99B]">
+            <p className="m-0 text-[14px] leading-snug text-fg-muted">
               Draw a box around at least {marksNeeded} {marksNeeded === 1 ? partLabel.label.toLowerCase() : partLabel.plural}, then let the
               finder suggest the rest.
             </p>
-            <span className="text-[13px] tabular-nums text-[#B8A99B]">
+            <span className="text-[13px] tabular-nums text-fg-muted">
               {partDraft.marks.length} marked
               {partDraft.marks.length < marksNeeded && ` · ${marksNeeded - partDraft.marks.length} more to find the rest`}
             </span>
@@ -1378,7 +1374,7 @@ function PhotoWorkspace({
             {partJob.line && (
               <p
                 role={partJob.failed ? 'alert' : 'status'}
-                className={`m-0 text-[14px] ${partJob.failed ? 'text-[#E9B987]' : 'text-[#D8CCBF]'}`}
+                className={`m-0 text-[14px] ${partJob.failed ? 'text-caramel-hi' : 'text-fg-soft'}`}
               >
                 {partJob.line}
               </p>
@@ -1391,10 +1387,10 @@ function PhotoWorkspace({
           </>
         ) : (
           <>
-            <p role="status" className="m-0 text-[17px] font-bold tabular-nums text-[#F3EDE6]">
+            <p role="status" className="m-0 text-[17px] font-bold tabular-nums text-fg">
               {countLine(partWork, partDraft.review)}
             </p>
-            <p className="m-0 text-[14px] leading-snug text-[#B8A99B]">
+            <p className="m-0 text-[14px] leading-snug text-fg-muted">
               {partWork.suggestions.length > 0
                 ? `Tap a box to keep or reject it, drag its corners to fix it, and draw a box around any ${partLabel.label.toLowerCase()} the finder missed. Nothing is counted until you save.`
                 : `The finder found no more ${partLabel.plural}. Draw a box around any it missed, then save: nothing is counted until you save.`}
@@ -1474,7 +1470,7 @@ function PhotoWorkspace({
         {sentence && (
           <p
             role="status"
-            className="pointer-events-none absolute left-3 top-3 m-0 max-w-[min(64ch,calc(100%-24px))] rounded-[14px] border border-white/10 bg-[#17110E]/80 px-3.5 py-2.5 text-[14px] leading-snug text-[#F3EDE6] backdrop-blur-md"
+            className="pointer-events-none absolute left-3 top-3 m-0 max-w-[min(64ch,calc(100%-24px))] rounded-[14px] border border-white/10 bg-panel/80 px-3.5 py-2.5 text-[14px] leading-snug text-fg backdrop-blur-md"
           >
             {sentence}
           </p>
@@ -1484,7 +1480,7 @@ function PhotoWorkspace({
         {questions.error && questions.error.status !== 404 && <p className={ALERT}>{questions.error.message}</p>}
         {panel}
         {partView && (
-          <div className="flex flex-wrap gap-x-3 gap-y-1.5 text-[12px] text-[#D8CCBF]">
+          <div className="flex flex-wrap gap-x-3 gap-y-1.5 text-[12px] text-fg-soft">
             {(partReviewing ? (['mark', 'suggestion', 'kept', 'added', 'rejected'] as BoxKind[]) : (['mark'] as BoxKind[])).map((kind) => (
               <span key={kind} className="inline-flex items-center gap-1.5">
                 <span
@@ -1587,7 +1583,7 @@ export function PhotoMarking({
       <DialogPrimitive.Portal>
         <DialogPrimitive.Content
           aria-describedby={undefined}
-          className="fixed inset-0 z-[60] flex flex-col bg-[#0B0908] text-[#F3EDE6] outline-none"
+          className="fixed inset-0 z-[60] flex flex-col bg-canvas text-fg outline-none"
           style={{ fontFamily: PANEL_FONT }}
           onPointerDownOutside={(e) => e.preventDefault()}
         >
@@ -1596,13 +1592,13 @@ export function PhotoMarking({
               type="button"
               aria-label="Close the photo screen"
               onClick={close}
-              className="flex size-10 items-center justify-center rounded-full text-[#B8A99B] hover:bg-white/10 hover:text-[#F3EDE6] cursor-pointer"
+              className="flex size-10 items-center justify-center rounded-full text-fg-muted hover:bg-white/10 hover:text-fg cursor-pointer"
             >
               <X className="size-5" />
             </button>
             <div className="flex min-w-0 flex-1 flex-col">
               <DialogPrimitive.Title className="m-0 truncate text-[17px] font-bold">{layerName}</DialogPrimitive.Title>
-              <span className="truncate text-[13px] text-[#B8A99B] tabular-nums">
+              <span className="truncate text-[13px] text-fg-muted tabular-nums">
                 Photo {index + 1} of {photos.length}
                 {taken && ` · ${taken}`}
               </span>
@@ -1632,7 +1628,7 @@ export function PhotoMarking({
               </button>
             </div>
             {message && (
-              <p role="status" className="m-0 w-full text-[13px] text-[#E9B987]">
+              <p role="status" className="m-0 w-full text-[13px] text-caramel-hi">
                 {message}
               </p>
             )}
@@ -1653,7 +1649,7 @@ export function PhotoMarking({
               photoLabel={`photo ${index + 1} of ${photos.length}${taken ? ` (${taken.replace(/^Taken/, 'taken')})` : ''} in the "${layerName}" inspection`}
             />
           ) : (
-            <p className="m-0 p-6 text-[15px] text-[#D8CCBF]">This inspection has no photos.</p>
+            <p className="m-0 p-6 text-[15px] text-fg-soft">This inspection has no photos.</p>
           )}
         </DialogPrimitive.Content>
       </DialogPrimitive.Portal>

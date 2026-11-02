@@ -153,11 +153,9 @@ function byZoom<T>(far: Paint<T>, near: Paint<T>): ExpressionSpecification {
 
 function StatusLine({ card }: { card: DroneCard }) {
   return (
-    <span className="inline-flex items-center gap-1.5 text-[12px] font-semibold text-[#D8CCBF]">
+    <span className="inline-flex items-center gap-1.5 text-[12px] font-semibold text-fg-soft">
       {card.new && (
-        <span className="rounded-full bg-[#D9A066] px-1.5 py-px text-[10.5px] font-bold uppercase tracking-[0.04em] text-[#17110E]">
-          New
-        </span>
+        <span className="rounded-full bg-caramel px-1.5 py-px text-[10.5px] font-bold uppercase tracking-[0.04em] text-panel">New</span>
       )}
       <StatusIcon status={card.status} />
       {card.status_label}
@@ -190,20 +188,20 @@ function AddDocument({ layerId, upload }: { layerId: string; upload: NonNullable
         type="button"
         disabled={add.isPending}
         onClick={() => input.current?.click()}
-        className="inline-flex items-center justify-center gap-2 min-h-11 px-4 rounded-[14px] text-[14px] font-semibold bg-[#D9A066] text-[#140E0B] hover:bg-[#E9B987] disabled:opacity-60 cursor-pointer"
+        className="inline-flex items-center justify-center gap-2 min-h-11 px-4 rounded-[14px] text-[14px] font-semibold bg-caramel text-panel hover:bg-caramel-hi disabled:opacity-60 cursor-pointer"
       >
         {add.isPending ? <LoaderCircle className="size-4 animate-spin" /> : <FileUp className="size-4" />}
         {add.isPending ? 'Reading your document…' : upload.label}
       </button>
       {result && (
-        <p className="m-0 text-[13px] leading-snug text-[#D8CCBF]">
+        <p className="m-0 text-[13px] leading-snug text-fg-soft">
           {result.kind === 'soil_report' && `Read ${result.soil_samples} soil samples.`}
           {result.kind === 'harvest_records' && `Read ${result.harvests} harvests.`}
           {result.kind === 'other' && 'This does not look like a soil report or harvest records; nothing was added to the cards.'}
           {result.warnings.length > 0 && ` Note: ${result.warnings.join(' ')}`}
         </p>
       )}
-      {add.error && <p className="m-0 text-[13px] text-[#E9B987]">{add.error.message}</p>}
+      {add.error && <p className="m-0 text-[13px] text-caramel-hi">{add.error.message}</p>}
     </div>
   );
 }
@@ -225,12 +223,12 @@ function FieldCheck({
   const common = check.options.filter((o) => COMMON_CHECK_CROPS.includes(o.id));
   const rest = check.options.filter((o) => !COMMON_CHECK_CROPS.includes(o.id));
   return (
-    <div className="flex flex-col gap-2 rounded-[18px] bg-[#1E1612] border border-[#D9A066]/30 p-4">
+    <div className="flex flex-col gap-2 rounded-[18px] bg-panel border border-caramel/30 p-4">
       <div className="flex items-baseline justify-between gap-3">
-        <span className="text-[15px] font-bold text-[#F3EDE6]">{check.title}</span>
-        {check.checked > 0 && <span className="text-[12px] text-[#B8A99B] tabular-nums">{check.checked} checked</span>}
+        <span className="text-[15px] font-bold text-fg">{check.title}</span>
+        {check.checked > 0 && <span className="text-[12px] text-fg-muted tabular-nums">{check.checked} checked</span>}
       </div>
-      <p className="m-0 text-[13px] leading-snug text-[#B8A99B]">{check.detail}</p>
+      <p className="m-0 text-[13px] leading-snug text-fg-muted">{check.detail}</p>
       {check.plots.map((plot) => {
         const busy = save.isPending && save.variables?.number === plot.number;
         return (
@@ -241,12 +239,12 @@ function FieldCheck({
                   src={plot.picture}
                   alt={`${plot.title} on the photo`}
                   loading="lazy"
-                  className="size-14 shrink-0 rounded-[10px] object-cover border border-white/10 bg-[#221813]"
+                  className="size-14 shrink-0 rounded-[10px] object-cover border border-white/10 bg-raised"
                 />
               )}
               <span className="flex flex-col min-w-0">
-                <span className="text-[15px] font-semibold text-[#F3EDE6]">{plot.title}</span>
-                <span className="text-[13px] leading-snug text-[#B8A99B]">{plot.detail}</span>
+                <span className="text-[15px] font-semibold text-fg">{plot.title}</span>
+                <span className="text-[13px] leading-snug text-fg-muted">{plot.detail}</span>
               </span>
             </button>
             <div className="flex flex-wrap gap-1.5" role="group" aria-label={`What grows in ${plot.title}`}>
@@ -256,7 +254,7 @@ function FieldCheck({
                   type="button"
                   disabled={save.isPending}
                   onClick={() => save.mutate({ href: check.href, number: plot.number, crop: option.id })}
-                  className="min-h-9 px-3 rounded-full text-[13px] font-semibold bg-white/[0.06] text-[#F3EDE6] border border-white/10 hover:bg-[#D9A066] hover:text-[#140E0B] disabled:opacity-60 cursor-pointer"
+                  className="min-h-9 px-3 rounded-full text-[13px] font-semibold bg-white/[0.06] text-fg border border-white/10 hover:bg-caramel hover:text-panel disabled:opacity-60 cursor-pointer"
                 >
                   {option.label}
                 </button>
@@ -265,17 +263,17 @@ function FieldCheck({
                 <button
                   type="button"
                   onClick={() => setMore(plot.number)}
-                  className="min-h-9 px-3 rounded-full text-[13px] font-semibold text-[#D9A066] hover:bg-white/5 cursor-pointer"
+                  className="min-h-9 px-3 rounded-full text-[13px] font-semibold text-caramel hover:bg-white/5 cursor-pointer"
                 >
                   Other crops
                 </button>
               )}
-              {busy && <LoaderCircle className="size-4 self-center text-[#D9A066] animate-spin" />}
+              {busy && <LoaderCircle className="size-4 self-center text-caramel animate-spin" />}
             </div>
           </div>
         );
       })}
-      {save.error && <p className="m-0 text-[13px] text-[#E9B987]">{save.error.message}</p>}
+      {save.error && <p className="m-0 text-[13px] text-caramel-hi">{save.error.message}</p>}
     </div>
   );
 }
@@ -284,8 +282,8 @@ function Choices({ layerId, choices }: { layerId: string; choices: NonNullable<D
   const choose = useChoosePlotSource(layerId);
   return (
     <div className="flex flex-col gap-2">
-      <span className="text-[13px] font-semibold text-[#B8A99B]">{choices.label}</span>
-      <div className="flex flex-col rounded-[16px] bg-[#1E1612] border border-white/[0.06]" role="radiogroup" aria-label={choices.label}>
+      <span className="text-[13px] font-semibold text-fg-muted">{choices.label}</span>
+      <div className="flex flex-col rounded-[16px] bg-panel border border-white/[0.06]" role="radiogroup" aria-label={choices.label}>
         {choices.options.map((option) => {
           const busy = choose.isPending && choose.variables?.source === option.id;
           return (
@@ -299,19 +297,19 @@ function Choices({ layerId, choices }: { layerId: string; choices: NonNullable<D
               className="flex items-center justify-between gap-3 min-h-12 px-4 py-2 text-left border-b border-white/[0.07] last:border-b-0 hover:bg-white/[0.03] disabled:cursor-default cursor-pointer"
             >
               <span className="flex flex-col">
-                <span className="text-[15px] font-semibold text-[#F3EDE6]">{option.label}</span>
-                <span className="text-[13px] text-[#B8A99B]">{option.detail}</span>
+                <span className="text-[15px] font-semibold text-fg">{option.label}</span>
+                <span className="text-[13px] text-fg-muted">{option.detail}</span>
               </span>
               {busy ? (
-                <LoaderCircle className="size-4 shrink-0 text-[#D9A066] animate-spin" />
+                <LoaderCircle className="size-4 shrink-0 text-caramel animate-spin" />
               ) : (
-                option.selected && <Check className="size-4 shrink-0 text-[#D9A066]" strokeWidth={2.5} />
+                option.selected && <Check className="size-4 shrink-0 text-caramel" strokeWidth={2.5} />
               )}
             </button>
           );
         })}
       </div>
-      {choose.error && <p className="m-0 text-[13px] text-[#E9B987]">{choose.error.message}</p>}
+      {choose.error && <p className="m-0 text-[13px] text-caramel-hi">{choose.error.message}</p>}
     </div>
   );
 }
@@ -335,20 +333,20 @@ function AnswerView({
       <button
         type="button"
         onClick={onBack}
-        className="self-start inline-flex items-center gap-1 min-h-9 pr-3 pl-1 rounded-full text-[14px] font-semibold text-[#D9A066] hover:bg-white/5 cursor-pointer"
+        className="self-start inline-flex items-center gap-1 min-h-9 pr-3 pl-1 rounded-full text-[14px] font-semibold text-caramel hover:bg-white/5 cursor-pointer"
       >
         <ChevronLeft className="size-5" /> Questions
       </button>
       <div className="flex flex-col gap-1.5">
-        <span className="text-[11px] font-semibold uppercase tracking-[0.07em] text-[#D9A066]">
+        <span className="text-[11px] font-semibold uppercase tracking-[0.07em] text-caramel">
           {answer.service} · {answer.service_name}
         </span>
-        <h3 className="m-0 text-[22px] font-bold leading-tight tracking-[-0.015em] text-[#F3EDE6]">{answer.question}</h3>
+        <h3 className="m-0 text-[22px] font-bold leading-tight tracking-[-0.015em] text-fg">{answer.question}</h3>
         <StatusLine card={answer} />
       </div>
 
       {answer.overlay && style && !answer.overlay.legend_items && (
-        <span className="self-start inline-flex items-center gap-2 rounded-full bg-white/[0.06] border border-white/10 px-3 py-1.5 text-[13px] font-semibold text-[#F3EDE6]">
+        <span className="self-start inline-flex items-center gap-2 rounded-full bg-white/[0.06] border border-white/10 px-3 py-1.5 text-[13px] font-semibold text-fg">
           <span
             className="inline-block h-3 w-4 rounded-[3px]"
             style={{ border: `2px solid ${style.swatch.line}`, background: style.swatch.fill }}
@@ -358,18 +356,18 @@ function AnswerView({
       )}
       {answer.overlay?.legend_items && (
         <div className="flex flex-col gap-1.5">
-          <span className="text-[13px] font-semibold text-[#B8A99B]">{answer.overlay.legend}</span>
+          <span className="text-[13px] font-semibold text-fg-muted">{answer.overlay.legend}</span>
           <div className="flex flex-wrap gap-1.5">
             {answer.overlay.legend_items.map((item) => {
               const colour = CROP_COLOURS[item.key] ?? UNSURE_COLOUR;
               return (
                 <span
                   key={item.key}
-                  className="inline-flex items-center gap-1.5 rounded-full bg-white/[0.06] border border-white/10 px-2.5 py-1 text-[12px] font-semibold text-[#F3EDE6]"
+                  className="inline-flex items-center gap-1.5 rounded-full bg-white/[0.06] border border-white/10 px-2.5 py-1 text-[12px] font-semibold text-fg"
                 >
                   <span className="inline-block size-2.5 rounded-full" style={{ background: colour }} />
                   {item.label}
-                  <span className="text-[#B8A99B] tabular-nums">{item.count}</span>
+                  <span className="text-fg-muted tabular-nums">{item.count}</span>
                 </span>
               );
             })}
@@ -378,8 +376,8 @@ function AnswerView({
       )}
 
       {answer.overlay?.spots && answer.overlay.spots.features.length > 0 && (
-        <span className="self-start inline-flex items-center gap-2 rounded-full bg-white/[0.06] border border-white/10 px-3 py-1.5 text-[13px] font-semibold text-[#F3EDE6]">
-          <span className="inline-block h-3 w-4 rounded-[3px] bg-[#FF4D1A] border border-[#FFF1E6]" />
+        <span className="self-start inline-flex items-center gap-2 rounded-full bg-white/[0.06] border border-white/10 px-3 py-1.5 text-[13px] font-semibold text-fg">
+          <span className="inline-block h-3 w-4 rounded-[3px] bg-[#FF4D1A] border border-fg" />
           {answer.overlay.spots_legend}
         </span>
       )}
@@ -437,28 +435,28 @@ function DeckView({
             aria-label="Drone photo"
             value={layerId}
             onChange={(e) => onPickPhoto(e.target.value)}
-            className="bg-transparent text-[22px] font-bold tracking-[-0.015em] text-[#F3EDE6] outline-none cursor-pointer max-w-full"
+            className="bg-transparent text-[22px] font-bold tracking-[-0.015em] text-fg outline-none cursor-pointer max-w-full"
           >
             {photos.map((p) => (
-              <option key={p.id} value={p.id} className="bg-[#17110E] text-base">
+              <option key={p.id} value={p.id} className="bg-panel text-base">
                 {p.name}
               </option>
             ))}
           </select>
         ) : (
-          <h2 className="m-0 text-[22px] font-bold leading-tight tracking-[-0.015em] text-[#F3EDE6] break-words">{photo.name}</h2>
+          <h2 className="m-0 text-[22px] font-bold leading-tight tracking-[-0.015em] text-fg break-words">{photo.name}</h2>
         )}
-        {photo.place && <span className="text-[13px] text-[#D8CCBF]">{photo.place}</span>}
-        <span className="text-[13px] text-[#B8A99B]">{photo.summary}</span>
+        {photo.place && <span className="text-[13px] text-fg-soft">{photo.place}</span>}
+        <span className="text-[13px] text-fg-muted">{photo.summary}</span>
       </div>
 
-      <label className="flex items-center gap-2 rounded-[12px] bg-[#221813] px-3 py-1.5">
-        <span className="text-[12px] font-semibold text-[#B8A99B]">Questions for</span>
+      <label className="flex items-center gap-2 rounded-[12px] bg-raised px-3 py-1.5">
+        <span className="text-[12px] font-semibold text-fg-muted">Questions for</span>
         <select
           value={deck.audience}
           onChange={(e) => onPickAudience(e.target.value)}
           aria-label="Who is reading: the questions are asked for this role"
-          className="min-h-8 flex-1 cursor-pointer rounded-[9px] border border-white/10 bg-[#17110E] px-2 text-[13px] font-semibold text-[#F3EDE6] focus:border-[#D9A066]/60 focus:outline-none"
+          className="min-h-8 flex-1 cursor-pointer rounded-[9px] border border-white/10 bg-panel px-2 text-[13px] font-semibold text-fg focus:border-caramel/60 focus:outline-none"
         >
           {deck.audiences.map((a) => (
             <option key={a.id} value={a.id}>
@@ -470,11 +468,11 @@ function DeckView({
 
       <div className="flex flex-col gap-2.5">
         <div className="flex items-center justify-between">
-          <span className="text-[13px] font-semibold text-[#B8A99B]">For this photo</span>
+          <span className="text-[13px] font-semibold text-fg-muted">For this photo</span>
           <button
             type="button"
             onClick={onShuffle}
-            className="inline-flex items-center gap-1.5 min-h-8 px-2.5 rounded-full text-[13px] font-semibold text-[#D9A066] hover:bg-white/5 cursor-pointer"
+            className="inline-flex items-center gap-1.5 min-h-8 px-2.5 rounded-full text-[13px] font-semibold text-caramel hover:bg-white/5 cursor-pointer"
           >
             <Shuffle className="size-3.5" />
             Other questions
@@ -495,13 +493,13 @@ function DeckView({
           type="button"
           aria-expanded={servicesOpen}
           onClick={() => setServicesOpen(!servicesOpen)}
-          className="flex items-center justify-between min-h-10 text-[15px] font-bold text-[#F3EDE6] cursor-pointer"
+          className="flex items-center justify-between min-h-10 text-[15px] font-bold text-fg cursor-pointer"
         >
           All {deck.services.length} services
-          <ChevronDown className={`size-5 text-[#B8A99B] transition-transform ${servicesOpen ? 'rotate-180' : ''}`} />
+          <ChevronDown className={`size-5 text-fg-muted transition-transform ${servicesOpen ? 'rotate-180' : ''}`} />
         </button>
         {servicesOpen && (
-          <div className="flex flex-col rounded-[18px] bg-[#1A1310] border border-white/[0.06]">
+          <div className="flex flex-col rounded-[18px] bg-canvas border border-white/[0.06]">
             {deck.services.map((service) =>
               service.cards.map((card) => (
                 <button
@@ -510,10 +508,10 @@ function DeckView({
                   onClick={() => onOpen(card.id)}
                   className="flex flex-col gap-0.5 text-left px-4 py-3 border-b border-white/[0.07] last:border-b-0 hover:bg-white/[0.03] cursor-pointer"
                 >
-                  <span className="text-[11px] font-semibold uppercase tracking-[0.06em] text-[#D9A066]">
+                  <span className="text-[11px] font-semibold uppercase tracking-[0.06em] text-caramel">
                     {service.service} · {service.name}
                   </span>
-                  <span className="text-[14px] font-semibold text-[#F3EDE6]">{card.question}</span>
+                  <span className="text-[14px] font-semibold text-fg">{card.question}</span>
                   <StatusLine card={card} />
                 </button>
               )),
@@ -738,13 +736,11 @@ export function DroneCards({
       historyOpen={historyOpen}
       belowChatsButton={chatsHidden}
     >
-      {deck.isPending && <p className="m-0 py-6 text-[15px] text-[#D8CCBF]">Ingabe is looking at your photo…</p>}
+      {deck.isPending && <p className="m-0 py-6 text-[15px] text-fg-soft">Ingabe is looking at your photo…</p>}
       {deck.error?.status === 409 && (
-        <p className="m-0 py-6 text-[15px] text-[#D8CCBF]">
-          The photo is still being prepared. The questions will appear when it is ready.
-        </p>
+        <p className="m-0 py-6 text-[15px] text-fg-soft">The photo is still being prepared. The questions will appear when it is ready.</p>
       )}
-      {deck.error && deck.error.status !== 409 && <p className="m-0 py-6 text-[15px] text-[#E9B987]">{deck.error.message}</p>}
+      {deck.error && deck.error.status !== 409 && <p className="m-0 py-6 text-[15px] text-caramel-hi">{deck.error.message}</p>}
       {deck.data && !openCard && (
         <DeckView
           deck={deck.data}
@@ -763,14 +759,14 @@ export function DroneCards({
           onAskSage={onAskSage}
         />
       )}
-      {openCard && answer.isPending && <p className="m-0 py-6 text-[15px] text-[#D8CCBF]">Working out the answer…</p>}
+      {openCard && answer.isPending && <p className="m-0 py-6 text-[15px] text-fg-soft">Working out the answer…</p>}
       {openCard && answer.error && (
         <div className="flex flex-col gap-3 py-4">
-          <p className="m-0 text-[15px] text-[#E9B987]">{answer.error.message}</p>
+          <p className="m-0 text-[15px] text-caramel-hi">{answer.error.message}</p>
           <button
             type="button"
             onClick={() => setOpenCard(null)}
-            className="self-start text-[14px] font-semibold text-[#D9A066] cursor-pointer"
+            className="self-start text-[14px] font-semibold text-caramel cursor-pointer"
           >
             Back to the questions
           </button>

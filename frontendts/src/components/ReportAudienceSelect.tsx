@@ -52,7 +52,7 @@ export function ReportAudienceSelect({ label = 'Answers for', compact = false }:
     <label
       className={
         compact
-          ? 'flex items-center justify-between gap-2 px-2.5 pt-2 text-[12.5px] text-[#B8A99B]'
+          ? 'flex items-center justify-between gap-2 px-2.5 pt-2 text-[12.5px] text-fg-muted'
           : 'flex items-center gap-2 px-3 pb-2 text-xs text-gray-300'
       }
       title={hint}
@@ -61,7 +61,7 @@ export function ReportAudienceSelect({ label = 'Answers for', compact = false }:
       <select
         className={
           compact
-            ? 'rounded-[7px] border border-white/[0.07] bg-[#221813] px-1.5 py-0.5 text-[#F3EDE6] disabled:opacity-60'
+            ? 'rounded-[7px] border border-white/[0.07] bg-raised px-1.5 py-0.5 text-fg disabled:opacity-60'
             : 'rounded bg-gray-800 px-1.5 py-0.5 text-gray-100 border border-gray-600 disabled:opacity-60'
         }
         value={data.audience}

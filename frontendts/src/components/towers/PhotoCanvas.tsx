@@ -319,7 +319,7 @@ export function PhotoCanvas({
       ref={ref}
       role="application"
       aria-label={alt}
-      className="relative h-full w-full overflow-hidden touch-none select-none bg-[#0B0908]"
+      className="relative h-full w-full overflow-hidden touch-none select-none bg-canvas"
       style={{ cursor: blocked ? 'default' : tool === 'move' ? 'grab' : tool === 'tap' ? 'pointer' : 'crosshair' }}
       onPointerDown={onPointerDown}
       onPointerMove={onPointerMove}
@@ -526,7 +526,7 @@ export function PhotoCanvas({
             aria-label={tool === 'draw' ? 'Move the photo instead of drawing' : 'Draw boxes'}
             aria-pressed={tool === 'move'}
             onClick={() => onToolChange(tool === 'draw' ? 'move' : 'draw')}
-            className="flex size-10 items-center justify-center rounded-full bg-[#17110E]/90 border border-white/10 text-[#F3EDE6] hover:bg-[#2A1F19] cursor-pointer"
+            className="flex size-10 items-center justify-center rounded-full bg-panel/90 border border-white/10 text-fg hover:bg-raised cursor-pointer"
           >
             {tool === 'draw' ? <Hand className="size-4" /> : <PenLine className="size-4" />}
           </button>
@@ -535,7 +535,7 @@ export function PhotoCanvas({
           type="button"
           aria-label="Zoom in"
           onClick={() => zoomBy(1.5)}
-          className="flex size-10 items-center justify-center rounded-full bg-[#17110E]/90 border border-white/10 text-[#F3EDE6] hover:bg-[#2A1F19] cursor-pointer"
+          className="flex size-10 items-center justify-center rounded-full bg-panel/90 border border-white/10 text-fg hover:bg-raised cursor-pointer"
         >
           <Plus className="size-5" />
         </button>
@@ -543,7 +543,7 @@ export function PhotoCanvas({
           type="button"
           aria-label="Zoom out"
           onClick={() => zoomBy(1 / 1.5)}
-          className="flex size-10 items-center justify-center rounded-full bg-[#17110E]/90 border border-white/10 text-[#F3EDE6] hover:bg-[#2A1F19] cursor-pointer"
+          className="flex size-10 items-center justify-center rounded-full bg-panel/90 border border-white/10 text-fg hover:bg-raised cursor-pointer"
         >
           <Minus className="size-5" />
         </button>
@@ -551,25 +551,22 @@ export function PhotoCanvas({
           type="button"
           aria-label="Show the whole photo"
           onClick={fitPhoto}
-          className="flex size-10 items-center justify-center rounded-full bg-[#17110E]/90 border border-white/10 text-[#F3EDE6] hover:bg-[#2A1F19] cursor-pointer"
+          className="flex size-10 items-center justify-center rounded-full bg-panel/90 border border-white/10 text-fg hover:bg-raised cursor-pointer"
         >
           <Maximize className="size-4" />
         </button>
       </div>
 
       {shown === 'loading' && (
-        <p className="absolute inset-x-0 top-1/2 m-0 text-center text-[15px] text-[#D8CCBF] pointer-events-none">Loading the photo…</p>
+        <p className="absolute inset-x-0 top-1/2 m-0 text-center text-[15px] text-fg-soft pointer-events-none">Loading the photo…</p>
       )}
       {shown === 'failed' && (
-        <p role="alert" className="absolute inset-x-6 top-1/2 m-0 text-center text-[15px] text-[#E9B987]">
+        <p role="alert" className="absolute inset-x-6 top-1/2 m-0 text-center text-[15px] text-caramel-hi">
           The photo could not be loaded.
         </p>
       )}
       {shown === 'turned' && natural && (
-        <p
-          role="alert"
-          className="absolute inset-x-6 top-1/3 m-0 rounded-[14px] bg-[#110C0A]/90 p-4 text-center text-[15px] text-[#E9B987]"
-        >
+        <p role="alert" className="absolute inset-x-6 top-1/3 m-0 rounded-[14px] bg-canvas/90 p-4 text-center text-[15px] text-caramel-hi">
           This photo shows here as {natural[0]} × {natural[1]} pixels, but the server measured it as {width} × {height}. Boxes drawn on it
           would land in the wrong place, so marking is off for this photo.
         </p>

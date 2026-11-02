@@ -119,7 +119,7 @@ export default function IndustryPicker({ data, onClose }: { data: IndustryState;
 
   return (
     <div
-      className={`fixed left-0 top-0 z-[10000] h-[100dvh] w-[100vw] overflow-y-auto overflow-x-hidden bg-[#0B0908] text-[#F6F1EB] transition-opacity duration-500 motion-reduce:transition-none ${
+      className={`fixed left-0 top-0 z-[10000] h-[100dvh] w-[100vw] overflow-y-auto overflow-x-hidden bg-canvas text-fg transition-opacity duration-500 motion-reduce:transition-none ${
         shown ? 'opacity-100' : 'opacity-0'
       }`}
       role="dialog"
@@ -136,15 +136,15 @@ export default function IndustryPicker({ data, onClose }: { data: IndustryState;
           <div className="flex items-center gap-3">
             <IngabeIcon className="h-9 w-9" />
             <span className="text-[15px] font-semibold tracking-[-0.03em]">ingabe</span>
-            <span className="hidden font-mono text-[10px] uppercase tracking-[0.22em] text-[#B8A99B] sm:inline">
-              by noza<span className="text-[#D9A066]">·</span>labs
+            <span className="hidden font-mono text-[10px] uppercase tracking-[0.22em] text-fg-muted sm:inline">
+              by noza<span className="text-caramel">·</span>labs
             </span>
           </div>
           {canClose && (
             <button
               type="button"
               onClick={close}
-              className="rounded-full border border-[#4A3326] px-4 py-1.5 text-[13px] text-[#B8A99B] transition-colors hover:border-[#D9A066] hover:text-[#F6F1EB]"
+              className="rounded-full border border-line px-4 py-1.5 text-[13px] text-fg-muted transition-colors hover:border-caramel hover:text-fg"
             >
               {`Keep ${label(data.industry as IndustryKey)}`}
             </button>
@@ -156,7 +156,7 @@ export default function IndustryPicker({ data, onClose }: { data: IndustryState;
             shown ? 'translate-y-0 opacity-100' : 'translate-y-3 opacity-0'
           }`}
         >
-          <p className="font-mono text-[11px] uppercase tracking-[0.22em] text-[#D9A066]">
+          <p className="font-mono text-[11px] uppercase tracking-[0.22em] text-caramel">
             {canClose ? 'Your industry' : 'Welcome to Ingabe'}
           </p>
           <h1
@@ -164,9 +164,9 @@ export default function IndustryPicker({ data, onClose }: { data: IndustryState;
             className="mt-4 text-[clamp(2.4rem,5.2vw,4.4rem)] leading-[1.02] tracking-[-0.01em]"
             style={{ fontFamily: '"Instrument Serif", Georgia, serif' }}
           >
-            Which world do <em className="text-[#D9A066]">you</em> work in?
+            Which world do <em className="text-caramel">you</em> work in?
           </h1>
-          <p className="mt-5 max-w-xl text-[15px] leading-relaxed text-[#B8A99B]">
+          <p className="mt-5 max-w-xl text-[15px] leading-relaxed text-fg-muted">
             {canClose
               ? `Each map belongs to one industry. Switching changes what you see and where your new maps go, only for you${
                   company ? `: ${company.name}'s industry stays as it is` : ''
@@ -193,23 +193,23 @@ export default function IndustryPicker({ data, onClose }: { data: IndustryState;
                 onFocus={() => setHovered(key)}
                 onBlur={() => setHovered(null)}
                 style={{ transitionDelay: shown && !entered ? `${120 + k * 90}ms` : '0ms' }}
-                className={`group relative flex flex-col overflow-hidden rounded-2xl border text-left outline-none transition-all ${entered ? 'duration-200' : 'duration-700'} motion-reduce:transition-none focus-visible:ring-2 focus-visible:ring-[#D9A066] ${
+                className={`group relative flex flex-col overflow-hidden rounded-2xl border text-left outline-none transition-all ${entered ? 'duration-200' : 'duration-700'} motion-reduce:transition-none focus-visible:ring-2 focus-visible:ring-caramel ${
                   shown ? 'translate-y-0 opacity-100' : 'translate-y-6 opacity-0'
                 } ${
                   selected
-                    ? 'border-[#D9A066] bg-[#17110E] shadow-[0_0_0_1px_#D9A066,0_30px_80px_-30px_rgba(217,160,102,0.45)]'
-                    : 'border-[#221813] bg-[#120D0B] hover:border-[#4A3326]'
+                    ? 'border-caramel bg-panel shadow-[0_0_0_1px_var(--color-caramel),0_30px_80px_-30px_rgba(217,160,102,0.45)]'
+                    : 'border-raised bg-canvas hover:border-line'
                 }`}
               >
-                <div className="relative bg-[#F3EDE6]">
+                <div className="relative bg-fg">
                   <WorldPicture preset={world.preset} seed={world.seed} reading={hovered === key || selected} alt={world.alt} />
-                  <span className="absolute left-3 top-3 rounded-full bg-[#0B0908]/80 px-2.5 py-1 font-mono text-[10px] uppercase tracking-[0.22em] text-[#D9A066]">
+                  <span className="absolute left-3 top-3 rounded-full bg-canvas/80 px-2.5 py-1 font-mono text-[10px] uppercase tracking-[0.22em] text-caramel">
                     {hovered === key || selected ? 'As Ingabe reads it' : world.eyebrow}
                   </span>
                   <span
                     aria-hidden
                     className={`absolute right-3 top-3 flex h-6 w-6 items-center justify-center rounded-full border transition-colors ${
-                      selected ? 'border-[#D9A066] bg-[#D9A066]' : 'border-[#4A3326] bg-[#0B0908]/70'
+                      selected ? 'border-caramel bg-caramel' : 'border-line bg-canvas/70'
                     }`}
                   >
                     {selected && (
@@ -223,11 +223,11 @@ export default function IndustryPicker({ data, onClose }: { data: IndustryState;
                   <span className="text-[1.9rem] leading-none" style={{ fontFamily: '"Instrument Serif", Georgia, serif' }}>
                     {option?.label ?? key}
                   </span>
-                  <span className="mt-2 text-[13px] text-[#D9A066]">{option?.note}</span>
-                  <ul className="mt-4 space-y-1.5 text-[13px] leading-snug text-[#B8A99B]">
+                  <span className="mt-2 text-[13px] text-caramel">{option?.note}</span>
+                  <ul className="mt-4 space-y-1.5 text-[13px] leading-snug text-fg-muted">
                     {world.covers.map((line) => (
                       <li key={line} className="flex gap-2">
-                        <span className="mt-[7px] h-1 w-1 shrink-0 rounded-full bg-[#6B5A4E]" />
+                        <span className="mt-[7px] h-1 w-1 shrink-0 rounded-full bg-fg-subtle" />
                         {line}
                       </li>
                     ))}
@@ -238,13 +238,13 @@ export default function IndustryPicker({ data, onClose }: { data: IndustryState;
           })}
         </div>
 
-        <footer className="sticky bottom-0 -mx-5 mt-8 flex flex-col items-center gap-3 bg-gradient-to-t from-[#0B0908] via-[#0B0908] to-transparent px-5 pb-2 pt-6 sm:-mx-8 sm:flex-row sm:justify-between sm:px-8 lg:-mx-12 lg:px-12">
-          <p className="text-center text-[12px] text-[#6B5A4E] sm:text-left">
+        <footer className="sticky bottom-0 -mx-5 mt-8 flex flex-col items-center gap-3 bg-gradient-to-t from-canvas via-canvas to-transparent px-5 pb-2 pt-6 sm:-mx-8 sm:flex-row sm:justify-between sm:px-8 lg:-mx-12 lg:px-12">
+          <p className="text-center text-[12px] text-fg-subtle sm:text-left">
             {save.isError ? (
               <span className="text-[#E9A27A]">{(save.error as Error).message}</span>
             ) : chosen ? (
               <>
-                Hover a world to see how Ingabe reads it. <span className="text-[#B8A99B]">Double-click to choose at once.</span>
+                Hover a world to see how Ingabe reads it. <span className="text-fg-muted">Double-click to choose at once.</span>
               </>
             ) : (
               'Pick the picture that looks like your work.'
@@ -254,7 +254,7 @@ export default function IndustryPicker({ data, onClose }: { data: IndustryState;
             type="button"
             disabled={!chosen || save.isPending}
             onClick={() => chosen && save.mutate(chosen)}
-            className="group inline-flex items-center gap-2 rounded-full bg-[#D9A066] px-6 py-3 text-[14px] font-medium text-[#0B0908] transition-all hover:bg-[#E6B27D] disabled:cursor-not-allowed disabled:bg-[#2A201A] disabled:text-[#6B5A4E]"
+            className="group inline-flex items-center gap-2 rounded-full bg-caramel px-6 py-3 text-[14px] font-medium text-canvas transition-all hover:bg-caramel-hi disabled:cursor-not-allowed disabled:bg-raised disabled:text-fg-subtle"
           >
             {save.isPending ? 'Opening Ingabe…' : chosen ? `Continue with ${label(chosen)}` : 'Choose your industry'}
             <span aria-hidden className="transition-transform group-enabled:group-hover:translate-x-0.5">
