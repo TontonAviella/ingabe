@@ -32,7 +32,7 @@ import os
 import statistics
 from collections import OrderedDict
 from dataclasses import dataclass, replace
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from typing import Any, Collection, Optional, Sequence
 
 from redis.exceptions import LockError
@@ -147,12 +147,31 @@ class Review:
 
 
 @dataclass(frozen=True)
+class PlantsSeen:
+    """A person's answer, on one photo for one part, to "can you see each plant on its own here?" (answer_levels:
+    it decides countability). Kept with who answered and when: the answers are the examples a model may later learn
+    the question from, once it agrees with people on photos it has not seen."""
+
+    apart: bool
+    by: Optional[str]
+    at: str
+
+    def as_dict(self) -> dict[str, Any]:
+        return {"apart": self.apart, "by": self.by, "at": self.at}
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "PlantsSeen":
+        return cls(apart=bool(data["apart"]), by=data.get("by"), at=data["at"])
+
+
+@dataclass(frozen=True)
 class PartRecord:
     marks: tuple[Box, ...] = ()
     own_lookalikes: tuple[Box, ...] = ()  # look-alike marks the person drew for this part
     job_id: Optional[str] = None  # the finder job run on these marks
     review: Review = Review()
     review_saved: bool = False  # the person saved a review of this job's suggestions (also when there were none)
+    plants_seen: Optional[PlantsSeen] = None  # farm parts: a person's "can you see each plant on its own?"
 
 
 @dataclass(frozen=True)
@@ -198,7 +217,8 @@ def _layer_prefix(project_id: str, layer_id: str) -> str:
 
 def _record_json(project_id: str, layer_id: str, record: PhotoRecord) -> bytes:
     parts = {part: {"marks": [list(b) for b in r.marks], "lookalike_marks": [list(b) for b in r.own_lookalikes],
-                    "job_id": r.job_id, "reviewed": r.review.as_dict(), "review_saved": r.review_saved}
+                    "job_id": r.job_id, "reviewed": r.review.as_dict(), "review_saved": r.review_saved,
+                    **({"plants_seen": r.plants_seen.as_dict()} if r.plants_seen is not None else {})}
              for part, r in record.parts.items() if part in PARTS or r != PartRecord()}  # tower records as before
     return json.dumps({"version": _VERSION, "project_id": project_id, "layer_id": layer_id,
                        "sha256": record.sha256, "parts": parts,
@@ -211,7 +231,8 @@ def _record_from(data: dict[str, Any]) -> PhotoRecord:
     parts = {part: PartRecord(marks=tuple(_box(b) for b in p["marks"]),
                               own_lookalikes=tuple(_box(b) for b in p["lookalike_marks"]),
                               job_id=p["job_id"], review=Review.from_dict(p["reviewed"]),
-                              review_saved=p["review_saved"])
+                              review_saved=p["review_saved"],
+                              plants_seen=PlantsSeen.from_dict(p["plants_seen"]) if p.get("plants_seen") else None)
              for part, p in data["parts"].items()}
     return PhotoRecord(sha256=data["sha256"], parts={part: parts.get(part, PartRecord()) for part in ALL_PARTS})
 
@@ -225,6 +246,80 @@ async def load_record(s3: Any, bucket: str, project_id: str, layer_id: str, sha2
 async def _save_record(s3: Any, bucket: str, project_id: str, layer_id: str, record: PhotoRecord) -> None:
     await s3.put_object(Bucket=bucket, Key=record_key(project_id, layer_id, record.sha256),
                         Body=_record_json(project_id, layer_id, record), ContentType="application/json")
+
+
+# --------------------------------------------------------------------------- #
+# What is kept for the whole inspection: the field's planting date (farm parts)
+# --------------------------------------------------------------------------- #
+
+@dataclass(frozen=True)
+class FieldFacts:
+    """What a person said about the field an inspection shows: when it was planted. With the date each photo was
+    taken it gives the hint that goes with "can you see each plant on its own?" (answer_levels.stage_hint)."""
+
+    planting_date: Optional[date] = None
+    by: Optional[str] = None
+    at: Optional[str] = None
+
+    def as_dict(self) -> dict[str, Any]:
+        return {"planting_date": None if self.planting_date is None else self.planting_date.isoformat(),
+                "by": self.by, "at": self.at}
+
+
+def field_key(project_id: str, layer_id: str) -> str:
+    """Beside the photos' records, not among them: listing a layer's records never sees it."""
+    for name, value in (("project", project_id), ("layer", layer_id)):
+        if not value or "/" in value:
+            raise ValueError(f"no field facts can be kept for {name} {value!r}")
+    return f"{STORE_PREFIX}/{project_id}/fields/{layer_id}.json"
+
+
+async def load_field(s3: Any, bucket: str, project_id: str, layer_id: str) -> FieldFacts:
+    data = await stored_files.load_json(s3, bucket, field_key(project_id, layer_id))
+    if not data or not data.get("planting_date"):
+        return FieldFacts()
+    return FieldFacts(planting_date=date.fromisoformat(data["planting_date"]), by=data.get("by"), at=data.get("at"))
+
+
+def _planting_date(value: Any) -> Optional[date]:
+    if value is None:
+        return None
+    try:
+        when = date.fromisoformat(value) if isinstance(value, str) else None
+    except ValueError:
+        when = None
+    if when is None:
+        raise TowerInputError(f"the planting date must be a date like 2026-10-01, not {value!r}")
+    if when > datetime.now(timezone.utc).date():
+        raise TowerInputError(f"the planting date {when.isoformat()} is in the future")
+    return when
+
+
+async def set_planting_date(s3: Any, bucket: str, project_id: str, layer_id: str, value: Any,
+                            by: Optional[str]) -> FieldFacts:
+    """Save (or, with None, clear) the field's planting date."""
+    when = _planting_date(value)
+    field = FieldFacts() if when is None else FieldFacts(
+        planting_date=when, by=by, at=datetime.now(timezone.utc).isoformat(timespec="seconds"))
+    await s3.put_object(Bucket=bucket, Key=field_key(project_id, layer_id),
+                        Body=json.dumps({"version": _VERSION, **field.as_dict()}).encode(),
+                        ContentType="application/json")
+    return field
+
+
+def capture_date(photo: PhotoFacts) -> Optional[date]:
+    """The day the photo was taken, from its own record (EXIF); None when it does not say."""
+    try:
+        return date.fromisoformat(photo.taken_at[:10]) if photo.taken_at else None
+    except ValueError:
+        return None
+
+
+def part_facts(part: str, own: PartRecord, photo: PhotoFacts, field: FieldFacts) -> answer_levels.Facts:
+    """What is known about this part on this photo for its countability: the person's answer, and the dates."""
+    seen = own.plants_seen.apart if own.plants_seen is not None and part in FARM_PARTS else None
+    return answer_levels.Facts(planting_date=field.planting_date, capture_date=capture_date(photo),
+                               plants_apart_seen=seen)
 
 
 class _PhotoLock:
@@ -269,6 +364,9 @@ class PartWork:
     waiting: int  # suggestions not reviewed yet
     answer: Optional[answer_levels.Answer]  # how far an answer may go on this photo (None: nothing marked)
     review_saved: bool = False
+    # Farm parts: "can you see each plant on its own here?" - the person's answer, the dates' hint and what
+    # countability makes of them (count_check); None for tower parts.
+    count_check: Optional[dict[str, Any]] = None
 
     @property
     def unreviewed(self) -> bool:
@@ -295,6 +393,7 @@ class PartWork:
             "reviewed": self.review.as_dict(),
             "counted_by_you": self.counted_by_you,
             "waiting": self.waiting,
+            **({"count_check": self.count_check} if self.count_check is not None else {}),
         }
 
 
@@ -333,8 +432,8 @@ def own_lookalikes(part: str, record: PhotoRecord, given: Sequence[Box]) -> tupl
     return tuple(own)
 
 
-def level_answer(part: str, marks: Sequence[Box], photo: PhotoFacts,
-                 found: Sequence[Box] = ()) -> Optional[answer_levels.Answer]:
+def level_answer(part: str, marks: Sequence[Box], photo: PhotoFacts, found: Sequence[Box] = (),
+                 facts: answer_levels.Facts = answer_levels.Facts()) -> Optional[answer_levels.Answer]:
     """How far an answer about this part may go on this photo, from answer_levels (the size gate on the marks, the
     part's countability, the measured table). A scan has no marks: the gate then reads the boxes it found and the
     person kept, fixed or added (`found`). None when there are neither."""
@@ -347,7 +446,7 @@ def level_answer(part: str, marks: Sequence[Box], photo: PhotoFacts,
         return None
     gate = answer_levels.size_gate(part, max(photo.upright_size), [(x1 - x0, y1 - y0) for x0, y0, x1, y1 in marks],
                                    finder_model=model)
-    return answer_levels.decide(part, model, gate, answer_levels.countability(part, answer_levels.Facts()))
+    return answer_levels.decide(part, model, gate, answer_levels.countability(part, facts))
 
 
 def suggestions_of(job: example_finder.Job, min_score: Optional[float] = None,
@@ -404,9 +503,26 @@ async def _job(redis: Any, s3: Any, bucket: str, project_id: str, job_id: Option
     return job or example_finder.Job(job_id=job_id, status=example_finder.FAILED, error="the finder job stopped")
 
 
+def count_check(part: str, own: PartRecord, facts: answer_levels.Facts) -> Optional[dict[str, Any]]:
+    """For a farm part: the person's answer to "can you see each plant on its own here?" (None: not asked yet), the
+    hint the planting and photo dates give, and the countability that follows (answer_levels)."""
+    if part not in FARM_PARTS:
+        return None
+    verdict = answer_levels.countability(part, facts)
+    return {"question": "Can you see each plant on its own here?",
+            "seen": None if own.plants_seen is None else own.plants_seen.as_dict(),
+            "hint": answer_levels.stage_hint(part, facts),
+            "countable": verdict.verdict.name.lower(), "reason": verdict.reason_text}
+
+
 async def part_work(redis: Any, s3: Any, bucket: str, project_id: str, record: PhotoRecord, part: str,
-                    photo: PhotoFacts) -> PartWork:
+                    photo: PhotoFacts, field: Optional[FieldFacts] = None, layer_id: Optional[str] = None) -> PartWork:
+    """One part's work on one photo. The field's facts (its planting date) are read when not given and a layer is
+    named; with neither, the dates' hint is left out."""
     own = record.parts[part]
+    if field is None:
+        field = await load_field(s3, bucket, project_id, layer_id) if layer_id and part in FARM_PARTS else FieldFacts()
+    facts = part_facts(part, own, photo, field)
     # Bolts found by a scan (no marks) are not shown: scan_parts says why.
     job = None if part in DEFECT_PARTS and not own.marks else await _job(redis, s3, bucket, project_id, own.job_id)
     done = job is not None and job.status == example_finder.DONE
@@ -419,22 +535,28 @@ async def part_work(redis: Any, s3: Any, bucket: str, project_id: str, record: P
     reviewed = own.review.reviewed()
     waiting = sum(1 for s in suggestions if s.id not in reviewed)
     found = tuple(s.box for s in suggestions) + tuple(b for _, b in own.review.fixed) + own.review.added
-    answer = level_answer(part, own.marks, photo, found)
+    answer = level_answer(part, own.marks, photo, found, facts)
     return PartWork(part=part, marks=own.marks, lookalike_marks=lookalike_marks(part, record), job=job,
                     suggestions=suggestions, review=own.review, counted_by_you=counted(own, done, waiting, answer),
-                    waiting=waiting, answer=answer, review_saved=own.review_saved)
+                    waiting=waiting, answer=answer, review_saved=own.review_saved,
+                    count_check=count_check(part, own, facts))
 
 
 async def photo_work(redis: Any, s3: Any, bucket: str, project_id: str, layer_id: str,
-                     photo: PhotoFacts, parts: Sequence[str] = PARTS) -> dict[str, PartWork]:
+                     photo: PhotoFacts, parts: Sequence[str] = PARTS,
+                     field: Optional[FieldFacts] = None) -> dict[str, PartWork]:
     """Every part's work on one photo (the tower parts unless the inspection's industry marks others)."""
     record = await load_record(s3, bucket, project_id, layer_id, photo.sha256)
-    return await _record_work(redis, s3, bucket, project_id, record, photo, parts)
+    if field is None and any(p in FARM_PARTS for p in parts):
+        field = await load_field(s3, bucket, project_id, layer_id)
+    return await _record_work(redis, s3, bucket, project_id, record, photo, parts, field or FieldFacts())
 
 
 async def _record_work(redis: Any, s3: Any, bucket: str, project_id: str, record: PhotoRecord,
-                       photo: PhotoFacts, parts: Sequence[str] = PARTS) -> dict[str, PartWork]:
-    works = await asyncio.gather(*(part_work(redis, s3, bucket, project_id, record, p, photo) for p in parts))
+                       photo: PhotoFacts, parts: Sequence[str] = PARTS,
+                       field: Optional[FieldFacts] = None) -> dict[str, PartWork]:
+    works = await asyncio.gather(*(part_work(redis, s3, bucket, project_id, record, p, photo, field or FieldFacts())
+                                   for p in parts))
     return dict(zip(parts, works))
 
 
@@ -459,9 +581,10 @@ async def set_marks(redis: Any, s3: Any, bucket: str, project_id: str, layer_id:
         own = own_lookalikes(part, record, given)
         current = record.parts[part]
         if (current.marks, current.own_lookalikes) != (marks_px, own):
-            record = record.with_part(part, PartRecord(marks=marks_px, own_lookalikes=own))
+            record = record.with_part(part, PartRecord(marks=marks_px, own_lookalikes=own,
+                                                       plants_seen=current.plants_seen))
             await _save_record(s3, bucket, project_id, layer_id, record)
-        return await part_work(redis, s3, bucket, project_id, record, part, photo)
+        return await part_work(redis, s3, bucket, project_id, record, part, photo, layer_id=layer_id)
 
 
 async def start_find(redis: Any, s3: Any, bucket: str, project_id: str, user_id: str, layer_id: str,
@@ -483,7 +606,7 @@ async def start_find(redis: Any, s3: Any, bucket: str, project_id: str, user_id:
                                          list(lookalike_marks(part, record)), part)
         if own.job_id != job.job_id:  # a review was for the suggestions of another job
             record = record.with_part(part, PartRecord(marks=own.marks, own_lookalikes=own.own_lookalikes,
-                                                       job_id=job.job_id))
+                                                       job_id=job.job_id, plants_seen=own.plants_seen))
             await _save_record(s3, bucket, project_id, layer_id, record)
     return job
 
@@ -534,7 +657,8 @@ async def start_scan(redis: Any, s3: Any, bucket: str, project_id: str, user_id:
                                  sha256=photo.sha256, view=view)
         job = await example_finder.start(redis, s3, bucket, project_id, user_id, source, [], [], part)
         await _save_record(s3, bucket, project_id, layer_id,
-                           record.with_part(part, PartRecord(job_id=job.job_id)))
+                           record.with_part(part, PartRecord(job_id=job.job_id,
+                                                             plants_seen=record.parts[part].plants_seen)))
     return job
 
 
@@ -660,7 +784,7 @@ async def set_review(redis: Any, s3: Any, bucket: str, project_id: str, layer_id
         raise TowerInputError(f"each suggestion is kept, rejected or fixed once; {twice[0]} is given more than once")
     async with _PhotoLock(redis, project_id, layer_id, photo.sha256):
         record = await load_record(s3, bucket, project_id, layer_id, photo.sha256)
-        work = await part_work(redis, s3, bucket, project_id, record, part, photo)
+        work = await part_work(redis, s3, bucket, project_id, record, part, photo, layer_id=layer_id)
         if work.job is None or work.job.status != example_finder.DONE:
             raise TowerConflict(f"the finder has not found {noun(part)} on this photo yet; review its suggestions "
                                 f"once it has")
@@ -671,7 +795,24 @@ async def set_review(redis: Any, s3: Any, bucket: str, project_id: str, layer_id
                                   f"suggestions change when the marks do)")
         record = record.with_part(part, replace(record.parts[part], review=review, review_saved=True))
         await _save_record(s3, bucket, project_id, layer_id, record)
-        return await part_work(redis, s3, bucket, project_id, record, part, photo)
+        return await part_work(redis, s3, bucket, project_id, record, part, photo, layer_id=layer_id)
+
+
+async def set_plants_seen(redis: Any, s3: Any, bucket: str, project_id: str, layer_id: str, photo: PhotoFacts,
+                          part: str, apart: Any, by: Optional[str]) -> PartWork:
+    """Save a person's answer to "can you see each plant on its own here?" for a farm part on the photo (True apart,
+    False touching; None takes the answer back). It decides the part's countability on this photo."""
+    check_part(part, FARM_PARTS)
+    if apart is not None and not isinstance(apart, bool):
+        raise TowerInputError(f"the answer must be true (each plant on its own), false (plants touch) or null, "
+                              f"not {apart!r}")
+    async with _PhotoLock(redis, project_id, layer_id, photo.sha256):
+        record = await load_record(s3, bucket, project_id, layer_id, photo.sha256)
+        seen = None if apart is None else PlantsSeen(apart=apart, by=by,
+                                                     at=datetime.now(timezone.utc).isoformat(timespec="seconds"))
+        record = record.with_part(part, replace(record.parts[part], plants_seen=seen))
+        await _save_record(s3, bucket, project_id, layer_id, record)
+        return await part_work(redis, s3, bucket, project_id, record, part, photo, layer_id=layer_id)
 
 
 # --------------------------------------------------------------------------- #
@@ -741,9 +882,11 @@ async def load_inspection(redis: Any, s3: Any, bucket: str, project_id: str, lay
     shas = [k[len(prefix):-len(".json")] for k in await _keys_under(s3, bucket, prefix) if k.endswith(".json")]
     limit = asyncio.Semaphore(_READ_CONCURRENCY)
 
+    field = await load_field(s3, bucket, project_id, layer_id) if any(p in FARM_PARTS for p in parts) else FieldFacts()
+
     async def one(sha: str) -> tuple[str, dict[str, PartWork]]:
         async with limit:
-            return sha, await photo_work(redis, s3, bucket, project_id, layer_id, by_sha[sha], parts)
+            return sha, await photo_work(redis, s3, bucket, project_id, layer_id, by_sha[sha], parts, field)
 
     work = dict(await asyncio.gather(*(one(sha) for sha in shas if sha in by_sha)))
     return Inspection(project_id=project_id, layer_id=layer_id, name=name, photos=tuple(photos), work=work)

@@ -54,6 +54,11 @@ Parts: `tower_dish`, `tower_antenna`, `tower_radio_unit` (answer_levels' targets
   lower AP50; dishes not: `EXAMPLE_FINDER_RULES.md`). For maize plants only the ones the measured `shown` rule
   picks are suggested (boxes inside a better box and boxes far below the photo's best score are not), and a
   suggestion already reviewed is always shown (`tower_inspection.suggestions_of`, `example_finder.shown_finds`).
+- **Can we count here?** (farm parts only): each photo asks "can you see each plant on its own here?"
+  (`PUT .../photos/{sha256}/plants-seen` `{part, apart: true|false|null}`); the answer, kept with who and when, decides
+  the part's countability on that photo (`count_check` in the work: question, answer, hint, verdict). The field's
+  planting date is given once per inspection (`PUT .../field` `{planting_date}`, a past day; kept beside the photos'
+  records, `towers/v1/<project>/fields/<layer>.json`) and, with the photo's own date, words a hint that never decides.
 - **Review**: the person keeps, rejects or fixes (a new box) each suggestion and adds the ones the finder missed.
   A review replaces the last one; every id must be a suggestion of the current job, given once. A review before the
   finder has finished is 409.

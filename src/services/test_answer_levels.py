@@ -646,3 +646,39 @@ def test_the_maize_shown_rule_is_the_one_chosen_on_calibration_tiles_and_shows_m
     assert f"{round(100 * after['precision'])}% plants" in entry["note"]
     assert {t.name for t in al.targets() if t.shown_rule is not None} == {"maize_seedling"}
     assert al.detector("maize_seedling").shown_rule is None  # measured for the example finder only
+
+
+# --------------------------------------------------------------------------- #
+# A person's eye decides; the dates only word a hint
+# --------------------------------------------------------------------------- #
+
+def test_a_persons_answer_decides_countability_over_every_other_fact():
+    """On 82 drone squares people judged (2026-11-03) the green cover rule called every countable Cyampirita square
+    closed: grass and khaki soil read as green. So a person's look wins, both ways."""
+    apart = al.countability("maize_seedling", Facts(green_cover_share=0.95, plants_apart_seen=True))
+    assert apart.verdict is Verdict.YES and apart.reason_code == "person_saw_apart"
+    touching = al.countability("maize_seedling", Facts(planting_date=PLANTED, capture_date=TAKEN,
+                                                       green_cover_share=0.1, plants_apart_seen=False))
+    assert touching.verdict is Verdict.NO and touching.reason_code == "person_saw_touching"
+    assert "a person looked at this picture" in touching.reason_text
+    assert al.countability("maize_seedling", Facts()).verdict is Verdict.MAYBE  # not asked: not decided
+
+
+def test_a_persons_answer_lets_the_answer_reach_the_measured_level_only_when_plants_stand_apart():
+    yes = _answer("maize_seedling", facts=Facts(plants_apart_seen=True))
+    no = _answer("maize_seedling", facts=Facts(plants_apart_seen=False))
+    assert yes.level is al.target("maize_seedling").max_level
+    assert no.level is Level.CANT_TELL and no.reason_code == "person_saw_touching"
+
+
+def test_the_stage_hint_words_the_dates_and_never_decides():
+    planted = date(2026, 9, 1)
+    young = Facts(planting_date=planted, capture_date=date(2026, 9, 21))
+    old = Facts(planting_date=planted, capture_date=date(2026, 11, 20))
+    assert al.stage_hint("maize_seedling", young) == "taken 20 days after planting: maize plants usually still stand apart then"
+    assert al.stage_hint("maize_seedling", old) == ("taken 80 days after planting: the leaves of maize plants usually "
+                                                    "touch after about 6 weeks")
+    assert al.stage_hint("maize_seedling", Facts(planting_date=planted)) is None
+    assert al.stage_hint("maize_seedling", Facts(planting_date=date(2026, 9, 21), capture_date=planted)) is None
+    assert al.stage_hint("row_crop_plant", young) is None  # no rule of thumb for it
+    assert al.countability("maize_seedling", young).verdict is al.countability("maize_seedling", old).verdict

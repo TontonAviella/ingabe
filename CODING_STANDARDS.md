@@ -189,6 +189,9 @@ One entry per real mistake: date, what went wrong, the rule that prevents
 it, and the gate if there is one. Newest first. Keep each entry to three
 lines; promote a lesson that recurs into the sections above.
 
+- **2026-11-03** The "plants touch at 80% green" countability rule was set by hand and never checked against people: on 82 drone
+  squares Roger judged, it called all 7 countable Cyampirita squares closed (grass, khaki soil read as green). Rule: a rule that
+  stands in for a person's eye is measured against people's answers on squares it was not tuned on before it decides. Gate: review only.
 - **2026-11-01** Maize suggestions were judged by precision at a best-F1 score cut (0.854), but the screen applied no cut and showed every
   find from score 0.01: 37.7 boxes a tile for 14.8 plants, 31% of them plants. Rule: measure a model on what the person is shown, with the
   same cut the screen applies, chosen on other pictures. Gate: maize `shown` evidence test in `test_answer_levels.py`; review for others.

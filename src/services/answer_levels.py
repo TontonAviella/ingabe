@@ -437,6 +437,9 @@ class Facts:
     planting_date: Optional[date] = None
     capture_date: Optional[date] = None
     green_cover_share: Optional[float] = None  # share of the ground under green leaves, 0-1, measured by the caller
+    # A person looked at this picture and answered "can you see each plant on its own?": True apart, False touching.
+    # It decides: on 82 drone squares people judged (2026-11-03) no measure from the pixels matched their eye.
+    plants_apart_seen: Optional[bool] = None
 
 
 @dataclass(frozen=True)
@@ -464,6 +467,13 @@ def _needs(noun: str, missing: Sequence[str]) -> Countability:
 
 
 def _plant_countability(t: Target, facts: Facts) -> Countability:
+    if facts.plants_apart_seen is True:
+        return Countability(Verdict.YES, "person_saw_apart",
+                            f"a person looked at this picture and saw each of the {t.noun} on its own")
+    if facts.plants_apart_seen is False:
+        return Countability(Verdict.NO, "person_saw_touching",
+                            f"a person looked at this picture and saw the {t.noun} touching, so one cannot be told "
+                            f"from the next")
     share = facts.green_cover_share
     if share is not None:
         _check_unit_interval("green cover share", share)
@@ -481,6 +491,29 @@ def _plant_countability(t: Target, facts: Facts) -> Countability:
     if missing:
         return _needs(t.noun, missing)
     return Countability(Verdict.YES, "countable", f"{t.noun} stand apart: green leaves cover {share:.0%} of the ground")
+
+
+# Days after planting until the leaves of neighbouring plants usually meet, per target: an agronomy rule of thumb
+# (maize in 75 cm rows closes around 6-8 weeks), NOT measured on our fields. It only words the hint that goes with
+# the question to a person; it never decides countability.
+APART_UNTIL_DAYS = {"maize_seedling": 42}
+
+
+def stage_hint(target_name: str, facts: Facts) -> Optional[str]:
+    """What the planting and picture dates suggest about whether the plants still stand apart, to go with the
+    question asked of a person; None when the dates or a rule of thumb for this target are missing, or the picture
+    was taken before planting (countability already says so)."""
+    t = target(target_name)
+    days_until = APART_UNTIL_DAYS.get(target_name)
+    if days_until is None or facts.planting_date is None or facts.capture_date is None:
+        return None
+    days = (facts.capture_date - facts.planting_date).days
+    if days < 0:
+        return None
+    if days <= days_until:
+        return f"taken {days} days after planting: {t.noun} usually still stand apart then"
+    return (f"taken {days} days after planting: the leaves of {t.noun} usually touch after about "
+            f"{days_until // 7} weeks")
 
 
 def countability(target_name: str, facts: Facts) -> Countability:

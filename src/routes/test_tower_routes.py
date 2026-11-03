@@ -139,6 +139,31 @@ async def test_agriculture_marks_maize_plants_and_has_no_tower_cards(client, see
 
 
 @pytest.mark.anyio
+async def test_a_farm_photo_asks_whether_each_plant_stands_alone_and_keeps_the_answer(client, seeded, switched_on):
+    """Agriculture: the person answers "can you see each plant on its own here?" per photo, and gives the field's
+    planting date once; the photo work then carries the question, the answer, the dates' hint and the verdict.
+    A Telecom inspection has neither."""
+    ids = await seeded.make(industry="agriculture")
+    _as(ids["owner"])
+    base = _base(ids["layer"])
+    first = (await client.get(f"{base}/photos/{SHA}/work")).json()
+    assert first["field"]["planting_date"] is None
+    assert first["parts"]["maize_seedling"]["count_check"]["seen"] is None
+    assert (await client.put(f"{base}/field", json={"planting_date": "2999-01-01"})).status_code == 422
+    assert (await client.put(f"{base}/field", json={"planting_date": "2026-09-01"})).json()["planting_date"] == "2026-09-01"
+    saved = await client.put(f"{base}/photos/{SHA}/plants-seen", json={"part": "maize_seedling", "apart": False})
+    assert saved.status_code == 200 and saved.json()["count_check"]["countable"] == "no"
+    work = (await client.get(f"{base}/photos/{SHA}/work")).json()
+    assert work["field"]["planting_date"] == "2026-09-01"
+    assert work["parts"]["maize_seedling"]["count_check"]["seen"]["apart"] is False
+    assert (await client.put(f"{base}/photos/{SHA}/plants-seen", json={"part": "tower_dish", "apart": True})).status_code == 422
+    telecom = await seeded.make()
+    _as(telecom["owner"])
+    assert (await client.put(f"{_base(telecom['layer'])}/field", json={"planting_date": "2026-09-01"})).status_code == 422
+    assert "field" not in (await client.get(f"{_base(telecom['layer'])}/photos/{SHA}/work")).json()
+
+
+@pytest.mark.anyio
 async def test_a_layer_that_is_not_an_inspection_or_has_no_kept_facts(client, seeded, switched_on):
     plain = await seeded.make(is_inspection=False)
     _as(plain["owner"])

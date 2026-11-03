@@ -106,12 +106,24 @@ the tower pictures the tower levels were measured on.
 | Kind | Targets | Rule |
 |---|---|---|
 | `structure` | tower dish, antenna, radio unit; building | YES: they do not grow or touch. Size is not a countability fact; `decide` applies the size gate once. |
-| `annual_crop` | maize seedling, row-crop plant | Needs the planting date, the date the picture was taken and the share of ground under green leaves. Share 0.8 or more: NO, plants touch. Picture taken before planting: NO. Any of the three missing: MAYBE, listing them. A NO the known facts prove wins over missing facts. |
+| `annual_crop` | maize seedling, row-crop plant | **A person's answer to "can you see each plant on its own here?" decides** (`plants_apart_seen`: True YES, False NO). Without it: needs the planting date, the date the picture was taken and the share of ground under green leaves; share 0.8 or more: NO, plants touch; picture taken before planting: NO; any missing: MAYBE, listing them. A NO the known facts prove wins over missing facts. |
 | `weed` | weed | Needs only the green cover share; 0.8 or more: NO, plants touch |
 | `perennial_crown` | tree crowns (forest, savanna), banana mat | MAYBE, counting untested |
 
 The green cover share is measured by the caller and passed in; a share of 0
 is a value (bare ground), only None is missing.
+
+Why a person decides (2026-11-03): Roger judged 82 drone squares by eye
+(30 + 40 from Cyampirita at 3.24 cm, 12 French seedling squares). The green
+cover rule agreed on 71 but called all 7 Cyampirita squares he could count
+"plants touch": grass and khaki soil read as green. No pixel measure tried
+(smooth background, shapes standing out, a DINOv2 judge learned from his
+answers: 2 of 7 found, 5 false) matched him, with only 7 countable examples.
+So the photo check asks the question (`tower_inspection.count_check`) and
+keeps each answer with who and when, as examples a model may learn from once
+it agrees with people on squares it has not seen. `stage_hint` words what the
+planting and photo dates suggest (`APART_UNTIL_DAYS`: maize 42 days, an
+agronomy rule of thumb, not measured on our fields); it never decides.
 
 ## The measured table
 

@@ -2,6 +2,7 @@ import { type QueryClient, useMutation, useQuery, useQueryClient } from '@tansta
 import { getJson, sendJson } from '@/lib/apiJson';
 import type { ServerError } from '@/lib/serverError';
 import {
+  type FieldFacts,
   type FinderJob,
   type InspectionPhotos,
   type MarksPayload,
@@ -107,6 +108,25 @@ export function useSaveReview(layerId: string, sha256: string) {
       queryClient.invalidateQueries({ queryKey: ['tower-card-answer', layerId] });
       queryClient.invalidateQueries({ queryKey: ['tower-photo-questions', layerId, sha256] });
     },
+  });
+}
+
+/** Save the person's answer to "can you see each plant on its own here?" for a farm part (null takes it back); the
+ * server answers with that part's work, its count_check updated. */
+export function useSavePlantsSeen(layerId: string, sha256: string) {
+  const setPart = useSetPart(layerId, sha256);
+  return useMutation<PartWork, ServerError, { part: TowerPart; apart: boolean | null }>({
+    mutationFn: (payload) => sendJson<PartWork>(`${photoBase(layerId, sha256)}/plants-seen`, 'PUT', payload),
+    onSuccess: (work, payload) => setPart(payload.part, () => work),
+  });
+}
+
+/** Save (or clear) the field's planting date; every photo's hint changes, so the photos' work is read again. */
+export function useSavePlantingDate(layerId: string) {
+  const queryClient = useQueryClient();
+  return useMutation<FieldFacts, ServerError, { planting_date: string | null }>({
+    mutationFn: (payload) => sendJson<FieldFacts>(`${base(layerId)}/field`, 'PUT', payload),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['tower-work', layerId] }),
   });
 }
 

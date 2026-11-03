@@ -189,15 +189,19 @@ async def get_tower_photo_work(sha256: str, inspection: _Inspection = Depends(_v
     is counted by you and how many suggestions wait."""
     photo = _photo(inspection, sha256)
     redis, s3 = get_async_redis(), await get_async_s3_client()
+    field = (await tower_inspection.load_field(s3, get_bucket_name(), inspection.project_id,
+                                               inspection.layer.layer_id)
+             if any(p in tower_inspection.FARM_PARTS for p in inspection.parts) else None)
     works = await tower_inspection.photo_work(redis, s3, get_bucket_name(), inspection.project_id,
-                                              inspection.layer.layer_id, photo, inspection.parts)
+                                              inspection.layer.layer_id, photo, inspection.parts, field)
     view = photo_inspections.view_of(photo)
     for work in works.values():  # outlines of the suggestions shown, worked out once in the background
         if view and work.job and work.suggestions and not any(s.outline for s in work.suggestions):
             await part_outlines.ensure(redis, s3, get_bucket_name(), inspection.project_id, inspection.layer.layer_id,
                                        inspection.layer.metadata_dict or {}, photo.sha256, view, work.job.job_id,
                                        [(s.id, s.box) for s in work.suggestions])
-    return {"parts": {part: work.as_dict() for part, work in works.items()}}
+    return {"parts": {part: work.as_dict() for part, work in works.items()},
+            **({"field": field.as_dict()} if field is not None else {})}
 
 
 class MarksBody(BaseModel):
@@ -222,6 +226,16 @@ class ReviewBody(BaseModel):
 
 class FindBody(BaseModel):
     part: str
+
+
+class PlantsSeenBody(BaseModel):
+    part: str
+    apart: Optional[bool] = Field(description="true: each plant can be seen on its own; false: plants touch; "
+                                              "null: take the answer back")
+
+
+class FieldBody(BaseModel):
+    planting_date: Optional[str] = Field(description="the day the field was planted, YYYY-MM-DD; null clears it")
 
 
 def _refused(e: Exception) -> HTTPException:
@@ -315,6 +329,37 @@ async def put_tower_review(sha256: str, body: ReviewBody,
     except (example_finder_pictures.FinderInputError, tower_inspection.TowerConflict) as e:
         raise _refused(e) from None
     return work.as_dict()
+
+
+@router.put("/towers/layer/{layer_id}/photos/{sha256}/plants-seen", operation_id="put_plants_seen")
+async def put_plants_seen(sha256: str, body: PlantsSeenBody, inspection: _Inspection = Depends(_edited),
+                          session: UserContext = Depends(verify_session_required)) -> dict[str, Any]:
+    """Save a person's answer to "can you see each plant on its own here?" for a farm part on the photo; it decides
+    whether the part can be counted there. Returns the part's work (its count_check)."""
+    try:
+        work = await tower_inspection.set_plants_seen(
+            get_async_redis(), await get_async_s3_client(), get_bucket_name(), inspection.project_id,
+            inspection.layer.layer_id, _photo(inspection, sha256), _part(inspection, body.part), body.apart,
+            session.get_user_id())
+    except (example_finder_pictures.FinderInputError, tower_inspection.TowerConflict) as e:
+        raise _refused(e) from None
+    return work.as_dict()
+
+
+@router.put("/towers/layer/{layer_id}/field", operation_id="put_inspection_field")
+async def put_inspection_field(body: FieldBody, inspection: _Inspection = Depends(_edited),
+                               session: UserContext = Depends(verify_session_required)) -> dict[str, Any]:
+    """Save (or clear) the planting date of the field this inspection shows (farm inspections only). With each
+    photo's own date it words the hint that goes with "can you see each plant on its own here?"."""
+    if not any(p in tower_inspection.FARM_PARTS for p in inspection.parts):
+        raise HTTPException(422, "only a farm inspection has a planting date")
+    try:
+        field = await tower_inspection.set_planting_date(await get_async_s3_client(), get_bucket_name(),
+                                                         inspection.project_id, inspection.layer.layer_id,
+                                                         body.planting_date, session.get_user_id())
+    except tower_inspection.TowerInputError as e:
+        raise _refused(e) from None
+    return field.as_dict()
 
 
 async def _here(inspection: _Inspection, session: UserContext) -> tower_cards.Here:
