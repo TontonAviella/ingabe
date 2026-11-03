@@ -6,6 +6,7 @@ import { AskSageBox } from '@/components/AskSageBox';
 import { PANEL_FONT } from '@/components/CardAnswer';
 import { useReaderRole } from '@/components/ReportAudienceSelect';
 import { SageAnswerHere, type SageLink } from '@/components/SageReply';
+import { CountCheckCard } from '@/components/towers/CountCheckCard';
 import { BOX_STYLE, type BoxKind, type CanvasBox, type CanvasTool, PhotoCanvas } from '@/components/towers/PhotoCanvas';
 import { rememberAsked, useOthersAsked } from '@/hooks/useAskedQuestions';
 import { usePhotoCloseLook } from '@/hooks/useCloseLook';
@@ -1483,6 +1484,18 @@ function PhotoWorkspace({
       <aside className="flex shrink-0 flex-col gap-4 overflow-y-auto border-t border-white/10 p-4 lg:w-[390px] lg:border-t-0 lg:border-l max-lg:max-h-[52vh]">
         {questions.error && questions.error.status !== 404 && <p className={ALERT}>{questions.error.message}</p>}
         {panel}
+        {Object.entries(work.data?.parts ?? {}).map(([id, w]) =>
+          w?.count_check ? (
+            <CountCheckCard
+              key={id}
+              layerId={layerId}
+              sha256={photo.sha256}
+              part={id as TowerPart}
+              check={w.count_check}
+              field={work.data?.field}
+            />
+          ) : null,
+        )}
         {partView && (
           <div className="flex flex-wrap gap-x-3 gap-y-1.5 text-[12px] text-[#D8CCBF]">
             {(partReviewing ? (['mark', 'suggestion', 'kept', 'added', 'rejected'] as BoxKind[]) : (['mark'] as BoxKind[])).map((kind) => (

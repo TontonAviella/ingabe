@@ -134,11 +134,31 @@ export interface PartWork {
   reviewed: PartReview;
   counted_by_you: number | null;
   waiting: number;
+  /** Farm parts only: "can you see each plant on its own here?" (tower_inspection.count_check). */
+  count_check?: CountCheck;
 }
 
-/** GET /api/towers/layer/{layer_id}/photos/{sha256}/work */
+/** A person's answer, the planting and photo dates' hint, and the countability that follows. The person's answer
+ * decides; the hint never does. */
+export interface CountCheck {
+  question: string;
+  seen: { apart: boolean; by: string | null; at: string } | null;
+  hint: string | null;
+  countable: 'yes' | 'no' | 'maybe';
+  reason: string;
+}
+
+/** The field a farm inspection shows: its planting date (YYYY-MM-DD), as a person gave it. */
+export interface FieldFacts {
+  planting_date: string | null;
+  by: string | null;
+  at: string | null;
+}
+
+/** GET /api/towers/layer/{layer_id}/photos/{sha256}/work. `field` only for a farm inspection. */
 export interface PhotoWork {
   parts: Partial<Record<TowerPart, PartWork>>;
+  field?: FieldFacts;
 }
 
 /** PUT .../marks. `lookalike_marks` are look-alikes the person drew for this part only; this screen draws none. The

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import time
 import uuid
 from dataclasses import replace
@@ -491,3 +492,65 @@ def test_the_measured_rule_hides_nested_and_weak_suggestions_but_never_one_alrea
     kept_before = f"{'b' * 12}-2"
     again = tower_inspection.suggestions_of(job, None, rule, {kept_before})
     assert [s.id[-2:] for s in again] == ["-1", "-2", "-4"]  # best first, the reviewed one included
+
+
+# --------------------------------------------------------------------------- #
+# "Can you see each plant on its own here?": a person's answer, kept, and the field's planting date
+# --------------------------------------------------------------------------- #
+
+MAIZE = tower_inspection.FARM_PARTS[0]
+
+
+async def test_a_persons_answer_is_kept_with_who_and_when_and_decides_the_count_check(towers):
+    project, layer, _ = towers()
+    redis, s3, bucket = await _services()
+    photo = facts(taken="2026-10-09T14:03:22")
+    await tower_inspection.set_planting_date(s3, bucket, project, layer, "2026-09-01", USER)
+    work = await tower_inspection.set_plants_seen(redis, s3, bucket, project, layer, photo, MAIZE, True, USER)
+    check = work.count_check
+    assert check is not None and check["seen"]["apart"] is True and check["seen"]["by"] == USER
+    assert check["countable"] == "yes" and "a person looked" in check["reason"]
+    assert check["hint"] == "taken 38 days after planting: maize plants usually still stand apart then"
+    again = await tower_inspection.load_record(s3, bucket, project, layer, SHA)
+    assert again.parts[MAIZE].plants_seen is not None and again.parts[MAIZE].plants_seen.apart is True
+    touching = await tower_inspection.set_plants_seen(redis, s3, bucket, project, layer, photo, MAIZE, False, USER)
+    assert touching.count_check["countable"] == "no"
+    back = await tower_inspection.set_plants_seen(redis, s3, bucket, project, layer, photo, MAIZE, None, USER)
+    assert back.count_check["seen"] is None and back.count_check["countable"] == "maybe"
+    works = await tower_inspection.photo_work(redis, s3, bucket, project, layer, photo, (MAIZE,))
+    assert works[MAIZE].as_dict()["count_check"]["hint"] == check["hint"]  # read back with the field's date
+
+
+async def test_the_question_is_for_farm_parts_and_takes_only_yes_no_or_back(towers):
+    project, layer, _ = towers()
+    redis, s3, bucket = await _services()
+    with pytest.raises(TowerInputError):
+        await tower_inspection.set_plants_seen(redis, s3, bucket, project, layer, facts(), DISH, True, USER)
+    with pytest.raises(TowerInputError):
+        await tower_inspection.set_plants_seen(redis, s3, bucket, project, layer, facts(), MAIZE, "yes", USER)
+    works = await tower_inspection.photo_work(redis, s3, bucket, project, layer, facts())
+    assert all("count_check" not in w.as_dict() for w in works.values())  # tower work answers as before
+
+
+async def test_the_planting_date_is_a_past_day_and_can_be_cleared(towers):
+    project, layer, _ = towers()
+    _, s3, bucket = await _services()
+    for bad in ("01/09/2026", "2999-01-01", 20260901):
+        with pytest.raises(TowerInputError):
+            await tower_inspection.set_planting_date(s3, bucket, project, layer, bad, USER)
+    kept = await tower_inspection.set_planting_date(s3, bucket, project, layer, "2026-09-01", USER)
+    assert (await tower_inspection.load_field(s3, bucket, project, layer)).planting_date == kept.planting_date
+    await tower_inspection.set_planting_date(s3, bucket, project, layer, None, USER)
+    assert (await tower_inspection.load_field(s3, bucket, project, layer)).planting_date is None
+    assert not tower_inspection.field_key(project, layer).startswith(tower_inspection._layer_prefix(project, layer))
+
+
+def test_a_kept_answer_survives_the_record_round_trip_and_a_photo_without_a_date_gives_no_hint():
+    seen = tower_inspection.PlantsSeen(apart=False, by=USER, at="2026-11-03T10:00:00+00:00")
+    record = tower_inspection.PhotoRecord.empty(SHA).with_part(MAIZE, tower_inspection.PartRecord(plants_seen=seen))
+    back = tower_inspection._record_from(json.loads(tower_inspection._record_json("P", "L", record)))
+    assert back.parts[MAIZE].plants_seen == seen and back.parts[DISH].plants_seen is None
+    assert tower_inspection.capture_date(facts(taken=None)) is None
+    no_date = tower_inspection.part_facts(MAIZE, back.parts[MAIZE], facts(taken=None),
+                                          tower_inspection.FieldFacts())
+    assert answer_levels.stage_hint(MAIZE, no_date) is None and no_date.plants_apart_seen is False

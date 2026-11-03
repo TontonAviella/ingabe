@@ -838,6 +838,49 @@ describe('tower cards panel', () => {
     expect(byButton(/Microwave dish/)).toBeNull();
   });
 
+  it('a farm photo asks "can you see each plant on its own here?" and sends the person\'s answer', async () => {
+    // tower_inspection.count_check: the person's answer decides; the planting date only words a hint.
+    const { filename: _, ...photo } = PHOTO;
+    const check = {
+      question: 'Can you see each plant on its own here?',
+      seen: null,
+      hint: 'taken 20 days after planting: maize plants usually still stand apart then',
+      countable: 'maybe' as const,
+      reason: 'to count maize plants this needs how much of the ground green leaves cover',
+    };
+    const work = (c: typeof check | (Omit<typeof check, 'seen' | 'countable'> & { seen: unknown; countable: 'no' })) => ({
+      marks: [],
+      lookalike_marks: [],
+      job: null,
+      suggestions: [],
+      reviewed: { kept: [], rejected: [], fixed: [], added: [] },
+      counted_by_you: null,
+      waiting: 0,
+      count_check: c,
+    });
+    routes[`GET ${PHOTOS}`] = () => ({
+      status: 200,
+      body: { photos: [photo], parts: [{ id: 'maize_seedling', label: 'Maize plant', plural: 'maize plants' }] },
+    });
+    routes[`GET ${PHOTOS}/${SHA}/work`] = () => ({
+      status: 200,
+      body: { parts: { maize_seedling: work(check) }, field: { planting_date: '2026-09-01', by: 'u', at: 'now' } },
+    });
+    routes[`GET ${CARDS}?audience=owner`] = () => ({ status: 404, body: { detail: 'no cards' } });
+    routes[`PUT ${photoUrl(SHA)}/plants-seen`] = () => ({
+      status: 200,
+      body: work({ ...check, seen: { apart: false, by: 'u', at: 'now' }, countable: 'no', reason: 'touching' }),
+    });
+    mount(panel(layers));
+    click(await findButton(/Check photos/));
+    await findText('Can you see each plant on its own here?');
+    await findText(/The dates say: taken 20 days after planting/);
+    expect(byText('Not counted until someone answers.')).not.toBeNull();
+    click(await findButton('No, plants touch'));
+    await findText(/Not counted here: you saw the plants touching/);
+    expect(calls.find((c) => c.url.endsWith('/plants-seen'))?.body).toEqual({ part: 'maize_seedling', apart: false });
+  });
+
   it('"Check photos" says the server\'s words when every photo is checked', async () => {
     const server = serve([PHOTO]);
     found(server, SHA, []);
