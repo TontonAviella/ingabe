@@ -189,6 +189,9 @@ One entry per real mistake: date, what went wrong, the rule that prevents
 it, and the gate if there is one. Newest first. Keep each entry to three
 lines; promote a lesson that recurs into the sections above.
 
+- **2026-11-07** To build a noza-web worktree faster I symlinked its `node_modules` to the main checkout's; `next build`
+  (`output: "standalone"`) then rewrote the shared folder and left the main checkout's noza-web with one package. Rule: each
+  checkout gets its own `npm ci`; never share `node_modules` between checkouts by symlink. Gate: review only (a local folder, not code).
 - **2026-10-12** The TOWERS switch leaked where a gate used `industry.serves` (industry only): replayed chat history kept tower counts
   with the switch off, Hermes registered the tower tools for every project, and the routing eval sent farm cases the unfiltered tool
   list. Rule: offering, running, replaying and showing follow `industry.available` (industry and switch). Gate: `industry-serves-gate`.
