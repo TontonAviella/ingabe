@@ -15,11 +15,26 @@ Guidance for every coding agent working in this repository (Claude Code, Codex, 
 - When a repeated Sage/Codex workflow appears, read `.claude/skills/sage-harness-upgrade/SKILL.md`.
 - Push judgment into skills, execution into deterministic tools/tests/telemetry, and user-facing Sage language into outcomes plus evidence.
 
-## Local-only operations
+## Where Ingabe runs (and how to deploy)
 
-- Ingabe runs on the local Docker Compose stack. Do not use SSH, rsync, VPS hosts, remote deployment targets, or production Compose overrides.
-- `scripts/deploy.sh` is the canonical local build/start/verification command. `scripts/deploy.sh --check-only` verifies the running stack without rebuilding it.
-- The packaged local application is `http://localhost:8000`; Vite development is `http://localhost:5173` when started separately from `frontendts`.
+Two copies, each with its own database and file storage. Check which one a request is about before "deploying".
+
+- **Live, for partners: `https://gis.nozalabs.rw`** on the Contabo server (since 2026-10-08), reached through a Cloudflare
+  tunnel. It runs `main` plus a server-only override, `~/ingabe/compose.server.yml` (not in this repository; its only
+  copy is on the server). Deploy = merge the PR to `main`, then on the server: `cd ~/ingabe && git pull --ff-only`,
+  `docker compose -f docker-compose.yml -f compose.server.yml build app`, then
+  `docker compose -f docker-compose.yml -f compose.server.yml up -d --no-deps --force-recreate app` (build ~25 min,
+  a brief 502 at the switch). Run long builds detached (`nohup … &`) so a dropped SSH session does not kill them, and
+  prune old build cache afterwards (`docker builder prune -f --filter until=48h`). After the deploy: `/qa` or
+  `/canary` on the live site.
+- **Local, on the Mac: `http://localhost:8000`** (Vite dev on `http://localhost:5173` when started separately from
+  `frontendts`). `scripts/deploy.sh` is the local build/start/verification command; `scripts/deploy.sh --check-only`
+  verifies the running local stack.
+- **Server safety:** SSH only with the dedicated key and an options wrapper (zsh does not split option strings).
+  Never print secrets: no `docker compose config`, `env` or `printenv`; read one named setting with `grep` and mask
+  it. Tests never run against `mundidb`. A database object created as `mundi_admin` must be granted to `mundiuser`,
+  or the nightly backup (`mundi-backup`, 02:00 UTC, kept in the server's MinIO) fails; run
+  `docker exec mundi-backup /bin/bash /backup.sh` once after any database change.
 - A geospatial workflow is not complete when an algorithm returns. It is complete only after source resolution, data-shape inspection, deterministic planning, execution, output validation, artifact persistence, local delivery verification, and an evidence-backed response.
 
 ## What is Mundi.ai
@@ -30,7 +45,7 @@ AI-native web GIS by Ingabe, credited to Roger. Supports vector, raster, and poi
 
 ## Local runtime reality (verified 2026-07-11; roles, fallbacks and embeddings re-verified 2026-10-03)
 
-- **Runtime**: local only. Build and verify with `scripts/deploy.sh`; the application is served at `http://localhost:8000`. Never deploy this repository with SSH, rsync, or a remote Compose override.
+- **Runtime**: live on the Contabo server at `https://gis.nozalabs.rw` (runs `main`) and locally at `http://localhost:8000`; see "Where Ingabe runs" above for deploying each.
 - **Sage LLM**: openai SDK 2.36 → an OpenAI-compatible endpoint. **Since 2026-10-10 the Mac and the server `.env` use `claude-haiku-5-5` through Anthropic's OpenAI-compatible endpoint (`https://api.anthropic.com/v1/`)**, for Sage and for the vision model behind the drone cards (`DRONE_VISION_MODEL`, `src/services/drone_vision.py`); Claude calls are priced from their tokens (`src/services/llm_cache.py`). Before that (2026-10-06 to 2026-10-10, still the code's default): OpenRouter (`https://openrouter.ai/api/v1`) → `openai/gpt-6-luna` (Roger's decision: paid OpenRouter credits, $0.10 per million input tokens and $0.50 per million output; it reads images, calls tools and returns strict JSON). No fallback model is configured. FastSAM stays the mask engine. The model before Luna, `nvidia/nemotron-3-super-120b-a12b:free`, needs no credits (20 requests/minute, 1,000/day) and is the way back if paid credits run out. The abdication guard (`SAGE_ABDICATION_GUARD=1`) was measured with Luna: routing eval 78.1% → 81.7% (+3.6 pp, CI −0.4..+7.7), prose-instead-of-tool 14.4% → 2.8%, NDVI 40% → 81%, but unsupported requests 71% → 49%; not re-measured with Haiku.
 - **Turn loop**: every Sage turn runs on the app's own loop, `process_chat_interaction_task` in `src/routes/message_routes.py`, with the request built in `src/dependencies/sage_turn_request.py`. The deterministic administrative, raster-object (FastSAM), raster-context and raster-fact routes (`_run_first_fast_path`) answer first.
 - **Removed runtimes**: Hermes Agent (`MUNDI_USE_HERMES`, `hermes_integration/`, the `/internal/tool-call` callback) was removed on 2026-10-12; it was off in production and on the Mac at removal (switched on only for local validation runs). Messaging channels (WhatsApp/Telegram senders, inbound `/internal/inbox`, alert cron, `render_map_snapshot`) were removed on 2026-10-02; Sage runs in the web app only.
