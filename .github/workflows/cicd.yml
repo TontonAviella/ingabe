@@ -9,20 +9,45 @@ on:
       - 'Dockerfile.base'
       - 'noza-web/**'
       - '.github/workflows/build-base-image.yml'
+  # No paths-ignore on pull requests: "build-and-test" is a required check, and a workflow left out by a path filter
+  # never reports, so a website-only PR could never merge. The `changes` job below skips the tests instead, and a
+  # skipped job counts as passed.
   pull_request:
     types: [opened, synchronize, reopened]
-    paths-ignore:
-      - 'docs/**'
-      - '*.md'
-      - 'Dockerfile.base'
-      - 'noza-web/**'
-      - '.github/workflows/build-base-image.yml'
 
 permissions:
   contents: read
 
 jobs:
+  changes:
+    runs-on: ubuntu-24.04
+    permissions:
+      pull-requests: read
+    outputs:
+      code: ${{ steps.files.outputs.code }}
+    steps:
+      - id: files
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT: ${{ github.event_name }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          # Pushes to main keep their paths-ignore above, so a push that gets here changed code.
+          if [ "$EVENT" != "pull_request" ]; then echo "code=true" >> "$GITHUB_OUTPUT"; exit 0; fi
+          # A rename counts for both of its paths. If the list cannot be read, the tests run.
+          if ! files=$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR}/files" --paginate --jq '.[] | .filename, (.previous_filename // empty)'); then
+            echo "code=true" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          # The same paths the push trigger ignores; anything else means the tests run.
+          code=$(printf '%s\n' "$files" | grep -Ev '^(docs/|noza-web/|[^/]*\.md$|Dockerfile\.base$|\.github/workflows/build-base-image\.yml$)' || true)
+          if [ -z "$files" ] || [ -n "$code" ]; then echo "code=true" >> "$GITHUB_OUTPUT"; else echo "code=false" >> "$GITHUB_OUTPUT"; fi
+          echo "Files outside the website and docs:"; printf '%s\n' "${code:-(none)}"
+
   build-and-test:
+    needs: changes
+    # Runs unless `changes` positively found only website/docs files (a failed `changes` job still runs the tests).
+    if: ${{ !cancelled() && needs.changes.outputs.code != 'false' }}
     # Pinned: ubuntu-latest became 26.04 on 2026-10-26 and Playwright 1.58 cannot install Chromium there
     # ("Playwright does not support chromium on ubuntu26.04-x64"). Move on when Playwright supports it.
     runs-on: ubuntu-24.04
