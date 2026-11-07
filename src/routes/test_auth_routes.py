@@ -141,6 +141,12 @@ async def test_a_sign_up_while_sign_up_is_open_goes_straight_to_workos(client, w
 
 
 @pytest.mark.anyio
+async def test_a_garbled_confirmed_value_shows_the_step_not_an_error(client, workos_on):
+    r = await client.get("/auth/login", params={"confirmed": "yes-please"}, follow_redirects=False)
+    assert r.status_code == 302 and r.headers["location"] == "/sign-in?return_to=%2F"
+
+
+@pytest.mark.anyio
 async def test_a_browser_that_signed_in_before_goes_straight_to_workos(client, workos_on):
     client.cookies.set("ingabe_signed_in_before", "1")
     r = await client.get("/auth/login", params={"return_to": "/project/abc"}, follow_redirects=False)

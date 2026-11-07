@@ -68,7 +68,7 @@ def _redirect_uri(request: Request) -> str:
 
 @pages.get("/auth/login")
 async def auth_login(request: Request, return_to: str = "/", organization_id: Optional[str] = None,
-                     screen_hint: Optional[str] = None, confirmed: bool = False, lang: Optional[str] = None):
+                     screen_hint: Optional[str] = None, confirmed: Optional[str] = None, lang: Optional[str] = None):
     """Send the user to the WorkOS-hosted sign-in page (a sign-up, while Ingabe is invite-only, to Request access).
 
     A browser that has never signed in first sees Ingabe's own step (/sign-in): WorkOS' page asks only for an email
@@ -82,7 +82,8 @@ async def auth_login(request: Request, return_to: str = "/", organization_id: Op
         return RedirectResponse("/request-access", status_code=status.HTTP_302_FOUND)
     first_time_here = not request.cookies.get(_SIGNED_IN_BEFORE_COOKIE) and getattr(
         request.state, "workos_session", None) is None
-    if first_time_here and not confirmed and screen_hint != "sign-up" and organization_id is None:
+    # confirmed is text, not a bool: a mangled value shows the step instead of a JSON 422 on a page.
+    if first_time_here and confirmed != "1" and screen_hint != "sign-up" and organization_id is None:
         query = {"return_to": workos_auth.safe_return_to(return_to)}
         if lang in ("en", "fr"):
             query["lang"] = lang

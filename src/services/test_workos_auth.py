@@ -40,6 +40,7 @@ def test_enabled_needs_the_provider_and_all_keys(monkeypatch):
     ("/auth/logout", "/"), ("/auth/login?confirmed=1", "/"), ("/./auth/logout", "/"), ("/%61uth/logout", "/"),
     ("/sign-in", "/"), ("/sign-in?return_to=%2Fsign-in", "/"), ("/x/../sign-in", "/"),
     ("/sign-ins-report", "/sign-ins-report"), ("/authors", "/authors"),
+    ("/.//evil.example", "/"),  # a client that collapses dot segments first would read "//evil.example"
 ])
 def test_safe_return_to(given, expected):
     assert workos_auth.safe_return_to(given) == expected

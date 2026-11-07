@@ -36,7 +36,6 @@ import binascii
 import hashlib
 import logging
 import os
-import posixpath
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -132,6 +131,20 @@ def _value(x: Any) -> Any:
     return getattr(x, "value", x)
 
 
+def _remove_dot_segments(path: str) -> str:
+    """The path a browser asks for (RFC 3986 5.2.4): "." and ".." resolved, empty segments kept, so "/.//x" is "//x"."""
+    out: list[str] = []
+    for segment in path.split("/"):
+        if segment == ".":
+            continue
+        if segment == "..":
+            if len(out) > 1:
+                out.pop()
+            continue
+        out.append(segment)
+    return "/".join(out)
+
+
 def safe_return_to(value: Optional[str]) -> str:
     """Only same-site paths: an absolute or protocol-relative URL becomes "/".
 
@@ -147,8 +160,8 @@ def safe_return_to(value: Optional[str]) -> str:
     if parsed.scheme or parsed.netloc:
         return "/"
     # Back to sign-in or sign-out would loop or sign the person out; compare the path the browser will ask for.
-    path = posixpath.normpath(unquote(parsed.path))
-    if path in ("/sign-in", "/auth") or path.startswith(("/sign-in/", "/auth/")):
+    path = _remove_dot_segments(unquote(parsed.path))
+    if path.startswith("//") or path in ("/sign-in", "/auth") or path.startswith(("/sign-in/", "/auth/")):
         return "/"
     return value
 
