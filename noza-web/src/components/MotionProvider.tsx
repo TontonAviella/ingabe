@@ -1,6 +1,7 @@
 "use client";
 
 import { createContext, useContext, useEffect, useState } from "react";
+import { useLocale } from "./Locale";
 
 interface Motion {
   paused: boolean;
@@ -30,6 +31,7 @@ export const useMotion = () => useContext(MotionContext);
 
 export function PauseButton({ className = "" }: { className?: string }) {
   const { paused, reduced, toggle } = useMotion();
+  const { t } = useLocale();
   if (reduced) return null;
   return (
     <button
@@ -49,7 +51,7 @@ export function PauseButton({ className = "" }: { className?: string }) {
           </svg>
         )}
       </span>
-      {paused ? "Play drawings" : "Pause drawings"}
+      {paused ? t.read.play : t.read.pause}
     </button>
   );
 }

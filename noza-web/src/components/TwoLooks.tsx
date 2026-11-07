@@ -1,16 +1,19 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { useLocale } from "./Locale";
 import { useMotion } from "./MotionProvider";
 
 const PLOTS = [
-  { name: "Plot A", first: "Maize", second: "Maize" },
-  { name: "Plot B", first: "Maize", second: "Beans" },
-  { name: "Plot C", first: "Cassava", second: "Cassava" },
+  { name: "A", first: "maize", second: "maize" },
+  { name: "B", first: "maize", second: "beans" },
+  { name: "C", first: "cassava", second: "cassava" },
 ];
 
 /** Two independent looks at a plot: the crop is named only when they agree. */
 export function TwoLooks() {
+  const { t } = useLocale();
+  const tl = t.twoLooks;
   const { paused, reduced } = useMotion();
   const [k, setK] = useState(0);
   const [step, setStep] = useState(3);
@@ -32,11 +35,15 @@ export function TwoLooks() {
   const p = PLOTS[k];
   const agree = p.first === p.second;
   const show = reduced ? 7 : step;
+  const first = tl.crops[p.first];
+  const second = tl.crops[p.second];
 
   return (
     <div className="rounded-[22px] bg-espresso p-6 text-sand ring-1 ring-white/5 sm:p-8">
       <div className="flex items-center justify-between font-mono text-[11px] uppercase tracking-label text-latte">
-        <span>{p.name}</span>
+        <span>
+          {tl.plot} {p.name}
+        </span>
         <span className="flex gap-1.5">
           {PLOTS.map((_, i) => (
             <span key={i} className={`h-1 w-5 rounded-full transition-colors ${i === k ? "bg-caramel" : "bg-white/10"}`} />
@@ -45,9 +52,11 @@ export function TwoLooks() {
       </div>
 
       <div className="mt-6 grid grid-cols-2 gap-3">
-        {[p.first, p.second].map((guess, i) => (
+        {[first, second].map((guess, i) => (
           <div key={i} className="rounded-2xl bg-chocolate p-4 ring-1 ring-white/5">
-            <div className="font-mono text-[10px] uppercase tracking-label text-latte/80">Look {i + 1}</div>
+            <div className="font-mono text-[10px] uppercase tracking-label text-latte/80">
+              {tl.look} {i + 1}
+            </div>
             <div
               className={`mt-3 font-display text-[28px] leading-none transition-all duration-500 ${
                 show > i ? "translate-y-0 opacity-100" : "translate-y-2 opacity-0"
@@ -66,19 +75,20 @@ export function TwoLooks() {
         } ${agree ? "border-caramel/60 bg-caramel/10" : "border-dashed border-caramel/50"}`}
       >
         <div>
-          <div className="font-mono text-[10px] uppercase tracking-label text-latte">What we show</div>
+          <div className="font-mono text-[10px] uppercase tracking-label text-latte">{tl.whatWeShow}</div>
           <div className="mt-1.5 text-[17px]">
             {agree ? (
               <>
-                <span className="text-caramel">{p.first}</span>
-                <span className="text-latte"> · both looks agree</span>
+                <span className="text-caramel">{first}</span>
+                <span className="text-latte"> · {tl.agree}</span>
               </>
             ) : (
               <>
-                <span className="text-caramel">Not sure</span>
+                <span className="text-caramel">{tl.notSure}</span>
                 <span className="text-latte">
                   {" "}
-                  · {p.first.toLowerCase()} or {p.second.toLowerCase()}?
+                  · {first.toLowerCase()} {tl.or} {second.toLowerCase()}
+                  {tl.q}
                 </span>
               </>
             )}
@@ -92,7 +102,7 @@ export function TwoLooks() {
         </span>
       </div>
       <p className={`mt-4 min-h-[2.6em] text-[13px] leading-relaxed text-latte transition-opacity duration-500 ${show >= 3 ? "opacity-100" : "opacity-0"}`}>
-        {agree ? "Named on the map, with how sure we are." : "Marked for a quick check in the field. Your answer teaches the next look."}
+        {agree ? tl.namedNote : tl.checkNote}
       </p>
     </div>
   );
