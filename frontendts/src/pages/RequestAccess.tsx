@@ -6,7 +6,7 @@ import { IngabeIcon } from '@/components/Brand';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
-import { pageLang, withLang } from '@/lib/pageLang';
+import { pageLang, useDocumentLang, withLang } from '@/lib/pageLang';
 
 // Ingabe is invite-only: someone without an invitation asks here, Ingabe staff get a phone push and approve
 // (WorkOS emails an invitation) or decline on the Companies page (src/services/access_requests.py). The website's
@@ -44,8 +44,8 @@ const TEXT = {
     title: "Demander l'accès",
     name: 'Votre nom',
     email: 'Votre e-mail',
-    emailExample: 'vous@entreprise.sn',
-    emailHint: 'Utilisez une adresse comme vous@entreprise.sn',
+    emailExample: 'vous@entreprise.com',
+    emailHint: 'Utilisez une adresse comme vous@entreprise.com',
     org: 'Organisation (facultatif)',
     orgLabel: 'Votre organisation',
     reason: 'Pour quoi faire ? (facultatif)',
@@ -64,6 +64,7 @@ export default function RequestAccess() {
   const { status } = useWorkOSSession();
   const lang = pageLang();
   const t = TEXT[lang];
+  useDocumentLang(lang);
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
   const [emailTouched, setEmailTouched] = useState(false);

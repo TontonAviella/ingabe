@@ -45,7 +45,16 @@ describe('SignIn', () => {
   it('goes back only to a path on this site', () => {
     const here = 'https://gis.nozalabs.rw';
     expect(sameSitePath('/project/abc?tab=2#map', here)).toBe('/project/abc?tab=2#map');
-    for (const outside of ['/\\evil.example', '//evil.example', '/\\/evil.example', 'https://evil.example/x', 'evil', null]) {
+    for (const outside of [
+      '/\\evil.example',
+      '//evil.example',
+      '/\\/evil.example',
+      '/.//evil.example',
+      '/%2e//evil.example',
+      'https://evil.example/x',
+      'evil',
+      null,
+    ]) {
       expect(sameSitePath(outside, here)).toBe('/');
     }
   });
@@ -55,5 +64,23 @@ describe('SignIn', () => {
     mount(<SignIn />);
     await findText('Sign in to Ingabe', 'h1');
     expect(link('I have an invitation: sign in').getAttribute('href')).toBe('/auth/login?return_to=%2F&confirmed=1');
+  });
+
+  it('never sends a signed-in person back to this page or to a sign-in or sign-out route', () => {
+    const here = 'https://gis.nozalabs.rw';
+    for (const loop of ['/sign-in', '/sign-in?return_to=%2Fsign-in', '/auth/logout', '/auth/login?confirmed=1']) {
+      expect(sameSitePath(loop, here)).toBe('/');
+    }
+    expect(sameSitePath('/sign-ins-report', here)).toBe('/sign-ins-report');
+  });
+
+  it('sends a person who is already signed in where they were heading', async () => {
+    session.status = 'signedIn';
+    const replace = vi.fn();
+    const real = window.location;
+    vi.stubGlobal('location', { ...real, origin: real.origin, search: '?return_to=%2Fproject%2Fabc', replace });
+    mount(<SignIn />);
+    await vi.waitFor(() => expect(replace).toHaveBeenCalledWith('/project/abc'));
+    vi.unstubAllGlobals();
   });
 });

@@ -92,6 +92,37 @@ async def test_the_step_never_passes_on_an_outside_address(client, workos_on):
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize("params", [{"organization_id": "org_1"}, {"confirmed": "1"}])
+async def test_switching_company_or_a_confirmed_sign_in_goes_straight_to_workos(client, workos_on, params):
+    r = await client.get("/auth/login", params=params, follow_redirects=False)
+    assert r.headers["location"].startswith("https://auth.example/authorize?")
+
+
+@pytest.mark.anyio
+async def test_a_signed_in_browser_goes_straight_to_workos(client, workos_on, monkeypatch):
+    """No cookie yet (signed in before the step existed), but a live session: nothing to explain."""
+    live = workos_auth.WorkOSSession(
+        user_id="user_9", email="x@y.rw", first_name=None, last_name=None, profile_picture_url=None,
+        session_id="sess_9", organization_id=None, role=None)
+
+    async def fake_load(cookie):
+        return live
+
+    monkeypatch.setattr(workos_session, "load_session", fake_load)
+    client.cookies.set("wos_session", "live")
+    r = await client.get("/auth/login", follow_redirects=False)
+    client.cookies.delete("wos_session")
+    assert r.headers["location"].startswith("https://auth.example/authorize?")
+
+
+@pytest.mark.anyio
+async def test_a_sign_up_while_sign_up_is_open_goes_straight_to_workos(client, workos_on, monkeypatch):
+    monkeypatch.setenv("WORKOS_SELF_SIGN_UP", "1")
+    r = await client.get("/auth/login", params={"screen_hint": "sign-up"}, follow_redirects=False)
+    assert r.headers["location"].startswith("https://auth.example/authorize?")
+
+
+@pytest.mark.anyio
 async def test_a_browser_that_signed_in_before_goes_straight_to_workos(client, workos_on):
     client.cookies.set("ingabe_signed_in_before", "1")
     r = await client.get("/auth/login", params={"return_to": "/project/abc"}, follow_redirects=False)

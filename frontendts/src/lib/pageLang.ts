@@ -1,3 +1,5 @@
+import { useEffect } from 'react';
+
 // The language of the pages people see before they are signed in (sign-in step, Request access): English or French.
 // The website's French pages link with ?lang=fr; otherwise the browser's own first choice between the two decides.
 
@@ -17,4 +19,15 @@ export function pageLang(search = window.location.search, languages: readonly st
 export function withLang(path: string, lang: PageLang): string {
   if (lang === 'en') return path;
   return `${path}${path.includes('?') ? '&' : '?'}lang=fr`;
+}
+
+/** Tell screen readers the page's language while it shows, and give the document its own language back after. */
+export function useDocumentLang(lang: PageLang) {
+  useEffect(() => {
+    const before = document.documentElement.lang;
+    document.documentElement.lang = lang;
+    return () => {
+      document.documentElement.lang = before;
+    };
+  }, [lang]);
 }

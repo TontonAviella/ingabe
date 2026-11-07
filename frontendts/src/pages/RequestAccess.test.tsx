@@ -8,7 +8,8 @@ import { byButton, byText, click, findText, mount, unmountAll, unnamedControls }
 const session = vi.hoisted(() => ({ status: 'signedOut' as 'signedOut' | 'signedIn' }));
 vi.mock('@/components/auth/WorkOSSession', () => ({
   useWorkOSSession: () => ({ status: session.status, me: null }),
-  signInUrl: (to: string) => `/auth/login?return_to=${encodeURIComponent(to)}`,
+  signInUrl: (to: string, opts: { confirmed?: boolean } = {}) =>
+    `/auth/login?return_to=${encodeURIComponent(to)}${opts.confirmed ? '&confirmed=1' : ''}`,
 }));
 
 function typeInto(field: HTMLInputElement | HTMLTextAreaElement, text: string) {
@@ -95,5 +96,20 @@ describe('RequestAccess', () => {
     await vi.waitFor(() => expect(byButton('Request access')?.disabled).toBe(false));
     click(byButton('Request access') as HTMLButtonElement);
     await findText('Too many requests.', '[role="alert"]');
+  });
+
+  it('speaks French to readers from the French website, and its sign-in link skips the invitation step', async () => {
+    window.history.replaceState(null, '', '/request-access?lang=fr');
+    mount(
+      <MemoryRouter>
+        <RequestAccess />
+      </MemoryRouter>,
+    );
+    await findText("Demander l'accès", 'h1');
+    const signIn = [...document.querySelectorAll('a')].find((a) => a.textContent === 'Déjà invité ? Se connecter');
+    expect(signIn?.getAttribute('href')).toBe('/auth/login?return_to=%2F&confirmed=1&lang=fr');
+    expect(document.documentElement.lang).toBe('fr');
+    unmountAll();
+    window.history.replaceState(null, '', '/');
   });
 });

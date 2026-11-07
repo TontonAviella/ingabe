@@ -2,7 +2,7 @@ import { useEffect } from 'react';
 import { signInUrl, useWorkOSSession } from '@/components/auth/WorkOSSession';
 import { IngabeIcon } from '@/components/Brand';
 import { Button } from '@/components/ui/button';
-import { pageLang, withLang } from '@/lib/pageLang';
+import { pageLang, useDocumentLang, withLang } from '@/lib/pageLang';
 
 // Ingabe's own step before WorkOS' sign-in page (2026-11-07). WorkOS' page asks only for an email and emails a code
 // only to invited addresses, without saying so, so people who were never invited waited for a code that never came.
@@ -32,13 +32,18 @@ const TEXT = {
 
 /**
  * Where to go after signing in: a path on this site only. The browser itself resolves the value, so "/\\evil.example"
- * (read as "//evil.example") and "https://evil.example" both become "/". The server checks again (safe_return_to).
+ * (read as "//evil.example") and "https://evil.example" both become "/", as does "/.//evil.example", whose path is
+ * "//evil.example" once resolved. This page and the sign-in and sign-out routes also become "/": going back to them
+ * would reload this page forever or sign the person out. The server checks again (safe_return_to).
  */
 export function sameSitePath(value: string | null, origin = window.location.origin): string {
   if (!value || !value.startsWith('/')) return '/';
   try {
     const url = new URL(value, origin);
-    return url.origin === origin ? url.pathname + url.search + url.hash : '/';
+    const path = url.pathname;
+    if (url.origin !== origin || path.startsWith('//')) return '/';
+    if (path === '/sign-in' || path.startsWith('/sign-in/') || path.startsWith('/auth/')) return '/';
+    return path + url.search + url.hash;
   } catch {
     return '/';
   }
@@ -51,9 +56,7 @@ export default function SignIn() {
   const lang = pageLang();
   const t = TEXT[lang];
 
-  useEffect(() => {
-    document.documentElement.lang = lang;
-  }, [lang]);
+  useDocumentLang(lang);
   useEffect(() => {
     // Signed in already (another tab): nothing to explain, go where they were heading.
     if (status === 'signedIn') window.location.replace(returnTo);
@@ -75,7 +78,7 @@ export default function SignIn() {
           </Button>
           <p className="mt-2 text-xs text-fg-muted">{t.requestNote}</p>
         </div>
-        <p className="mt-5 text-center text-xs text-fg-subtle">{t.waiting}</p>
+        <p className="mt-5 text-center text-xs text-fg-muted">{t.waiting}</p>
       </div>
     </div>
   );
