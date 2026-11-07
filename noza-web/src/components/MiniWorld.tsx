@@ -2,6 +2,7 @@
 
 import { useEffect, useRef } from "react";
 import { buildScene, hAt, renderWorld, type Preset, type Rendered } from "@/lib/miniworld";
+import { useLocale } from "./Locale";
 import { useMotion } from "./MotionProvider";
 
 const CYCLE = 15; // seconds: hold, sweep, hold, return
@@ -15,8 +16,12 @@ const ease = (t: number) => (t < 0.5 ? 4 * t * t * t : 1 - (-2 * t + 2) ** 3 / 2
 export function HeroWorld({ className = "" }: { className?: string }) {
   const canvas = useRef<HTMLCanvasElement>(null);
   const { paused, reduced } = useMotion();
+  const { t } = useLocale();
   const state = useRef({ paused, reduced });
   state.current = { paused, reduced };
+  // The drawing loop reads the labels from here, so it draws them in the page's language.
+  const labels = useRef(t.drawing);
+  labels.current = t.drawing;
 
   useEffect(() => {
     const el = canvas.current;
@@ -117,7 +122,7 @@ export function HeroWorld({ className = "" }: { className?: string }) {
         const passed = sx - (b.x + b.w * 0.5);
         if (passed <= 0 || fade <= 0) continue;
         const a = Math.min(1, passed / (40 * dpr)) * fade;
-        drawBox(ctx, b, a, dpr, size, placed);
+        drawBox(ctx, b, a, dpr, size, placed, labels.current);
       }
 
       // The drone flies along the line, a little ahead of the scan.
@@ -157,12 +162,20 @@ export function HeroWorld({ className = "" }: { className?: string }) {
     };
   }, []);
 
-  return <canvas ref={canvas} className={className} aria-label="A drone reads a hillside of farm plots and a power line" role="img" />;
+  return <canvas ref={canvas} className={className} aria-label={t.hero.picture} role="img" />;
 }
 
 type Chip = { x: number; y: number; w: number; h: number };
 
-function drawBox(ctx: CanvasRenderingContext2D, b: Rendered["boxes"][number], alpha: number, dpr: number, size: number, placed: Chip[]) {
+function drawBox(
+  ctx: CanvasRenderingContext2D,
+  b: Rendered["boxes"][number],
+  alpha: number,
+  dpr: number,
+  size: number,
+  placed: Chip[],
+  labels: Record<string, string>,
+) {
   ctx.save();
   ctx.globalAlpha = alpha;
   ctx.strokeStyle = "#D9A066";
@@ -181,7 +194,7 @@ function drawBox(ctx: CanvasRenderingContext2D, b: Rendered["boxes"][number], al
   }
   ctx.setLineDash([]);
   // Label chip above the box, moved up when it would cover another label.
-  const text = b.label.toUpperCase();
+  const text = (labels[b.label] ?? b.label).toUpperCase();
   ctx.font = `500 ${size * dpr}px ui-monospace, SFMono-Regular, Menlo, monospace`;
   const tw = ctx.measureText(text).width;
   const ch = size * 1.8 * dpr;

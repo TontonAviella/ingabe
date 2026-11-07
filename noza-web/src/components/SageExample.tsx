@@ -1,18 +1,13 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { useLocale } from "./Locale";
 import { useMotion } from "./MotionProvider";
-
-const QUESTION = "Which plots should I visit first this week?";
-const LEAD = "Start with the two plots where the crop is thin.";
-const POINTS = [
-  { k: "Drone photo", v: "open soil covers a real share of both plots, mostly along the lower edge." },
-  { k: "Satellite rain", v: "the last ten days were drier than usual for this point in the season." },
-  { k: "Not sure yet", v: "one plot could be maize or beans. A quick look on the ground settles it." },
-];
 
 /** An example of how Sage answers: the answer first, each point with where it came from. */
 export function SageExample() {
+  const { t } = useLocale();
+  const { question: QUESTION, lead: LEAD, points: POINTS } = t.sage;
   const ref = useRef<HTMLDivElement>(null);
   const { reduced } = useMotion();
   const [typed, setTyped] = useState(0);
@@ -43,11 +38,11 @@ export function SageExample() {
       timers.forEach(clearTimeout);
       timers = [];
     };
-  }, [reduced]);
+  }, [reduced, QUESTION.length]);
 
   return (
     <div ref={ref} className="relative">
-      <div className="mb-3 font-mono text-[11px] uppercase tracking-label text-latte/70">Example answer</div>
+      <div className="mb-3 font-mono text-[11px] uppercase tracking-label text-latte/70">{t.sage.example}</div>
       <div className="overflow-hidden rounded-[22px] bg-chocolate/80 ring-1 ring-white/10 backdrop-blur">
         <div className="flex justify-end p-5 pb-0">
           <div className="max-w-[85%] rounded-2xl rounded-br-md bg-sand px-4 py-2.5 text-[15px] text-bitter">
@@ -59,7 +54,7 @@ export function SageExample() {
           <div className="flex items-center gap-2.5">
             <span className="flex h-7 w-7 items-center justify-center rounded-full bg-caramel font-display text-[15px] text-night">S</span>
             <span className="text-[13px] font-medium text-sand">Sage</span>
-            {stage > 0 && stage < 2 && <span className="font-mono text-[11px] text-latte">reading the photo and the rain…</span>}
+            {stage > 0 && stage < 2 && <span className="font-mono text-[11px] text-latte">{t.sage.thinking}</span>}
           </div>
           <p className={`mt-4 font-display text-[26px] leading-tight text-sand transition-all duration-700 ${stage >= 2 ? "opacity-100" : "translate-y-1 opacity-0"}`}>
             {LEAD}
@@ -74,13 +69,17 @@ export function SageExample() {
               >
                 <span className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-caramel" />
                 <span>
-                  <span className="text-caramel">{p.k}:</span> {p.v}
+                  <span className="text-caramel">
+                    {p.k}
+                    {t.sage.colon}
+                  </span>{" "}
+                  {p.v}
                 </span>
               </li>
             ))}
           </ul>
           <div className={`mt-5 flex flex-wrap gap-2 transition-opacity duration-700 ${stage >= 5 ? "opacity-100" : "opacity-0"}`}>
-            {["Drone photo", "CHIRPS rainfall", "Field checks"].map((s) => (
+            {t.sage.sources.map((s) => (
               <span key={s} className="rounded-full border border-white/10 px-3 py-1 font-mono text-[10.5px] uppercase tracking-[0.12em] text-latte">
                 {s}
               </span>

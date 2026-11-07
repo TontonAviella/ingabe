@@ -2,20 +2,23 @@
 
 import { useEffect, useRef } from "react";
 import type { Preset } from "@/lib/miniworld";
+import { useLocale } from "./Locale";
 import { WorldTile } from "./MiniWorld";
 
-const WORLDS: { preset: Preset; seed: number; label: string; note: string }[] = [
-  { preset: "hills", seed: 3, label: "Hillside farms", note: "Terraces, mixed plots, bananas" },
-  { preset: "marsh", seed: 5, label: "Marshland rice", note: "Paddies and channels" },
-  { preset: "tea", seed: 9, label: "Tea estates", note: "Rows on steep slopes" },
-  { preset: "scheme", seed: 4, label: "Irrigation schemes", note: "Blocks, canals, seasons" },
-  { preset: "corridor", seed: 8, label: "Transmission lines", note: "Towers, spans, right of way" },
-  { preset: "telecom", seed: 2, label: "Telecom & monitoring towers", note: "Masts, antennas, sites" },
-  { preset: "distribution", seed: 6, label: "Village power lines", note: "Poles and wires along roads" },
+// Each world's label and note come from the dictionary (t.where.worlds), keyed by preset.
+const WORLDS: { preset: Preset; seed: number }[] = [
+  { preset: "hills", seed: 3 },
+  { preset: "marsh", seed: 5 },
+  { preset: "tea", seed: 9 },
+  { preset: "scheme", seed: 4 },
+  { preset: "corridor", seed: 8 },
+  { preset: "telecom", seed: 2 },
+  { preset: "distribution", seed: 6 },
 ];
 
 /** Scrolling down moves the worlds sideways along a gentle arc; hovering one shows the drone's reading. */
 export function WorldsStrip({ header }: { header: React.ReactNode }) {
+  const { t } = useLocale();
   const outer = useRef<HTMLDivElement>(null);
   const track = useRef<HTMLDivElement>(null);
   const curve = useRef<SVGPathElement>(null);
@@ -97,8 +100,8 @@ export function WorldsStrip({ header }: { header: React.ReactNode }) {
               <WorldTile preset={w.preset} seed={w.seed} className="aspect-[4/3.2] w-full" />
               <div className="mt-2 flex flex-col items-center text-center">
                 <span data-dot className="relative z-10 mb-3 h-2.5 w-2.5 rounded-full border border-caramel bg-cream transition-colors group-hover:bg-caramel" />
-                <span className="font-mono text-[11px] uppercase tracking-label text-bitter">{w.label}</span>
-                <span className="mt-1 text-[13px] text-mocha">{w.note}</span>
+                <span className="font-mono text-[11px] uppercase tracking-label text-bitter">{t.where.worlds[w.preset][0]}</span>
+                <span className="mt-1 text-[13px] text-mocha">{t.where.worlds[w.preset][1]}</span>
               </div>
             </div>
           ))}

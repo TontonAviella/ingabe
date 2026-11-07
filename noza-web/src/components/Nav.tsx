@@ -1,15 +1,33 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import type { Locale } from "@/lib/i18n";
 import { INGABE_URL, REQUEST_ACCESS_URL, SIGN_IN_URL } from "@/lib/site";
+import { useLocale } from "./Locale";
 
-const LINKS = [
-  { href: "#read", label: "What we read" },
-  { href: "#where", label: "Where we fly" },
-  { href: "#accuracy", label: "Accuracy" },
-  { href: "#how", label: "How it works" },
-  { href: "#access", label: "Access" },
-];
+const SECTIONS = ["read", "where", "accuracy", "how", "access"] as const;
+
+// "?lang=en" lets the middleware remember a French browser's choice of English (otherwise "/" sends it back to /fr).
+const SWITCH_HREF: Record<Locale, string> = { en: "/fr", fr: "/?lang=en" };
+
+/** EN · FR: the other language is a link, the current one is plain text. */
+export function LanguageSwitch({ className = "" }: { className?: string }) {
+  const { locale, t } = useLocale();
+  const other: Locale = locale === "en" ? "fr" : "en";
+  return (
+    <span className={`inline-flex items-center gap-1.5 font-mono text-[11.5px] uppercase tracking-[0.12em] ${className}`}>
+      <span aria-current="page" className="text-bitter">
+        {locale}
+      </span>
+      <span aria-hidden className="text-bitter/30">
+        ·
+      </span>
+      <a href={SWITCH_HREF[locale]} hrefLang={other} lang={other} title={t.nav.switchTo} aria-label={t.nav.switchTo} className="text-bitter/55 transition-colors hover:text-bitter">
+        {other}
+      </a>
+    </span>
+  );
+}
 
 /** The mark: the name, a small caramel point (the place we read), and "labs" in a lighter weight. */
 export function Wordmark({ light = false }: { light?: boolean }) {
@@ -23,6 +41,8 @@ export function Wordmark({ light = false }: { light?: boolean }) {
 }
 
 export function Nav() {
+  const { t } = useLocale();
+  const links = SECTIONS.map((s) => ({ href: `#${s}`, label: t.nav.links[s] }));
   const [scrolled, setScrolled] = useState(false);
   const [open, setOpen] = useState(false);
   useEffect(() => {
@@ -39,32 +59,34 @@ export function Nav() {
       }`}
     >
       <div className="mx-auto flex h-16 max-w-page items-center justify-between px-5 sm:px-8 lg:px-12">
-        <a href="#top" aria-label="Noza Labs, back to top">
+        <a href="#top" aria-label={t.nav.home}>
           <Wordmark />
         </a>
-        <nav className="hidden items-center gap-8 text-[13.5px] text-bitter/70 md:flex">
-          {LINKS.map((l) => (
+        {/* Section links from 1024 px; below that the menu button holds them (French labels are long). */}
+        <nav className="hidden items-center gap-5 whitespace-nowrap text-[13.5px] text-bitter/70 lg:flex xl:gap-8">
+          {links.map((l) => (
             <a key={l.href} href={l.href} className="transition-colors hover:text-bitter">
               {l.label}
             </a>
           ))}
         </nav>
-        <div className="flex items-center gap-5">
-          <a href={SIGN_IN_URL} className="hidden text-[13.5px] text-bitter/70 transition-colors hover:text-bitter sm:inline">
-            Sign in
+        <div className="flex items-center gap-4 whitespace-nowrap sm:gap-5">
+          <LanguageSwitch />
+          <a href={SIGN_IN_URL} className="hidden text-[13.5px] text-bitter/70 transition-colors hover:text-bitter sm:inline lg:hidden xl:inline">
+            {t.nav.signIn}
           </a>
           <a
             href={INGABE_URL}
             className="group hidden items-center gap-2.5 rounded-full bg-bitter py-2 pl-4 pr-3.5 text-[13.5px] font-medium text-cream transition-colors hover:bg-bark sm:inline-flex"
           >
             <IngabeIcon className="-ml-1.5 h-[22px] w-[22px]" />
-            Open Ingabe
+            {t.nav.openIngabe}
             <Arrow className="transition-transform duration-300 group-hover:-translate-y-0.5 group-hover:translate-x-0.5" diagonal />
           </a>
           <button
             type="button"
-            className="inline-flex h-10 w-10 items-center justify-center rounded-full border border-bitter/15 md:hidden"
-            aria-label={open ? "Close menu" : "Open menu"}
+            className="inline-flex h-10 w-10 items-center justify-center rounded-full border border-bitter/15 lg:hidden"
+            aria-label={open ? t.nav.closeMenu : t.nav.openMenu}
             aria-expanded={open}
             onClick={() => setOpen((o) => !o)}
           >
@@ -75,20 +97,20 @@ export function Nav() {
         </div>
       </div>
       {open && (
-        <nav className="border-t border-bitter/10 px-5 pb-6 pt-2 md:hidden">
-          {LINKS.map((l) => (
+        <nav className="border-t border-bitter/10 px-5 pb-6 pt-2 lg:hidden">
+          {links.map((l) => (
             <a key={l.href} href={l.href} onClick={() => setOpen(false)} className="block border-b border-bitter/10 py-4 text-[17px]">
               {l.label}
             </a>
           ))}
           <a href={SIGN_IN_URL} className="block border-b border-bitter/10 py-4 text-[17px]">
-            Sign in
+            {t.nav.signIn}
           </a>
           <a href={REQUEST_ACCESS_URL} className="block border-b border-bitter/10 py-4 text-[17px]">
-            Request access
+            {t.nav.requestAccess}
           </a>
           <a href={INGABE_URL} className="mt-5 inline-flex items-center gap-3 rounded-full bg-bitter px-6 py-3 text-[15px] text-cream">
-            Open Ingabe <Arrow diagonal />
+            {t.nav.openIngabe} <Arrow diagonal />
           </a>
         </nav>
       )}
