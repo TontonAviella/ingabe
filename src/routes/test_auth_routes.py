@@ -9,8 +9,10 @@ from urllib.parse import parse_qs, urlparse
 import pytest
 
 from src.dependencies import workos_session
+from src.dependencies.session import verify_session_required
 from src.routes import auth_routes
 from src.services import workos_auth
+from src.wsgi import app
 
 
 @pytest.fixture(autouse=True)
@@ -113,6 +115,22 @@ async def test_a_signed_in_browser_goes_straight_to_workos(client, workos_on, mo
     r = await client.get("/auth/login", follow_redirects=False)
     client.cookies.delete("wos_session")
     assert r.headers["location"].startswith("https://auth.example/authorize?")
+
+
+@pytest.mark.anyio
+async def test_people_signed_in_before_the_step_existed_get_the_cookie_on_their_next_visit(client, workos_on, monkeypatch):
+    """Otherwise everyone signed in at deploy time would see the invitation step once their session ends."""
+    async def fake_me(request, session):
+        return {"user": {"email": "x@y.rw"}}
+
+    monkeypatch.setattr(auth_routes, "_me", fake_me)
+    app.dependency_overrides[verify_session_required] = lambda: object()
+    try:
+        r = await client.get("/api/auth/me")
+    finally:
+        app.dependency_overrides.pop(verify_session_required, None)
+    assert r.status_code == 200
+    assert any("ingabe_signed_in_before=1" in v for v in r.headers.get_list("set-cookie"))
 
 
 @pytest.mark.anyio

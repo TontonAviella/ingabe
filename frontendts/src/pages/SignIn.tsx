@@ -42,7 +42,9 @@ export function sameSitePath(value: string | null, origin = window.location.orig
     const url = new URL(value, origin);
     const path = url.pathname;
     if (url.origin !== origin || path.startsWith('//')) return '/';
-    if (path === '/sign-in' || path.startsWith('/sign-in/') || path.startsWith('/auth/')) return '/';
+    // The server decodes "%61uth" to "auth" before it picks a route, so compare the decoded path.
+    const route = decodeURIComponent(path);
+    if (route === '/sign-in' || route.startsWith('/sign-in/') || route === '/auth' || route.startsWith('/auth/')) return '/';
     return path + url.search + url.hash;
   } catch {
     return '/';

@@ -39,7 +39,8 @@ describe('SignIn', () => {
     mount(<SignIn />);
     await findText('Se connecter à Ingabe', 'h1');
     expect(link("Demander l'accès").getAttribute('href')).toBe('/request-access?lang=fr');
-    expect(document.documentElement.lang).toBe('fr');
+    // Set by an effect just after the first render: wait for it, not for the heading.
+    await vi.waitFor(() => expect(document.documentElement.lang).toBe('fr'));
   });
 
   it('goes back only to a path on this site', () => {
@@ -68,7 +69,14 @@ describe('SignIn', () => {
 
   it('never sends a signed-in person back to this page or to a sign-in or sign-out route', () => {
     const here = 'https://gis.nozalabs.rw';
-    for (const loop of ['/sign-in', '/sign-in?return_to=%2Fsign-in', '/auth/logout', '/auth/login?confirmed=1']) {
+    for (const loop of [
+      '/sign-in',
+      '/sign-in?return_to=%2Fsign-in',
+      '/auth/logout',
+      '/auth/login?confirmed=1',
+      '/%61uth/logout',
+      '/./auth/logout',
+    ]) {
       expect(sameSitePath(loop, here)).toBe('/');
     }
     expect(sameSitePath('/sign-ins-report', here)).toBe('/sign-ins-report');

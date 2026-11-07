@@ -31,7 +31,7 @@ from typing import Any, Optional
 from urllib.parse import urlencode
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
-from fastapi.responses import JSONResponse, RedirectResponse
+from fastapi.responses import JSONResponse, RedirectResponse, Response
 from pydantic import BaseModel
 
 from src.database.pool import async_conn, get_async_db_connection
@@ -54,6 +54,12 @@ _orgs_cache: dict[str, tuple[float, list[dict[str, Any]]]] = {}
 def _require_enabled() -> None:
     if not workos_auth.enabled():
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="WorkOS sign-in is not enabled")
+
+
+def _mark_signed_in_before(response: Response, request: Request) -> None:
+    """This browser has signed in: its next sign-in skips Ingabe's invitation step (auth_login)."""
+    response.set_cookie(_SIGNED_IN_BEFORE_COOKIE, "1", max_age=_SIGNED_IN_BEFORE_SECONDS, httponly=True,
+                        samesite="lax", secure=is_secure(request), path="/")
 
 
 def _redirect_uri(request: Request) -> str:
@@ -142,8 +148,7 @@ async def auth_callback(request: Request, code: Optional[str] = None, state: Opt
             sealed = switched.refreshed_cookie
     response = RedirectResponse(return_to, status_code=status.HTTP_302_FOUND)
     set_session_cookie(response, sealed, is_secure(request))
-    response.set_cookie(_SIGNED_IN_BEFORE_COOKIE, "1", max_age=_SIGNED_IN_BEFORE_SECONDS, httponly=True,
-                        samesite="lax", secure=is_secure(request), path="/")
+    _mark_signed_in_before(response, request)
     response.delete_cookie(_STATE_COOKIE, path="/auth/")
     return response
 
@@ -194,9 +199,15 @@ async def _me(request: Request, session: UserContext) -> dict[str, Any]:
 
 
 @api.get("/me")
-async def auth_me(request: Request, session: UserContext = Depends(verify_session_required)):
-    """Who is signed in, the active organization, and the organizations they can switch to."""
+async def auth_me(request: Request, response: Response, session: UserContext = Depends(verify_session_required)):
+    """Who is signed in, the active organization, and the organizations they can switch to.
+
+    Also marks the browser as one that has signed in, for people who signed in before that mark existed: without it
+    they would see the invitation step (auth_login) once their session ends.
+    """
     _require_enabled()
+    if not request.cookies.get(_SIGNED_IN_BEFORE_COOKIE):
+        _mark_signed_in_before(response, request)
     return await _me(request, session)
 
 

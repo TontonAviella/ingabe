@@ -108,7 +108,8 @@ describe('RequestAccess', () => {
     await findText("Demander l'accès", 'h1');
     const signIn = [...document.querySelectorAll('a')].find((a) => a.textContent === 'Déjà invité ? Se connecter');
     expect(signIn?.getAttribute('href')).toBe('/auth/login?return_to=%2F&confirmed=1&lang=fr');
-    expect(document.documentElement.lang).toBe('fr');
+    // Set by an effect just after the first render: wait for it, not for the heading.
+    await vi.waitFor(() => expect(document.documentElement.lang).toBe('fr'));
     unmountAll();
     window.history.replaceState(null, '', '/');
   });

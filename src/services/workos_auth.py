@@ -36,12 +36,13 @@ import binascii
 import hashlib
 import logging
 import os
+import posixpath
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from functools import lru_cache
 from typing import Any, Optional
-from urllib.parse import urlparse
+from urllib.parse import unquote, urlparse
 
 import jwt
 from cryptography.fernet import InvalidToken
@@ -135,14 +136,21 @@ def safe_return_to(value: Optional[str]) -> str:
     """Only same-site paths: an absolute or protocol-relative URL becomes "/".
 
     A backslash or control character also becomes "/": browsers read "/\\evil.example" as "//evil.example"
-    and drop tabs and newlines, so either would leave the site (2026-11-07).
+    and drop tabs and newlines, so either would leave the site (2026-11-07). So do /sign-in and /auth/*, however
+    spelled ("/./auth/logout", "/%61uth/logout"), the same rule as the sign-in page's sameSitePath.
     """
     if not value or not value.startswith("/") or value.startswith("//"):
         return "/"
     if "\\" in value or any(ord(c) < 0x20 or ord(c) == 0x7F for c in value):
         return "/"
     parsed = urlparse(value)
-    return "/" if parsed.scheme or parsed.netloc else value
+    if parsed.scheme or parsed.netloc:
+        return "/"
+    # Back to sign-in or sign-out would loop or sign the person out; compare the path the browser will ask for.
+    path = posixpath.normpath(unquote(parsed.path))
+    if path in ("/sign-in", "/auth") or path.startswith(("/sign-in/", "/auth/")):
+        return "/"
+    return value
 
 
 @dataclass
