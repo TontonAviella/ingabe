@@ -33,6 +33,9 @@ def test_enabled_needs_the_provider_and_all_keys(monkeypatch):
 @pytest.mark.parametrize("given, expected", [
     ("/project/abc", "/project/abc"), (None, "/"), ("https://evil.example/x", "/"),
     ("//evil.example", "/"), ("project", "/"),
+    # Browsers read a backslash as a slash, so "/\\evil.example" is "//evil.example" to them (2026-11-07).
+    ("/\\evil.example", "/"), ("/\\/evil.example", "/"), ("/\t/evil.example", "/"), ("/x\nLocation: y", "/"),
+    ("/project/abc?tab=2#map", "/project/abc?tab=2#map"),
 ])
 def test_safe_return_to(given, expected):
     assert workos_auth.safe_return_to(given) == expected

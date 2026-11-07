@@ -30,10 +30,24 @@ const TEXT = {
   },
 } as const;
 
+/**
+ * Where to go after signing in: a path on this site only. The browser itself resolves the value, so "/\\evil.example"
+ * (read as "//evil.example") and "https://evil.example" both become "/". The server checks again (safe_return_to).
+ */
+export function sameSitePath(value: string | null, origin = window.location.origin): string {
+  if (!value || !value.startsWith('/')) return '/';
+  try {
+    const url = new URL(value, origin);
+    return url.origin === origin ? url.pathname + url.search + url.hash : '/';
+  } catch {
+    return '/';
+  }
+}
+
 export default function SignIn() {
   const { status } = useWorkOSSession();
   const params = new URLSearchParams(window.location.search);
-  const returnTo = params.get('return_to') || '/';
+  const returnTo = sameSitePath(params.get('return_to'));
   const lang = pageLang();
   const t = TEXT[lang];
 
@@ -42,7 +56,7 @@ export default function SignIn() {
   }, [lang]);
   useEffect(() => {
     // Signed in already (another tab): nothing to explain, go where they were heading.
-    if (status === 'signedIn') window.location.replace(returnTo.startsWith('/') && !returnTo.startsWith('//') ? returnTo : '/');
+    if (status === 'signedIn') window.location.replace(returnTo);
   }, [status, returnTo]);
 
   return (

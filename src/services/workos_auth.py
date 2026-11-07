@@ -132,8 +132,14 @@ def _value(x: Any) -> Any:
 
 
 def safe_return_to(value: Optional[str]) -> str:
-    """Only same-site paths: an absolute or protocol-relative URL becomes "/"."""
+    """Only same-site paths: an absolute or protocol-relative URL becomes "/".
+
+    A backslash or control character also becomes "/": browsers read "/\\evil.example" as "//evil.example"
+    and drop tabs and newlines, so either would leave the site (2026-11-07).
+    """
     if not value or not value.startswith("/") or value.startswith("//"):
+        return "/"
+    if "\\" in value or any(ord(c) < 0x20 or ord(c) == 0x7F for c in value):
         return "/"
     parsed = urlparse(value)
     return "/" if parsed.scheme or parsed.netloc else value

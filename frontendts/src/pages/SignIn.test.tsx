@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import SignIn from '@/pages/SignIn';
+import SignIn, { sameSitePath } from '@/pages/SignIn';
 import { byText, findText, mount, unmountAll, unnamedControls } from '@/test/dom';
 
 // Ingabe's step before WorkOS' page: codes go only to invited addresses, so people without an invitation are told
@@ -40,5 +40,20 @@ describe('SignIn', () => {
     await findText('Se connecter à Ingabe', 'h1');
     expect(link("Demander l'accès").getAttribute('href')).toBe('/request-access?lang=fr');
     expect(document.documentElement.lang).toBe('fr');
+  });
+
+  it('goes back only to a path on this site', () => {
+    const here = 'https://gis.nozalabs.rw';
+    expect(sameSitePath('/project/abc?tab=2#map', here)).toBe('/project/abc?tab=2#map');
+    for (const outside of ['/\\evil.example', '//evil.example', '/\\/evil.example', 'https://evil.example/x', 'evil', null]) {
+      expect(sameSitePath(outside, here)).toBe('/');
+    }
+  });
+
+  it('never puts an outside address in the sign-in link', async () => {
+    window.history.replaceState(null, '', '/sign-in?return_to=%2F%5Cevil.example');
+    mount(<SignIn />);
+    await findText('Sign in to Ingabe', 'h1');
+    expect(link('I have an invitation: sign in').getAttribute('href')).toBe('/auth/login?return_to=%2F&confirmed=1');
   });
 });
