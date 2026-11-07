@@ -13,8 +13,8 @@ type CardText = { tag: string; title: string; text: string };
 const en = {
   meta: {
     title: "Noza Labs · Reading the land and the lines that cross it",
-    description: "Drone and satellite intelligence for Rwanda's farms, towers and power lines. Every answer says how sure it is.",
-    keywords: ["drone", "agriculture", "Rwanda", "power line inspection", "tower inspection", "crop map", "Ingabe"],
+    description: "Drone and satellite intelligence for Africa's farms, towers and power lines. Every answer says how sure it is.",
+    keywords: ["drone", "agriculture", "Africa", "power line inspection", "tower inspection", "crop map", "Ingabe"],
   },
   nav: {
     links: { read: "What we read", where: "Where we fly", accuracy: "Accuracy", how: "How it works", access: "Access" },
@@ -29,7 +29,7 @@ const en = {
   hero: {
     kicker: "Noza Labs · Kigali",
     title: "We read the land, and the *lines* that cross it.",
-    lead: "Drone and satellite intelligence for Rwanda's farms, towers and power lines. Every answer says how sure it is.",
+    lead: "Drone and satellite intelligence for Africa's farms, towers and power lines. Every answer says how sure it is.",
     talk: "Talk to us",
     motto: ["See it from above.", "Answer it on the ground."],
     picture: "A drone reads a hillside of farm plots and a power line",
@@ -180,8 +180,8 @@ const fr: Dict = {
   meta: {
     title: "Noza Labs · Lire la terre et les lignes qui la traversent",
     description:
-      "Drones et satellites au service des fermes, des pylônes et des lignes électriques du Rwanda. Chaque réponse indique son degré de certitude.",
-    keywords: ["drone", "agriculture", "Rwanda", "inspection de lignes électriques", "inspection de pylônes", "carte des cultures", "Ingabe"],
+      "Drones et satellites au service des fermes, des pylônes et des lignes électriques d'Afrique. Chaque réponse indique son degré de certitude.",
+    keywords: ["drone", "agriculture", "Afrique", "inspection de lignes électriques", "inspection de pylônes", "carte des cultures", "Ingabe"],
   },
   nav: {
     links: { read: "Ce que nous lisons", where: "Où nous volons", accuracy: "Fiabilité", how: "Comment ça marche", access: "Accès" },
@@ -196,7 +196,7 @@ const fr: Dict = {
   hero: {
     kicker: "Noza Labs · Kigali",
     title: "Nous lisons la terre, et les *lignes* qui la traversent.",
-    lead: "Drones et satellites au service des fermes, des pylônes et des lignes électriques du Rwanda. Chaque réponse indique son degré de certitude.",
+    lead: "Drones et satellites au service des fermes, des pylônes et des lignes électriques d'Afrique. Chaque réponse indique son degré de certitude.",
     talk: "Contactez-nous",
     motto: ["Le voir d'en haut.", "Y répondre sur le terrain."],
     picture: "Un drone lit une colline de parcelles agricoles et une ligne électrique",
