@@ -10,7 +10,7 @@ import { WireDrawing } from "@/components/WireDrawing";
 import { Words } from "@/components/Words";
 import { WorldsStrip } from "@/components/WorldsStrip";
 import { DICTS, type Dict, type Locale } from "@/lib/i18n";
-import { INGABE_URL, PHONES, REQUEST_ACCESS_URL, SIGN_IN_URL } from "@/lib/site";
+import { INGABE_URL, PHONES, requestAccessUrl, signInUrl } from "@/lib/site";
 import type { ModelName } from "@/lib/wire3d";
 
 type CardKey = keyof Dict["read"]["cards"];
@@ -206,13 +206,13 @@ export function Home({ locale }: { locale: Locale }) {
                 </ol>
                 <div className="mt-10 flex flex-wrap items-center gap-x-6 gap-y-4">
                   <a
-                    href={REQUEST_ACCESS_URL}
+                    href={requestAccessUrl(locale)}
                     className="group inline-flex items-center gap-4 rounded-full bg-bitter py-4 pl-8 pr-7 text-[15px] font-medium text-cream transition-colors hover:bg-bark"
                   >
                     {t.access.request}
                     <Arrow className="transition-transform duration-300 group-hover:translate-x-1" />
                   </a>
-                  <a href={SIGN_IN_URL} className="link-line pb-0.5 text-[15px] text-bitter">
+                  <a href={signInUrl(locale)} className="link-line pb-0.5 text-[15px] text-bitter">
                     {t.access.already}
                   </a>
                 </div>
@@ -302,8 +302,8 @@ export function Home({ locale }: { locale: Locale }) {
                 title={t.footer.appTitle}
                 links={[
                   [t.footer.appLinks[0], INGABE_URL],
-                  [t.footer.appLinks[1], SIGN_IN_URL],
-                  [t.footer.appLinks[2], REQUEST_ACCESS_URL],
+                  [t.footer.appLinks[1], signInUrl(locale)],
+                  [t.footer.appLinks[2], requestAccessUrl(locale)],
                   [t.footer.appLinks[3], "#how"],
                   [t.footer.appLinks[4], "#access"],
                 ]}

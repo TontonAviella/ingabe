@@ -56,8 +56,12 @@ function currentPathWithoutError(): string {
   return window.location.pathname + (query ? `?${query}` : '');
 }
 
-export function signInUrl(returnTo = currentPathWithoutError()): string {
-  return `/auth/login?return_to=${encodeURIComponent(returnTo)}`;
+/**
+ * The server's sign-in route. Unless `confirmed`, a browser that has never signed in is first shown Ingabe's own
+ * step (/sign-in), which says codes go only to invited addresses; that step's button passes `confirmed`.
+ */
+export function signInUrl(returnTo = currentPathWithoutError(), opts: { confirmed?: boolean } = {}): string {
+  return `/auth/login?return_to=${encodeURIComponent(returnTo)}${opts.confirmed ? '&confirmed=1' : ''}`;
 }
 
 export function WorkOSSessionProvider({ children }: React.PropsWithChildren) {

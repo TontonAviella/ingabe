@@ -20,6 +20,7 @@ const OrganizationMembers = lazy(() => import('./pages/OrganizationMembers'));
 const Companies = lazy(() => import('./pages/Companies'));
 const NotFound = lazy(() => import('./pages/NotFound'));
 const RequestAccess = lazy(() => import('./pages/RequestAccess'));
+const SignIn = lazy(() => import('./pages/SignIn'));
 const PrivacyPolicy = lazy(() => import('./pages/PrivacyPolicy'));
 const TermsOfService = lazy(() => import('./pages/TermsOfService'));
 
@@ -87,6 +88,8 @@ function AppContent() {
                 {/* Ingabe is invite-only: a sign-up becomes a request (src/services/access_requests.py). */}
                 <Route path="/sign-up" element={<Navigate to="/request-access" replace />} />
                 <Route path="/request-access" element={<RequestAccess />} />
+                {/* Before WorkOS' page: codes go only to invited addresses (src/routes/auth_routes.py). */}
+                <Route path="/sign-in" element={<SignIn />} />
                 <Route path="/privacy" element={<PrivacyPolicy />} />
                 <Route path="/terms" element={<TermsOfService />} />
                 <Route path="*" element={<NotFound />} />

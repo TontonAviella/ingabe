@@ -6,6 +6,7 @@ import { IngabeIcon } from '@/components/Brand';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
+import { pageLang, withLang } from '@/lib/pageLang';
 
 // Ingabe is invite-only: someone without an invitation asks here, Ingabe staff get a phone push and approve
 // (WorkOS emails an invitation) or decline on the Companies page (src/services/access_requests.py). The website's
@@ -16,12 +17,53 @@ const CARD = 'w-full max-w-sm rounded-xl border border-line bg-panel p-6 text-fg
 // The server's own check (looks_like_email, src/services/project_people.py): something@something.something, no spaces.
 const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
+const TEXT = {
+  en: {
+    signedIn: "You're already signed in",
+    open: 'Open your maps',
+    sent: 'Request sent',
+    sentTo: (to: string) => `Your invitation will arrive at ${to}.`,
+    title: 'Request access',
+    name: 'Your name',
+    email: 'Your email',
+    emailExample: 'you@company.rw',
+    emailHint: 'Use an email like you@company.rw',
+    org: 'Organization (optional)',
+    orgLabel: 'Your organization',
+    reason: 'What for? (optional)',
+    reasonLabel: 'What you would like to use Ingabe for',
+    failed: "Your request didn't go through. Try again.",
+    submit: 'Request access',
+    signIn: 'Already invited? Sign in',
+  },
+  fr: {
+    signedIn: 'Vous êtes déjà connecté',
+    open: 'Ouvrir vos cartes',
+    sent: 'Demande envoyée',
+    sentTo: (to: string) => `Votre invitation arrivera à ${to}.`,
+    title: "Demander l'accès",
+    name: 'Votre nom',
+    email: 'Votre e-mail',
+    emailExample: 'vous@entreprise.sn',
+    emailHint: 'Utilisez une adresse comme vous@entreprise.sn',
+    org: 'Organisation (facultatif)',
+    orgLabel: 'Votre organisation',
+    reason: 'Pour quoi faire ? (facultatif)',
+    reasonLabel: 'Ce que vous voulez faire avec Ingabe',
+    failed: "Votre demande n'est pas passée. Réessayez.",
+    submit: "Demander l'accès",
+    signIn: 'Déjà invité ? Se connecter',
+  },
+} as const;
+
 function Shell({ children }: React.PropsWithChildren) {
   return <div className="flex min-h-screen w-full items-center justify-center bg-canvas p-4">{children}</div>;
 }
 
 export default function RequestAccess() {
   const { status } = useWorkOSSession();
+  const lang = pageLang();
+  const t = TEXT[lang];
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
   const [emailTouched, setEmailTouched] = useState(false);
@@ -37,9 +79,9 @@ export default function RequestAccess() {
       <Shell>
         <div className={`${CARD} text-center`}>
           <IngabeIcon className="mx-auto mb-4 h-10 w-10" />
-          <p className="font-medium">You're already signed in</p>
+          <p className="font-medium">{t.signedIn}</p>
           <Button asChild className="mt-4">
-            <Link to="/">Open your maps</Link>
+            <Link to="/">{t.open}</Link>
           </Button>
         </div>
       </Shell>
@@ -51,8 +93,8 @@ export default function RequestAccess() {
       <Shell>
         <div className={`${CARD} text-center`}>
           <IngabeIcon className="mx-auto mb-4 h-10 w-10" />
-          <p className="font-medium">Request sent</p>
-          <p className="mt-2 text-sm text-fg-muted">Your invitation will arrive at {sentTo}.</p>
+          <p className="font-medium">{t.sent}</p>
+          <p className="mt-2 text-sm text-fg-muted">{t.sentTo(sentTo)}</p>
         </div>
       </Shell>
     );
@@ -81,7 +123,7 @@ export default function RequestAccess() {
       });
       if (!res.ok) {
         const body = await res.json().catch(() => null);
-        throw new Error(typeof body?.detail === 'string' ? body.detail : "Your request didn't go through. Try again.");
+        throw new Error(typeof body?.detail === 'string' ? body.detail : t.failed);
       }
       setSentTo(email.trim());
     } catch (err) {
@@ -95,14 +137,14 @@ export default function RequestAccess() {
     <Shell>
       <form onSubmit={submit} className={CARD} noValidate>
         <IngabeIcon className="mx-auto mb-4 h-10 w-10" />
-        <h1 className="text-center font-medium">Request access</h1>
+        <h1 className="text-center font-medium">{t.title}</h1>
         <div className="mt-5 flex flex-col gap-3">
           <Input
             required
             value={name}
             onChange={(e) => setName(e.target.value)}
-            placeholder="Your name"
-            aria-label="Your name"
+            placeholder={t.name}
+            aria-label={t.name}
             autoComplete="name"
             maxLength={120}
           />
@@ -114,8 +156,8 @@ export default function RequestAccess() {
               value={email}
               onChange={(e) => setEmail(e.target.value)}
               onBlur={() => setEmailTouched(true)}
-              placeholder="you@company.rw"
-              aria-label="Your email"
+              placeholder={t.emailExample}
+              aria-label={t.email}
               aria-invalid={emailWrong || undefined}
               aria-describedby={emailWrong ? 'email-problem' : undefined}
               autoComplete="email"
@@ -123,23 +165,23 @@ export default function RequestAccess() {
             />
             {emailWrong && (
               <p id="email-problem" className="mt-1 text-xs text-bad">
-                Use an email like you@company.rw
+                {t.emailHint}
               </p>
             )}
           </div>
           <Input
             value={organization}
             onChange={(e) => setOrganization(e.target.value)}
-            placeholder="Organization (optional)"
-            aria-label="Your organization"
+            placeholder={t.org}
+            aria-label={t.orgLabel}
             autoComplete="organization"
             maxLength={160}
           />
           <Textarea
             value={reason}
             onChange={(e) => setReason(e.target.value)}
-            placeholder="What for? (optional)"
-            aria-label="What you would like to use Ingabe for"
+            placeholder={t.reason}
+            aria-label={t.reasonLabel}
             maxLength={1000}
             rows={3}
           />
@@ -161,10 +203,13 @@ export default function RequestAccess() {
         )}
         <Button type="submit" disabled={busy || !name.trim() || !emailOk} className="mt-4 w-full">
           {busy && <Loader2 className="h-4 w-4 animate-spin" />}
-          Request access
+          {t.submit}
         </Button>
-        <a href={signInUrl('/')} className="mt-4 block text-center text-sm text-fg-muted hover:text-fg">
-          Sign in
+        <a
+          href={withLang(signInUrl('/', { confirmed: true }), lang)}
+          className="mt-4 block text-center text-sm text-fg-muted hover:text-fg"
+        >
+          {t.signIn}
         </a>
       </form>
     </Shell>

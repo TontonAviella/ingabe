@@ -32,7 +32,7 @@ def workos_on(monkeypatch):
 
 @pytest.mark.anyio
 async def test_login_redirects_to_workos_with_a_state_cookie(client, workos_on):
-    r = await client.get("/auth/login", params={"return_to": "/project/abc"}, follow_redirects=False)
+    r = await client.get("/auth/login", params={"return_to": "/project/abc", "confirmed": "1"}, follow_redirects=False)
     assert r.status_code == 302
     state = parse_qs(urlparse(r.headers["location"]).query)["state"][0]
     nonce, _, target = state.partition(".")
@@ -64,14 +64,38 @@ async def test_callback_sets_the_session_cookie(client, workos_on, monkeypatch):
     assert r.status_code == 302 and r.headers["location"] == "/project/abc"
     assert "wos_session=sealed-cookie" in r.headers["set-cookie"] and "HttpOnly" in r.headers["set-cookie"]
     assert linked == [("user_9", "x@y.rw")]
+    assert any("ingabe_signed_in_before=1" in v and "Max-Age" in v for v in r.headers.get_list("set-cookie"))
 
 
 @pytest.mark.anyio
 async def test_a_callback_started_on_workos_page_signs_in_again_from_here(client, workos_on):
     """An invitation email's link signs the person in on WorkOS' page, which sends them back with no state."""
     r = await client.get("/auth/callback", params={"code": "c"}, follow_redirects=False)
-    assert r.status_code == 302 and r.headers["location"] == "/auth/login"
+    assert r.status_code == 302 and r.headers["location"] == "/auth/login?confirmed=1"
     assert "wos_session=" not in r.headers.get("set-cookie", "")
+
+
+@pytest.mark.anyio
+async def test_a_browser_that_never_signed_in_first_sees_the_invitation_step(client, workos_on):
+    """WorkOS' page sends codes only to invited addresses and does not say so: people waited (2026-11-07)."""
+    r = await client.get("/auth/login", params={"return_to": "/project/abc", "lang": "fr"}, follow_redirects=False)
+    assert r.status_code == 302
+    assert r.headers["location"] == "/sign-in?return_to=%2Fproject%2Fabc&lang=fr"
+    assert "wos_state=" not in r.headers.get("set-cookie", "")
+
+
+@pytest.mark.anyio
+async def test_the_step_never_passes_on_an_outside_address(client, workos_on):
+    r = await client.get("/auth/login", params={"return_to": "https://evil.example/x", "lang": "xx"},
+                         follow_redirects=False)
+    assert r.headers["location"] == "/sign-in?return_to=%2F"
+
+
+@pytest.mark.anyio
+async def test_a_browser_that_signed_in_before_goes_straight_to_workos(client, workos_on):
+    client.cookies.set("ingabe_signed_in_before", "1")
+    r = await client.get("/auth/login", params={"return_to": "/project/abc"}, follow_redirects=False)
+    assert r.headers["location"].startswith("https://auth.example/authorize?")
 
 
 @pytest.mark.anyio

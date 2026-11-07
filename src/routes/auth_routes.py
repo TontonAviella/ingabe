@@ -28,6 +28,7 @@ import os
 import secrets
 import time
 from typing import Any, Optional
+from urllib.parse import urlencode
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import JSONResponse, RedirectResponse
@@ -44,6 +45,9 @@ pages = APIRouter()
 api = APIRouter()
 
 _STATE_COOKIE = "wos_state"
+# Set after a sign-in finishes: this browser has signed in before, so its next sign-in skips Ingabe's own step.
+_SIGNED_IN_BEFORE_COOKIE = "ingabe_signed_in_before"
+_SIGNED_IN_BEFORE_SECONDS = 400 * 24 * 3600
 _orgs_cache: dict[str, tuple[float, list[dict[str, Any]]]] = {}
 
 
@@ -58,12 +62,25 @@ def _redirect_uri(request: Request) -> str:
 
 @pages.get("/auth/login")
 async def auth_login(request: Request, return_to: str = "/", organization_id: Optional[str] = None,
-                     screen_hint: Optional[str] = None):
-    """Send the user to the WorkOS-hosted sign-in page (a sign-up, while Ingabe is invite-only, to Request access)."""
+                     screen_hint: Optional[str] = None, confirmed: bool = False, lang: Optional[str] = None):
+    """Send the user to the WorkOS-hosted sign-in page (a sign-up, while Ingabe is invite-only, to Request access).
+
+    A browser that has never signed in first sees Ingabe's own step (/sign-in): WorkOS' page asks only for an email
+    and sends a code only to invited addresses, so people who were not invited waited for a code that never came
+    (2026-11-07). The step says so and offers Request access; its Sign in button comes back with confirmed=1.
+    It says nothing about any particular address, so it cannot tell who is on Ingabe.
+    """
     _require_enabled()
     if screen_hint == "sign-up" and not workos_auth.sign_up_open():
         # WorkOS would refuse the sign-up and still ask for a code it never sends (2026-11-01).
         return RedirectResponse("/request-access", status_code=status.HTTP_302_FOUND)
+    first_time_here = not request.cookies.get(_SIGNED_IN_BEFORE_COOKIE) and getattr(
+        request.state, "workos_session", None) is None
+    if first_time_here and not confirmed and screen_hint != "sign-up" and organization_id is None:
+        query = {"return_to": workos_auth.safe_return_to(return_to)}
+        if lang in ("en", "fr"):
+            query["lang"] = lang
+        return RedirectResponse(f"/sign-in?{urlencode(query)}", status_code=status.HTTP_302_FOUND)
     nonce = secrets.token_urlsafe(16)
     target = base64.urlsafe_b64encode(workos_auth.safe_return_to(return_to).encode()).decode()
     url = await asyncio.to_thread(
@@ -85,7 +102,7 @@ async def auth_callback(request: Request, code: Optional[str] = None, state: Opt
         # Started on WorkOS' page (an invitation email's link): sign in again from here, which WorkOS' own session
         # makes immediate, so the callback carries this app's state. The invitation is accepted below.
         logger.info("WorkOS callback without state (started on WorkOS' page): signing in again")
-        return RedirectResponse("/auth/login", status_code=status.HTTP_302_FOUND)
+        return RedirectResponse("/auth/login?confirmed=1", status_code=status.HTTP_302_FOUND)
     nonce, _, target = (state or "").partition(".")
     if error or not code or not nonce or nonce != request.cookies.get(_STATE_COOKIE):
         logger.warning("WorkOS callback rejected: error=%s code=%s state_ok=%s", error, bool(code),
@@ -125,6 +142,8 @@ async def auth_callback(request: Request, code: Optional[str] = None, state: Opt
             sealed = switched.refreshed_cookie
     response = RedirectResponse(return_to, status_code=status.HTTP_302_FOUND)
     set_session_cookie(response, sealed, is_secure(request))
+    response.set_cookie(_SIGNED_IN_BEFORE_COOKIE, "1", max_age=_SIGNED_IN_BEFORE_SECONDS, httponly=True,
+                        samesite="lax", secure=is_secure(request), path="/")
     response.delete_cookie(_STATE_COOKIE, path="/auth/")
     return response
 
