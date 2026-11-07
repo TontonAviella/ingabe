@@ -7,8 +7,8 @@ import { useLocale } from "./Locale";
 
 const SECTIONS = ["read", "where", "accuracy", "how", "access"] as const;
 
-// "?lang=en" lets the middleware remember a French browser's choice of English (otherwise "/" sends it back to /fr).
-const SWITCH_HREF: Record<Locale, string> = { en: "/fr", fr: "/?lang=en" };
+// "?lang=" tells the middleware this is the reader's own choice, so it remembers it (see middleware.ts).
+const SWITCH_HREF: Record<Locale, string> = { en: "/fr?lang=fr", fr: "/?lang=en" };
 
 /** EN · FR: the other language is a link, the current one is plain text. */
 export function LanguageSwitch({ className = "" }: { className?: string }) {
