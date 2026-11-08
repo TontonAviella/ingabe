@@ -100,36 +100,56 @@ async def test_bad_addresses_and_bots_are_not_kept(client, workos_on, pushes, cl
         assert await conn.fetchval("SELECT count(*) FROM access_requests WHERE email = $1", _email("bot")) == 0
 
 
+@pytest.mark.parametrize("given, counted_as", [
+    ("198.51.100.7", "198.51.100.7"),
+    (" 198.51.100.7 ", "198.51.100.7"),
+    # One IPv6 client normally holds a whole /64, and one address has many spellings (2026-11-08).
+    ("2001:db8:1:2::1", "2001:db8:1:2::/64"),
+    ("2001:0db8:0001:0002:0000:0000:0000:0009", "2001:db8:1:2::/64"),
+    ("2001:DB8:1:2:FFFF::", "2001:db8:1:2::/64"),
+    ("fe80::1%eth0", "fe80::/64"),
+    ("::ffff:198.51.100.7", "198.51.100.7"),  # an IPv4 address written as IPv6 is that IPv4 address
+    ("testclient", "unknown"), ("", "unknown"), ("198.51.100.7, 203.0.113.9", "unknown"),
+])
+def test_the_limit_counts_an_ipv4_address_or_an_ipv6_network(given, counted_as):
+    assert access_request_routes._limit_subject(given) == counted_as
+
+
 @pytest.mark.anyio
-async def test_one_address_on_the_internet_is_limited(client, workos_on, monkeypatch, cleanup):
-    """The limit counts in the shared Redis per address and hour. This run gets an address of its own (an IPv6
-    documentation address from its RUN_TAG) and a fixed hour, and removes its count before and after: it used 1 of
-    250 addresses, so runs within the same hour met each other's counts and saw 429 first (2026-11-07)."""
+@pytest.mark.parametrize("case, spellings", [
+    (0, ["{net}::1", "{net}::1", "{net}::1"]),  # one address
+    (1, ["{net}::1", "{net}::2", "{net}:0:0:0:3"]),  # one client's /64: other addresses, other spellings
+])
+async def test_one_address_on_the_internet_is_limited(client, workos_on, monkeypatch, cleanup, case, spellings):
+    """The limit counts in the shared Redis per address (IPv6: per /64) and hour. This run gets a network of its own
+    (an IPv6 documentation /64 from its RUN_TAG) and a fixed hour, and removes its count before and after: it used 1
+    of 250 addresses, so runs within the same hour met each other's counts and saw 429 first (2026-11-07)."""
     async def quiet(*a, **k):
         return True
 
     monkeypatch.setattr(phone_push, "send", quiet)
     monkeypatch.setattr(access_request_routes, "PER_IP_PER_HOUR", 2)
-    # The run's tag sits in the /64 too, so runs stay apart even if the limit ever counts a whole IPv6 network.
-    address = f"2001:db8:{RUN_TAG[:4]}:{RUN_TAG[4:]}::1"
-    # One fixed hour for all three requests: a run that crossed the hour would split them over two counts.
-    hour = 400_000
-    monkeypatch.setattr(access_request_routes, "time", SimpleNamespace(time=lambda: hour * 3600 + 1))
+    net = f"2001:db8:{RUN_TAG[:4]}:{RUN_TAG[4:]}"
+    addresses = [spelling.format(net=net) for spelling in spellings]
+    # One fixed hour for all three requests (a run that crossed the hour would split them over two counts), and
+    # one hour per case, so the cases never share a count.
+    now = (400_000 + case) * 3600 + 1
+    monkeypatch.setattr(access_request_routes, "time", SimpleNamespace(time=lambda: now))
+    key = access_request_routes._limit_key(access_request_routes._limit_subject(addresses[0]), now)
     redis = get_async_redis()
     assert redis is not None, "no Redis client in this event loop"
 
-    async def forget_count():
-        # The route's key (access_request_routes._within_limit); one exact key, no scan of the shared Redis.
-        await redis.delete(f"access_request:{address}:{hour}")
-
-    await forget_count()
+    await redis.delete(key)
     try:
-        codes = [(await client.post("/api/access-requests", json={"email": _email(f"ip{i}")},
+        codes = [(await client.post("/api/access-requests", json={"email": _email(f"ip{case}{i}")},
                                     headers={"Cf-Connecting-Ip": address})).status_code
-                 for i in range(3)]
+                 for i, address in enumerate(addresses)]
+        expires_in = await redis.ttl(key)
     finally:
-        await forget_count()
+        await redis.delete(key)
     assert codes == [202, 202, 429]
+    # The count always expires: set with its expiry in one step, so it can never be left counting forever.
+    assert 0 < expires_in <= 3700
 
 
 @pytest.fixture
