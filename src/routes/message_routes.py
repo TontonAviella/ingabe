@@ -67,7 +67,7 @@ from src.services.admin_boundaries import resolve_admin_boundary
 from src.services.sage_flight_recorder import sage_turn_trace
 from src.services import data_coverage, industry, llm_cache, project_partner
 from src.database.pool import get_request_industry, set_request_industry
-from src.database.rwanda_reader import READER_ROLES, reader_uri, tables_for
+from src.database.rwanda_reader import READER_ROLES, RWANDA_INTERNAL_CONNECTION_NAME, reader_uri, tables_for
 from src.services.sage_result_checks import apply_result_checks
 from src.geoprocessing.dispatch import (
     get_tools,
@@ -155,8 +155,6 @@ tracer = trace.get_tracer(__name__)
 
 # Compact deterministic IDs for each project's internal Rwanda PostGIS
 # connection. The database column is varchar(12), so keep these short.
-# Neutral name: every industry has one (each logs in as its industry's reader role).
-RWANDA_INTERNAL_CONNECTION_NAME = "Rwanda data (internal)"
 # The approved tables and the read-only login that enforces them: src/database/rwanda_reader.py.
 _SQL_TABLE_REF_RE = re.compile(
     r'\b(?:from|join)\s+((?:"?[a-zA-Z_][a-zA-Z0-9_]*"?\.)?"?[a-zA-Z_][a-zA-Z0-9_]*"?)',
