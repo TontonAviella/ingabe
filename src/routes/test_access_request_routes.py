@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import uuid
+from types import SimpleNamespace
 
 import pytest
 
 from src.database.pool import get_async_db_connection
 from src.dependencies import workos_session
+from src.dependencies.redis_client import get_async_redis
 from src.dependencies.session import verify_session_required
 from src.routes import access_request_routes
 from src.services import phone_push, workos_auth
@@ -100,14 +102,31 @@ async def test_bad_addresses_and_bots_are_not_kept(client, workos_on, pushes, cl
 
 @pytest.mark.anyio
 async def test_one_address_on_the_internet_is_limited(client, workos_on, monkeypatch, cleanup):
+    """The limit counts in the shared Redis per address and hour. This run gets an address of its own (an IPv6
+    documentation address from its RUN_TAG) and a fixed hour, and removes its count before and after: it used 1 of
+    250 addresses, so runs within the same hour met each other's counts and saw 429 first (2026-11-07)."""
     async def quiet(*a, **k):
         return True
 
     monkeypatch.setattr(phone_push, "send", quiet)
     monkeypatch.setattr(access_request_routes, "PER_IP_PER_HOUR", 2)
-    ip = {"Cf-Connecting-Ip": f"203.0.113.{int(RUN_TAG[:2], 16) % 250}"}
-    codes = [(await client.post("/api/access-requests", json={"email": _email(f"ip{i}")}, headers=ip)).status_code
-             for i in range(3)]
+    address = f"2001:db8::{RUN_TAG[:4]}:{RUN_TAG[4:]}"
+    # One fixed hour for all three requests: a run that crossed the hour would split them over two counts.
+    monkeypatch.setattr(access_request_routes, "time", SimpleNamespace(time=lambda: 400_000 * 3600 + 1))
+    redis = get_async_redis()
+    assert redis is not None, "this test needs Redis: the limit is not checked without it"
+
+    async def forget_count():
+        async for key in redis.scan_iter(match=f"access_request:{address}:*"):
+            await redis.delete(key)
+
+    await forget_count()
+    try:
+        codes = [(await client.post("/api/access-requests", json={"email": _email(f"ip{i}")},
+                                    headers={"Cf-Connecting-Ip": address})).status_code
+                 for i in range(3)]
+    finally:
+        await forget_count()
     assert codes == [202, 202, 429]
 
 
