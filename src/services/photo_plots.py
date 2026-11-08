@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 PLOT_MAP_KEY = "plot_map_layer_id"  # in the photo layer's metadata: the reader's chosen plot map
 
 # Polygon layers in the layer's project that overlap its outline: the maps a reader can choose as its plots.
-# Outlines Sage drew on photos (roofs, trees) are not plot maps.
+# Layers Sage made as analysis (roof and tree outlines, hexagon grids) are not plot maps.
 _PLOT_MAPS_SQL = """
 SELECT l.layer_id, l.name, l.feature_count, l.last_edited
   FROM map_layers l
@@ -26,7 +26,7 @@ SELECT l.layer_id, l.name, l.feature_count, l.last_edited
    AND l.geometry_type ILIKE '%polygon%'
    AND l.bounds IS NOT NULL
    AND l.bounds[1] < $4 AND l.bounds[3] > $2 AND l.bounds[2] < $5 AND l.bounds[4] > $3
-   AND COALESCE(l.metadata->>'source', '') <> 'sage_raster_object_candidates'
+   AND l.metadata->>'analysis_kind' IS NULL
    AND l.layer_id IN (
        SELECT unnest(m.layers) FROM user_mundiai_maps m
         WHERE m.soft_deleted_at IS NULL
