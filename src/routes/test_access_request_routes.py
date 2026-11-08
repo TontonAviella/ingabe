@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import uuid
+from types import SimpleNamespace
 
 import pytest
 
 from src.database.pool import get_async_db_connection
 from src.dependencies import workos_session
+from src.dependencies.redis_client import get_async_redis
 from src.dependencies.session import verify_session_required
 from src.routes import access_request_routes
 from src.services import phone_push, workos_auth
@@ -99,17 +101,99 @@ async def test_bad_addresses_and_bots_are_not_kept(client, workos_on, pushes, cl
         assert await conn.fetchval("SELECT count(*) FROM access_requests WHERE email = $1", _email("bot")) == 0
 
 
+@pytest.mark.parametrize("given, counted_as", [
+    ("198.51.100.7", "198.51.100.7"),
+    (" 198.51.100.7 ", "198.51.100.7"),
+    # One IPv6 client normally holds a whole /64, and one address has many spellings (2026-11-08).
+    ("2001:db8:1:2::1", "2001:db8:1:2::/64"),
+    ("2001:0db8:0001:0002:0000:0000:0000:0009", "2001:db8:1:2::/64"),
+    ("2001:DB8:1:2:FFFF::", "2001:db8:1:2::/64"),
+    ("fe80::1%eth0", "fe80::/64"),
+    ("::ffff:198.51.100.7", "198.51.100.7"),  # an IPv4 address written as IPv6 is that IPv4 address
+    ("testclient", "unknown"), ("", "unknown"), ("198.51.100.7, 203.0.113.9", "unknown"),
+])
+def test_the_limit_counts_an_ipv4_address_or_an_ipv6_network(given, counted_as):
+    assert access_request_routes._limit_subject(given) == counted_as
+
+
 @pytest.mark.anyio
-async def test_one_address_on_the_internet_is_limited(client, workos_on, monkeypatch, cleanup):
+@pytest.mark.parametrize("case, spellings", [
+    (0, ["{net}::1", "{net}::1", "{net}::1"]),  # one address
+    (1, ["{net}::1", "{net}::2", "{net}:0:0:0:3"]),  # one client's /64: other addresses, other spellings
+])
+async def test_one_address_on_the_internet_is_limited(client, workos_on, monkeypatch, cleanup, case, spellings):
+    """The limit counts in the shared Redis per address (IPv6: per /64) and hour. This run gets a network of its own
+    (an IPv6 documentation /64 from its RUN_TAG) and a fixed hour, and removes its count before and after: it used 1
+    of 250 addresses, so runs within the same hour met each other's counts and saw 429 first (2026-11-07)."""
     async def quiet(*a, **k):
         return True
 
     monkeypatch.setattr(phone_push, "send", quiet)
     monkeypatch.setattr(access_request_routes, "PER_IP_PER_HOUR", 2)
-    ip = {"Cf-Connecting-Ip": f"203.0.113.{int(RUN_TAG[:2], 16) % 250}"}
-    codes = [(await client.post("/api/access-requests", json={"email": _email(f"ip{i}")}, headers=ip)).status_code
-             for i in range(3)]
+    net = f"2001:db8:{RUN_TAG[:4]}:{RUN_TAG[4:]}"
+    addresses = [spelling.format(net=net) for spelling in spellings]
+    # One fixed hour for all three requests (a run that crossed the hour would split them over two counts), and
+    # one hour per case, so the cases never share a count.
+    now = (400_000 + case) * 3600 + 1
+    monkeypatch.setattr(access_request_routes, "time", SimpleNamespace(time=lambda: now))
+    key = access_request_routes._limit_key(access_request_routes._limit_subject(addresses[0]), now)
+    redis = get_async_redis()
+    assert redis is not None, "no Redis client in this event loop"
+
+    await redis.delete(key)
+    try:
+        codes = [(await client.post("/api/access-requests", json={"email": _email(f"ip{case}{i}")},
+                                    headers={"Cf-Connecting-Ip": address})).status_code
+                 for i, address in enumerate(addresses)]
+        expires_in = await redis.ttl(key)
+    finally:
+        await redis.delete(key)
     assert codes == [202, 202, 429]
+    # The count always expires: set with its expiry in one step, so it can never be left counting forever.
+    assert 0 < expires_in <= access_request_routes._COUNT_KEPT_SECONDS
+
+
+@pytest.mark.anyio
+async def test_a_mistyped_email_does_not_use_up_a_try(client, workos_on, monkeypatch):
+    """The form is checked before the limit counts: five typos must not lock a person out for the hour."""
+    counted = []
+
+    async def counting(ip):
+        counted.append(ip)
+        return True
+
+    monkeypatch.setattr(access_request_routes, "_within_limit", counting)
+    r = await client.post("/api/access-requests", json={"email": "not-an-email", "name": "X"})
+    assert r.status_code == 400 and counted == []
+
+
+@pytest.mark.anyio
+async def test_a_redis_that_hangs_lets_the_request_through_quickly(monkeypatch):
+    """Fail-open must also cover a Redis that never answers, not only one that errors."""
+    import asyncio
+
+    class Hanging:
+        def pipeline(self, transaction=True):
+            return self
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+        def set(self, *a, **k):
+            return self
+
+        def incr(self, *a, **k):
+            return self
+
+        async def execute(self):
+            await asyncio.sleep(60)
+
+    monkeypatch.setattr(access_request_routes, "get_async_redis", lambda: Hanging())
+    monkeypatch.setattr(access_request_routes, "_REDIS_TIMEOUT_SECONDS", 0.05)
+    assert await asyncio.wait_for(access_request_routes._within_limit("198.51.100.7"), timeout=5) is True
 
 
 @pytest.fixture
