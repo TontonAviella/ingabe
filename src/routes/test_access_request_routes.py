@@ -67,7 +67,8 @@ def _email(name: str) -> str:
 async def test_sign_up_link_leads_to_request_access_while_invite_only(client, workos_on, monkeypatch):
     r = await client.get("/auth/login", params={"screen_hint": "sign-up"}, follow_redirects=False)
     assert r.status_code == 302 and r.headers["location"] == "/request-access"
-    signed_in = await client.get("/auth/login", follow_redirects=False)  # signing in is unchanged
+    # Signing in past Ingabe's own step (src/routes/auth_routes.py) still goes to WorkOS.
+    signed_in = await client.get("/auth/login", params={"confirmed": "1"}, follow_redirects=False)
     assert signed_in.headers["location"].startswith("https://auth.example/authorize")
     monkeypatch.setenv("WORKOS_SELF_SIGN_UP", "1")  # sign-up opened in WorkOS: the link goes there again
     opened = await client.get("/auth/login", params={"screen_hint": "sign-up"}, follow_redirects=False)

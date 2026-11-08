@@ -56,8 +56,12 @@ function currentPathWithoutError(): string {
   return window.location.pathname + (query ? `?${query}` : '');
 }
 
-export function signInUrl(returnTo = currentPathWithoutError()): string {
-  return `/auth/login?return_to=${encodeURIComponent(returnTo)}`;
+/**
+ * The server's sign-in route. Unless `confirmed`, a browser that has never signed in is first shown Ingabe's own
+ * step (/sign-in), which says codes go only to invited addresses; that step's button passes `confirmed`.
+ */
+export function signInUrl(returnTo = currentPathWithoutError(), opts: { confirmed?: boolean } = {}): string {
+  return `/auth/login?return_to=${encodeURIComponent(returnTo)}${opts.confirmed ? '&confirmed=1' : ''}`;
 }
 
 export function WorkOSSessionProvider({ children }: React.PropsWithChildren) {
@@ -130,7 +134,8 @@ export function WorkOSRequireAuth({ children }: React.PropsWithChildren) {
           <IngabeIcon className="mx-auto mb-4 h-10 w-10" />
           <h1 className="font-medium">{text.title}</h1>
           <Button asChild className="mt-4">
-            <a href={signInUrl('/')}>{text.action}</a>
+            {/* They already passed Ingabe's invitation step to get here: straight to WorkOS. */}
+            <a href={signInUrl('/', { confirmed: true })}>{text.action}</a>
           </Button>
         </div>
       </div>

@@ -33,6 +33,14 @@ def test_enabled_needs_the_provider_and_all_keys(monkeypatch):
 @pytest.mark.parametrize("given, expected", [
     ("/project/abc", "/project/abc"), (None, "/"), ("https://evil.example/x", "/"),
     ("//evil.example", "/"), ("project", "/"),
+    # Browsers read a backslash as a slash, so "/\\evil.example" is "//evil.example" to them (2026-11-07).
+    ("/\\evil.example", "/"), ("/\\/evil.example", "/"), ("/\t/evil.example", "/"), ("/x\nLocation: y", "/"),
+    ("/project/abc?tab=2#map", "/project/abc?tab=2#map"),
+    # Going back to sign-in or sign-out would loop or sign the person out (2026-11-07), however it is spelled.
+    ("/auth/logout", "/"), ("/auth/login?confirmed=1", "/"), ("/./auth/logout", "/"), ("/%61uth/logout", "/"),
+    ("/sign-in", "/"), ("/sign-in?return_to=%2Fsign-in", "/"), ("/x/../sign-in", "/"),
+    ("/sign-ins-report", "/sign-ins-report"), ("/authors", "/authors"),
+    ("/.//evil.example", "/"),  # a client that collapses dot segments first would read "//evil.example"
 ])
 def test_safe_return_to(given, expected):
     assert workos_auth.safe_return_to(given) == expected

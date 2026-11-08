@@ -9,8 +9,10 @@ from urllib.parse import parse_qs, urlparse
 import pytest
 
 from src.dependencies import workos_session
+from src.dependencies.session import verify_session_required
 from src.routes import auth_routes
 from src.services import workos_auth
+from src.wsgi import app
 
 
 @pytest.fixture(autouse=True)
@@ -32,7 +34,7 @@ def workos_on(monkeypatch):
 
 @pytest.mark.anyio
 async def test_login_redirects_to_workos_with_a_state_cookie(client, workos_on):
-    r = await client.get("/auth/login", params={"return_to": "/project/abc"}, follow_redirects=False)
+    r = await client.get("/auth/login", params={"return_to": "/project/abc", "confirmed": "1"}, follow_redirects=False)
     assert r.status_code == 302
     state = parse_qs(urlparse(r.headers["location"]).query)["state"][0]
     nonce, _, target = state.partition(".")
@@ -64,14 +66,91 @@ async def test_callback_sets_the_session_cookie(client, workos_on, monkeypatch):
     assert r.status_code == 302 and r.headers["location"] == "/project/abc"
     assert "wos_session=sealed-cookie" in r.headers["set-cookie"] and "HttpOnly" in r.headers["set-cookie"]
     assert linked == [("user_9", "x@y.rw")]
+    assert any("ingabe_signed_in_before=1" in v and "Max-Age" in v for v in r.headers.get_list("set-cookie"))
 
 
 @pytest.mark.anyio
 async def test_a_callback_started_on_workos_page_signs_in_again_from_here(client, workos_on):
     """An invitation email's link signs the person in on WorkOS' page, which sends them back with no state."""
     r = await client.get("/auth/callback", params={"code": "c"}, follow_redirects=False)
-    assert r.status_code == 302 and r.headers["location"] == "/auth/login"
+    assert r.status_code == 302 and r.headers["location"] == "/auth/login?confirmed=1"
     assert "wos_session=" not in r.headers.get("set-cookie", "")
+
+
+@pytest.mark.anyio
+async def test_a_browser_that_never_signed_in_first_sees_the_invitation_step(client, workos_on):
+    """WorkOS' page sends codes only to invited addresses and does not say so: people waited (2026-11-07)."""
+    r = await client.get("/auth/login", params={"return_to": "/project/abc", "lang": "fr"}, follow_redirects=False)
+    assert r.status_code == 302
+    assert r.headers["location"] == "/sign-in?return_to=%2Fproject%2Fabc&lang=fr"
+    assert "wos_state=" not in r.headers.get("set-cookie", "")
+
+
+@pytest.mark.anyio
+async def test_the_step_never_passes_on_an_outside_address(client, workos_on):
+    r = await client.get("/auth/login", params={"return_to": "https://evil.example/x", "lang": "xx"},
+                         follow_redirects=False)
+    assert r.headers["location"] == "/sign-in?return_to=%2F"
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("params", [{"organization_id": "org_1"}, {"confirmed": "1"}])
+async def test_switching_company_or_a_confirmed_sign_in_goes_straight_to_workos(client, workos_on, params):
+    r = await client.get("/auth/login", params=params, follow_redirects=False)
+    assert r.headers["location"].startswith("https://auth.example/authorize?")
+
+
+@pytest.mark.anyio
+async def test_a_signed_in_browser_goes_straight_to_workos(client, workos_on, monkeypatch):
+    """No cookie yet (signed in before the step existed), but a live session: nothing to explain."""
+    live = workos_auth.WorkOSSession(
+        user_id="user_9", email="x@y.rw", first_name=None, last_name=None, profile_picture_url=None,
+        session_id="sess_9", organization_id=None, role=None)
+
+    async def fake_load(cookie):
+        return live
+
+    monkeypatch.setattr(workos_session, "load_session", fake_load)
+    client.cookies.set("wos_session", "live")
+    r = await client.get("/auth/login", follow_redirects=False)
+    client.cookies.delete("wos_session")
+    assert r.headers["location"].startswith("https://auth.example/authorize?")
+
+
+@pytest.mark.anyio
+async def test_people_signed_in_before_the_step_existed_get_the_cookie_on_their_next_visit(client, workos_on, monkeypatch):
+    """Otherwise everyone signed in at deploy time would see the invitation step once their session ends."""
+    async def fake_me(request, session):
+        return {"user": {"email": "x@y.rw"}}
+
+    monkeypatch.setattr(auth_routes, "_me", fake_me)
+    app.dependency_overrides[verify_session_required] = lambda: object()
+    try:
+        r = await client.get("/api/auth/me")
+    finally:
+        app.dependency_overrides.pop(verify_session_required, None)
+    assert r.status_code == 200
+    assert any("ingabe_signed_in_before=1" in v for v in r.headers.get_list("set-cookie"))
+
+
+@pytest.mark.anyio
+async def test_a_sign_up_while_sign_up_is_open_goes_straight_to_workos(client, workos_on, monkeypatch):
+    monkeypatch.setenv("WORKOS_SELF_SIGN_UP", "1")
+    r = await client.get("/auth/login", params={"screen_hint": "sign-up"}, follow_redirects=False)
+    assert r.headers["location"].startswith("https://auth.example/authorize?")
+
+
+@pytest.mark.anyio
+async def test_a_garbled_confirmed_value_shows_the_step_not_an_error(client, workos_on):
+    r = await client.get("/auth/login", params={"confirmed": "yes-please"}, follow_redirects=False)
+    assert r.status_code == 302 and r.headers["location"] == "/sign-in?return_to=%2F"
+
+
+@pytest.mark.anyio
+async def test_a_browser_that_signed_in_before_goes_straight_to_workos(client, workos_on):
+    client.cookies.set("ingabe_signed_in_before", "1")
+    r = await client.get("/auth/login", params={"return_to": "/project/abc"}, follow_redirects=False)
+    assert r.headers["location"].startswith("https://auth.example/authorize?")
 
 
 @pytest.mark.anyio

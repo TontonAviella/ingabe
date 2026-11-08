@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import type { Locale } from "@/lib/i18n";
-import { INGABE_URL, REQUEST_ACCESS_URL, SIGN_IN_URL } from "@/lib/site";
+import { INGABE_URL, requestAccessUrl, signInUrl } from "@/lib/site";
 import { useLocale } from "./Locale";
 
 const SECTIONS = ["read", "where", "accuracy", "how", "access"] as const;
@@ -41,7 +41,7 @@ export function Wordmark({ light = false }: { light?: boolean }) {
 }
 
 export function Nav() {
-  const { t } = useLocale();
+  const { locale, t } = useLocale();
   const links = SECTIONS.map((s) => ({ href: `#${s}`, label: t.nav.links[s] }));
   const [scrolled, setScrolled] = useState(false);
   const [open, setOpen] = useState(false);
@@ -72,7 +72,7 @@ export function Nav() {
         </nav>
         <div className="flex items-center gap-4 whitespace-nowrap sm:gap-5">
           <LanguageSwitch />
-          <a href={SIGN_IN_URL} className="hidden text-[13.5px] text-bitter/70 transition-colors hover:text-bitter sm:inline lg:hidden xl:inline">
+          <a href={signInUrl(locale)} className="hidden text-[13.5px] text-bitter/70 transition-colors hover:text-bitter sm:inline lg:hidden xl:inline">
             {t.nav.signIn}
           </a>
           <a
@@ -103,10 +103,10 @@ export function Nav() {
               {l.label}
             </a>
           ))}
-          <a href={SIGN_IN_URL} className="block border-b border-bitter/10 py-4 text-[17px]">
+          <a href={signInUrl(locale)} className="block border-b border-bitter/10 py-4 text-[17px]">
             {t.nav.signIn}
           </a>
-          <a href={REQUEST_ACCESS_URL} className="block border-b border-bitter/10 py-4 text-[17px]">
+          <a href={requestAccessUrl(locale)} className="block border-b border-bitter/10 py-4 text-[17px]">
             {t.nav.requestAccess}
           </a>
           <a href={INGABE_URL} className="mt-5 inline-flex items-center gap-3 rounded-full bg-bitter px-6 py-3 text-[15px] text-cream">
