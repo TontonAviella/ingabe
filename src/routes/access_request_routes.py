@@ -8,6 +8,7 @@ internet (for IPv6, one /64 network: _limit_subject) may ask PER_IP_PER_HOUR tim
 
 from __future__ import annotations
 
+import asyncio
 import ipaddress
 import logging
 import time
@@ -27,6 +28,8 @@ router = APIRouter()
 PER_IP_PER_HOUR = 5
 _WINDOW_SECONDS = 3600
 _COUNT_KEPT_SECONDS = 3700  # a little past the hour it counts
+_REDIS_TIMEOUT_SECONDS = 2.0  # a Redis that hangs must not hold a public request: past this, it goes through
+_warned_no_redis = False
 
 
 class AccessRequestIn(BaseModel):
@@ -53,6 +56,8 @@ def _limit_subject(ip: str) -> str:
     try:
         address = ipaddress.ip_address(ip.strip())
     except ValueError:
+        # Behind Cloudflare the header is always one address: this means a proxy or header changed.
+        logger.warning("Access request limit: %r is not one address; counted with every other such value", ip[:64])
         return "unknown"
     if isinstance(address, ipaddress.IPv6Address):
         if address.ipv4_mapped is not None:
@@ -66,17 +71,26 @@ def _limit_key(subject: str, now: float) -> str:
     return f"access_request:{subject}:{int(now // _WINDOW_SECONDS)}"
 
 
+async def _count(r, key: str) -> int:
+    # The count and its expiry are made together: an INCR whose EXPIRE failed counted forever (2026-11-08).
+    async with r.pipeline(transaction=True) as pipe:
+        pipe.set(key, 0, ex=_COUNT_KEPT_SECONDS, nx=True)
+        pipe.incr(key)
+        _, n = await pipe.execute()
+    return n
+
+
 async def _within_limit(ip: str) -> bool:
+    global _warned_no_redis
     r = get_async_redis()
     if r is None:
+        if not _warned_no_redis:
+            _warned_no_redis = True
+            logger.warning("Access request limit is off: no Redis")
         return True
     key = _limit_key(_limit_subject(ip), time.time())
     try:
-        # The count and its expiry are made together: an INCR whose EXPIRE failed counted forever (2026-11-08).
-        async with r.pipeline(transaction=True) as pipe:
-            pipe.set(key, 0, ex=_COUNT_KEPT_SECONDS, nx=True)
-            pipe.incr(key)
-            _, n = await pipe.execute()
+        n = await asyncio.wait_for(_count(r, key), timeout=_REDIS_TIMEOUT_SECONDS)
         return n <= PER_IP_PER_HOUR
     except Exception:  # noqa: BLE001 - the limit is a guard: a Redis hiccup must not lose a person's request
         logger.warning("Access request limit not checked (Redis)", exc_info=True)
@@ -88,13 +102,13 @@ async def request_access(body: AccessRequestIn, request: Request):
     """Keep the request and push Ingabe staff; the same answer for every address."""
     if body.website:  # a bot: answered like everyone, kept nowhere
         return {"received": True}
-    if not await _within_limit(_client_ip(request)):
-        raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-                            detail="Too many requests from here just now. Please try again in an hour.")
-    try:
+    try:  # checked before the limit counts: a typo must not use up one of the hour's tries
         sub = access_requests.clean_submission(body.email, body.name, body.organization, body.reason)
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e)) from e
+    if not await _within_limit(_client_ip(request)):
+        raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                            detail="Too many requests from here just now. Please try again in an hour.")
     async with async_conn("access_requests.record") as conn:  # no user: the person is not signed in
         kept = await access_requests.record(conn, sub, "form")
         await access_requests.notify(conn, kept)

@@ -149,7 +149,50 @@ async def test_one_address_on_the_internet_is_limited(client, workos_on, monkeyp
         await redis.delete(key)
     assert codes == [202, 202, 429]
     # The count always expires: set with its expiry in one step, so it can never be left counting forever.
-    assert 0 < expires_in <= 3700
+    assert 0 < expires_in <= access_request_routes._COUNT_KEPT_SECONDS
+
+
+@pytest.mark.anyio
+async def test_a_mistyped_email_does_not_use_up_a_try(client, workos_on, monkeypatch):
+    """The form is checked before the limit counts: five typos must not lock a person out for the hour."""
+    counted = []
+
+    async def counting(ip):
+        counted.append(ip)
+        return True
+
+    monkeypatch.setattr(access_request_routes, "_within_limit", counting)
+    r = await client.post("/api/access-requests", json={"email": "not-an-email", "name": "X"})
+    assert r.status_code == 400 and counted == []
+
+
+@pytest.mark.anyio
+async def test_a_redis_that_hangs_lets_the_request_through_quickly(monkeypatch):
+    """Fail-open must also cover a Redis that never answers, not only one that errors."""
+    import asyncio
+
+    class Hanging:
+        def pipeline(self, transaction=True):
+            return self
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+        def set(self, *a, **k):
+            return self
+
+        def incr(self, *a, **k):
+            return self
+
+        async def execute(self):
+            await asyncio.sleep(60)
+
+    monkeypatch.setattr(access_request_routes, "get_async_redis", lambda: Hanging())
+    monkeypatch.setattr(access_request_routes, "_REDIS_TIMEOUT_SECONDS", 0.05)
+    assert await asyncio.wait_for(access_request_routes._within_limit("198.51.100.7"), timeout=5) is True
 
 
 @pytest.fixture
