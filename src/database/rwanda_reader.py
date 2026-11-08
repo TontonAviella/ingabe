@@ -26,6 +26,8 @@ from urllib.parse import quote
 READER_ROLE = "mundi_rwanda_reader"  # agriculture projects
 GENERAL_READER_ROLE = "mundi_rwanda_reader_general"  # telecom
 READER_ROLES = (READER_ROLE, GENERAL_READER_ROLE)
+# Neutral name: every industry has one (each logs in as its industry's reader role).
+RWANDA_INTERNAL_CONNECTION_NAME = "Rwanda data (internal)"
 
 BOUNDARY_TABLES = frozenset(
     {

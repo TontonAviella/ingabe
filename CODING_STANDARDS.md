@@ -189,6 +189,7 @@ One entry per real mistake: date, what went wrong, the rule that prevents
 it, and the gate if there is one. Newest first. Keep each entry to three
 lines; promote a lesson that recurs into the sections above.
 
+- **2026-11-08** The "Plots from" list excluded Sage's outline layers by one `source` value, so Sage's hexagon grids were still offered as a reader's plot map and one photo's plots became 4,221 hexagons. Rule: when a list means "the reader's own data", exclude everything Sage made by what it shares (`analysis_kind`, or the platform's own Rwanda connection), not one kind at a time.
 - **2026-11-07** To build a noza-web worktree faster I symlinked its `node_modules` to the main checkout's; `next build`
   (`output: "standalone"`) then rewrote the shared folder and left the main checkout's noza-web with one package. Rule: each
   checkout gets its own `npm ci`; never share `node_modules` between checkouts by symlink. Gate: review only (a local folder, not code).
