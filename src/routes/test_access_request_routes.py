@@ -110,15 +110,17 @@ async def test_one_address_on_the_internet_is_limited(client, workos_on, monkeyp
 
     monkeypatch.setattr(phone_push, "send", quiet)
     monkeypatch.setattr(access_request_routes, "PER_IP_PER_HOUR", 2)
-    address = f"2001:db8::{RUN_TAG[:4]}:{RUN_TAG[4:]}"
+    # The run's tag sits in the /64 too, so runs stay apart even if the limit ever counts a whole IPv6 network.
+    address = f"2001:db8:{RUN_TAG[:4]}:{RUN_TAG[4:]}::1"
     # One fixed hour for all three requests: a run that crossed the hour would split them over two counts.
-    monkeypatch.setattr(access_request_routes, "time", SimpleNamespace(time=lambda: 400_000 * 3600 + 1))
+    hour = 400_000
+    monkeypatch.setattr(access_request_routes, "time", SimpleNamespace(time=lambda: hour * 3600 + 1))
     redis = get_async_redis()
-    assert redis is not None, "this test needs Redis: the limit is not checked without it"
+    assert redis is not None, "no Redis client in this event loop"
 
     async def forget_count():
-        async for key in redis.scan_iter(match=f"access_request:{address}:*"):
-            await redis.delete(key)
+        # The route's key (access_request_routes._within_limit); one exact key, no scan of the shared Redis.
+        await redis.delete(f"access_request:{address}:{hour}")
 
     await forget_count()
     try:
