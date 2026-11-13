@@ -69,10 +69,10 @@ _KEPT_WINDOWS = 12  # stored windows held in memory (2 MB each)
 
 MEASURED = (
     "Measured on one photo (Cyampirita, 26 fields): one tap and up to two corrections gave a usable outline on 25 "
-    "fields, with the area typically within 5% of an outline drawn by hand. In that test a script placed the taps; "
-    "taps by a person are not measured yet. Corners were not measured. Without a correction the area was within 5% "
-    "on 9 of 20 fields. A line you move by hand is your own: "
-    "it was not part of that test. Areas are map areas: on a slope the ground itself is larger."
+    "fields. Against an outline drawn by hand, the area of a corrected outline was off by about 6% at the median "
+    "and within 5% on 11 of 26 fields; without a correction it was within 5% on 9 of 20. In that test a script "
+    "placed the taps; taps by a person are not measured yet. Corners were not measured. A line you move by hand "
+    "is your own: it was not part of that test. Areas are map areas: on a slope the ground itself is larger."
 )
 
 

@@ -61,6 +61,7 @@ with up to two more taps ("this part too" / "not this part"), and keep it with i
 | 70 | One tap + up to two corrections, same fields | 22 after one, 25 after two; area error 4.7% (median); none made worse |
 | Server timing | Light half in a throw-away container on the server, one thread | the model alone 0.18 s a tap (median); a whole first tap with this module's code (model, cleaning three outlines, shapes) 0.4 to 0.6 s on six fields |
 | 74 | Area of a first-tap outline (best of three, no correction) against a hand drawing, 20 exam fields | median area error 7.6%; within 5% on 9 of 20. A band of 2.17 m x perimeter / area holds 18 of 20 but is too wide to print (a third of the area at the median) |
+| 75 | Area of an outline after up to two correcting taps, through the app's own code, 26 exam fields | median area error 5.9%; within 5% on 11 of 26. A band of 1.44 m x perimeter / area holds 23 of 26 but is a fifth of the area at the median: still too wide to print |
 
 Not measured: taps by a real person (the test placed them with a script from hand-drawn outlines), corners, ground
 that is not a field, any photo other than Cyampirita. The first correction made the outline worse on 6 of 26 fields
@@ -68,7 +69,7 @@ before the second repaired it, so the screen keeps a "back" step.
 
 ## How it shows (design rules, plans/PLAN_RWANDA_CROPS.md review part 2, G and H)
 
-- An area under 0.05 ha is shown in square metres (to 10 m2 from 100 m2 up); never "0.00 ha" for a real field. No plus-or-minus is printed until accepted outlines have been tested.
+- An area under 0.05 ha is shown in square metres (to 10 m2 from 100 m2 up); never "0.00 ha" for a real field. No plus-or-minus is printed: Tests 74 and 75 found no band that is both safe and narrow.
 - "This part too" and "Not this part" taps carry a plus and a minus, not colour alone. Every outline has a dark edge.
 - An answer slower than about a second says what is happening and how long it can take.
 - Removing a kept field asks once. The list of kept fields only selects; removal is on the selected field.
