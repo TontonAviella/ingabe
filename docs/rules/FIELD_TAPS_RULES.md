@@ -55,7 +55,7 @@ with up to two more taps ("this part too" / "not this part"), and keep it with i
 16. A first-tap choice with 120 m or more of itself on the border of its window (`EDGE_CHOICE_M`) is left out:
    there the window cut it, not the ground. The answer says how many were left out (`left_out`) and the screen says
    so. Nothing is left out when no other choice remains, so a field larger than a window can still be outlined.
-   A rule for plots smaller than a window; a choice that was left out cannot be kept from one tap.
+   A rule for plots smaller than a window; a choice that was left out can be neither corrected nor kept.
 
 ## What was measured (plans/PLAN_RWANDA_CROPS.md, 2026-11-12)
 

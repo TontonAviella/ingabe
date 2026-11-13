@@ -166,9 +166,12 @@ def test_a_choice_that_runs_along_the_window_border_is_left_out_unless_it_is_the
     monkeypatch.setattr(field_taps, "_tap_model", lambda s3_, bucket: _ready(WholeWindowThird()))
     found, left_out = asyncio.run(field_taps.outlines_and_left_out(s3, "b", "photo.tif", [_tap(60, 10)], None))
     assert [o["choice"] for o in found] == [0, 1] and left_out == 1
-    # the choice that was not offered cannot be kept either
+    # the choice that was not offered cannot be kept, nor corrected and then kept
     with pytest.raises(TapError):
         asyncio.run(field_taps.keep(s3, "b", "photo.tif", [_tap(60, 10)], 2, "user-1"))
+    with pytest.raises(TapError, match="not offered"):
+        asyncio.run(field_taps.keep(s3, "b", "photo.tif", [_tap(60, 10), _tap(70, 10)], 2, "user-1"))
+    assert asyncio.run(field_taps.keep(s3, "b", "photo.tif", [_tap(60, 10), _tap(70, 10)], 1, "user-1"))["pick"] == 1
 
 
 async def _ready(model):

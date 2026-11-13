@@ -241,6 +241,9 @@ def outline_masks(model: TapModel, window_array: np.ndarray, taps: Sequence[tupl
         return _distinct([(choice, mask) for choice, mask in cleaned if mask is not None])
     if pick not in (0, 1, 2):
         raise TapError("Pick one of the outlines before correcting it.")
+    first = _distinct([(c, m) for c, m in ((c, _part_under(masks[c + 1], col, row)) for c in range(3)) if m is not None])
+    if pick not in [c for c, _ in without_edge_choices(first)[0]]:
+        raise TapError("That outline was not offered for this tap. Tap the field again.")
     before = low[pick + 1]
     mask = masks[pick + 1]
     for count in range(2, len(taps) + 1):
