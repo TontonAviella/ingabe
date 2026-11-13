@@ -107,3 +107,23 @@ async def test_outlined_fields_are_the_plots_until_the_reader_chooses_otherwise(
 
     monkeypatch.delenv("FIELD_TAPS")
     assert await photo_plots.outlined_fields(s3, "b", metadata) is None  # switch off: the fields are not a source
+
+
+def test_checks_stay_with_outlined_fields_but_not_with_plots_found_again():
+    import dataclasses
+
+    from src.services import drone_plots, field_checks
+
+    found = drone_plots.PlotSet(geojson={"type": "FeatureCollection", "features": []}, found_at="2026-11-13T08:00:00+00:00",
+                                seconds=1.0, source="found", read_m_per_px=0.1)
+    later = dataclasses.replace(found, found_at="2026-11-13T09:00:00+00:00")
+    # plots Ingabe found again are new polygons under old numbers: their checks must not carry over
+    assert field_checks.checks_set_id("photo.tif", found) != field_checks.checks_set_id("photo.tif", later)
+    assert field_checks.checks_set_id("photo.tif", found) == field_checks.plot_set_id("photo.tif", found)
+    # a kept field never changes and its number is never reused: its checks stay when other fields come and go
+    fields = dataclasses.replace(found, source=drone_plots.OUTLINED_FIELDS_NAME)
+    fields_later = dataclasses.replace(later, source=drone_plots.OUTLINED_FIELDS_NAME)
+    assert field_checks.checks_set_id("photo.tif", fields) == field_checks.checks_set_id("photo.tif", fields_later)
+    assert field_checks.checks_set_id("photo.tif", fields) != field_checks.checks_set_id("other.tif", fields)
+    # everything measured from pixels (bare spots, fingerprints) still follows the exact version of the plots
+    assert field_checks.plot_set_id("photo.tif", fields) != field_checks.plot_set_id("photo.tif", fields_later)

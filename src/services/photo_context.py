@@ -164,7 +164,7 @@ async def plot_looks(s3: Any, bucket: str, metadata: dict[str, Any], plots: dron
                                            retry_failed=retry_failed)
     else:
         survey, survey_job = drone_vision.no_looks(plots), None
-    plot_set = field_checks.plot_set_id(photo_plots.photo_key(metadata), plots)
+    plot_set = field_checks.checks_set_id(photo_plots.photo_key(metadata), plots)
     checks = await field_checks.load_checks(s3, bucket, project_id, plot_set)
     # The crop of each plot comes from its fingerprint and the checked plots when there are any; the looks
     # keep stage, weeds and problems. Checks then override both, and the record compares the calls (each made

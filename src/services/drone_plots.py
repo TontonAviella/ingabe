@@ -589,6 +589,17 @@ async def load_map_plots(s3: Any, bucket: str, photo_key: str, map_key: str, cog
         return plots
 
 
+async def forget_map_plots(s3: Any, bucket: str, photo_key: str, map_key: str) -> None:
+    """Drop the measured plots of a version of the reader's own plots that is no longer in use."""
+    key = f"{photo_key}|map:{map_key}"
+    _results.pop(key, None)
+    _map_locks.pop(key, None)
+    try:
+        await s3.delete_object(Bucket=bucket, Key=_store_key(key))
+    except Exception:  # an old measurement left in storage costs a few kilobytes; say so and carry on
+        logger.warning("could not delete the old plot measurement %s", key, exc_info=True)
+
+
 def _job_key(photo_key: str) -> str:
     return f"plots:{photo_key}"
 

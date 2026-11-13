@@ -329,7 +329,7 @@ async def check_drone_plot(
         raise HTTPException(404, "This photo is not in a project")
     try:
         checks = await field_checks.add_check(s3, get_bucket_name(), project_id,
-                                              field_checks.plot_set_id(photo_plots.photo_key(metadata), plots),
+                                              field_checks.checks_set_id(photo_plots.photo_key(metadata), plots),
                                               number, check.crop)
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from None

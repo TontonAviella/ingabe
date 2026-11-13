@@ -313,6 +313,16 @@ def test_keeps_at_the_same_moment_are_all_kept_with_their_own_numbers(monkeypatc
     assert sorted(k["id"] for k in kept) == sorted(r["id"] for r in rows)
 
 
+def test_a_photo_holds_a_limited_number_of_kept_fields(monkeypatch):
+    s3, _ = _prepared_store(monkeypatch)
+    monkeypatch.setattr(field_taps, "MAX_KEPT_FIELDS", 2)
+    for _ in range(2):
+        asyncio.run(field_taps.keep(s3, "b", "photo.tif", [_tap(60, 10)], 0, "user-1"))
+    with pytest.raises(field_taps.TapError, match="already has 2 outlined fields"):
+        asyncio.run(field_taps.keep(s3, "b", "photo.tif", [_tap(60, 10)], 0, "user-1"))
+    assert len(asyncio.run(field_taps.kept(s3, "b", "photo.tif"))) == 2
+
+
 def test_who_kept_a_field_is_recorded_but_not_shown_on_the_screen(monkeypatch):
     s3, _ = _prepared_store(monkeypatch)
     asyncio.run(field_taps.keep(s3, "b", "photo.tif", [_tap(60, 10)], 0, "user-1"))

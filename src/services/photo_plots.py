@@ -49,6 +49,9 @@ SELECT l.layer_id, l.name, l.feature_count, l.last_edited
 """
 
 
+_fields_version: dict[str, str] = {}  # per photo: the version of the reader's outlined fields last measured
+
+
 def photo_key(metadata: dict[str, Any]) -> str:
     """Copies of a photo layer point at the same stored image, so they share its plots."""
     return metadata["cog_key"]
@@ -115,6 +118,12 @@ async def plots_from_chosen_map(
     if chosen is None:
         return None, None, None
     plot_map, version = chosen
+    if plot_map.layer_id == FIELDS:
+        # every keep or remove makes a new version; the one before it is measured plots nobody reads any more
+        before = _fields_version.get(photo_key(metadata))
+        if before and before != version:
+            await drone_plots.forget_map_plots(s3, bucket, photo_key(metadata), before)
+        _fields_version[photo_key(metadata)] = version
     try:
         plots = await drone_plots.load_map_plots(
             s3, bucket, photo_key(metadata), version, cog_url, plot_map.name,

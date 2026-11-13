@@ -53,6 +53,7 @@ WINDOW_M = 120.0
 WINDOW_PX = 1024
 STEP_M = 60.0
 MAX_CORRECTIONS = 2
+MAX_KEPT_FIELDS = 500  # kept fields on one photo: each is a plot the cards and Sage measure
 MAX_LINE_REACH_M = 500  # no corner of a hand-moved line may lie further than this from the first tap
 MAX_TURNED_DOWN_ROWS = 2000  # turned-down taps kept in full; older ones stay in the count only
 MAX_LINE_POINTS = 600  # a hand-moved line with more points than this is refused
@@ -447,6 +448,8 @@ async def keep(s3: Any, bucket: str, photo_key: str, taps: Sequence[Tap], pick: 
                    model_overlap=_overlap(row["geometry"], own["geometry"]), **own)
     async with _record_locks.setdefault(photo_key, asyncio.Lock()):  # two keeps at once: neither is lost
         rows, number = await _kept_record(s3, bucket, photo_key)
+        if len(rows) >= MAX_KEPT_FIELDS:
+            raise TapError(f"This photo already has {MAX_KEPT_FIELDS} outlined fields. Remove one to keep another.")
         row.update(number=number, centre=_centre(row["geometry"]))
         await _store_kept(s3, bucket, photo_key, rows + [row], number + 1)
     return row

@@ -18,7 +18,7 @@ from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from typing import Any, Optional
 
-from src.services import drone_vision
+from src.services import drone_plots, drone_vision
 
 _STORE_PREFIX = "field_checks/v2"
 # Crops a person can pick when checking (the model's lists, without its own "unsure" and "other").
@@ -35,6 +35,16 @@ class Check:
 def plot_set_id(photo_key: str, plots: Any) -> str:
     """The identity of one set of plot outlines on one photo."""
     return f"{photo_key}|{plots.source}|{plots.found_at}"
+
+
+def checks_set_id(photo_key: str, plots: Any) -> str:
+    """The plot set a person's checks and crop examples belong to. For plots Ingabe found or read from a map this is
+    plot_set_id: a new search gives new polygons under the old numbers. The fields a reader outlined are different:
+    a kept field never changes shape and its number is never given to another field, so its checks stay with it
+    when other fields are kept or removed (otherwise every new field would make the reader's checks vanish)."""
+    if plots.source == drone_plots.OUTLINED_FIELDS_NAME:
+        return f"{photo_key}|{plots.source}"
+    return plot_set_id(photo_key, plots)
 
 
 def _key(project_id: str, plot_set: str) -> str:

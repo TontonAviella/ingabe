@@ -38,8 +38,11 @@ with up to two more taps ("this part too" / "not this part"), and keep it with i
    with the field's number, size and centre.
 12. Kept fields are a source of the photo's plots (`photo_plots`): with nothing else chosen they are the plots the
    question cards and Sage read, each field under its own number (Field 7 is plot 7). A reader's chosen plot map
-   still wins, and "Found by Ingabe" in the card's "Plots from" choice goes back to Ingabe's own plots. Keeping,
-   removing or moving a field makes a new plot set, so checks made on the earlier set do not carry over.
+   still wins, and "Found by Ingabe" in the card's "Plots from" choice goes back to Ingabe's own plots. Keeping
+   or removing a field makes a new measured plot set (greenness, bare spots and fingerprints are measured again),
+   but a person's crop checks stay with their field: a kept field never changes shape and its number is never
+   reused (`field_checks.checks_set_id`). A photo holds at most 500 kept fields. With `DRONE_VISION_SURVEY=1`
+   every new plot set would be surveyed again at two paid calls a plot; the survey is off by default.
 
 13. A hand-moved corner must be a real place within 500 m of the first tap; anything else is refused in plain
    words. Kept and turned-down records are read, changed and written as one step per photo, so two keeps at the
