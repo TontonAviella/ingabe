@@ -337,6 +337,29 @@ describe('outlining a field by tapping it', () => {
     await vi.waitFor(() => expect(signs()).toEqual(['+', '−']));
   });
 
+  it('says so when the server left out a choice that ran past the edge of what was read', async () => {
+    fakeServer(true);
+    const answer = fetchMock.getMockImplementation() as NonNullable<ReturnType<typeof fetchMock.getMockImplementation>>;
+    fetchMock.mockImplementation(async (input, init) => {
+      const response = await answer(input, init);
+      if (!String(input).endsWith('/outline')) return response;
+      const body = await response.json();
+      return new Response(JSON.stringify({ outlines: body.outlines.slice(0, 2), left_out: 1 }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    });
+    const m = fakeMap();
+    mount(<FieldTaps map={m.map} layers={[photo]} hiddenLayerIDs={[]} />);
+    await vi.waitFor(() => expect(byButton('Outline a field')).not.toBeNull());
+    click(byButton('Outline a field') as HTMLButtonElement);
+    await vi.waitFor(() => expect(m.listening()).toBe(true));
+    m.tap(30.1, -1.9);
+    await vi.waitFor(() => expect(byButton(/^B · /)).not.toBeNull());
+    expect(byButton(/^C · /)).toBeNull();
+    expect(byText(/A larger outline was left out/)).not.toBeNull();
+  });
+
   it('drops an answer that arrives after the reader closed the panel', async () => {
     const server = fakeServer(true);
     const m = fakeMap();

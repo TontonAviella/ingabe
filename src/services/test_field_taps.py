@@ -143,6 +143,38 @@ def test_a_choice_that_repeats_another_is_dropped_but_a_small_one_is_kept():
     assert [(choice, int(mask.sum())) for choice, mask in found] == [(0, 100 * 100), (2, 300 * 300)]
 
 
+def test_a_choice_that_runs_along_the_window_border_is_left_out_unless_it_is_the_only_one(monkeypatch):
+    n = field_taps.WINDOW_PX
+    small = np.zeros((n, n), bool)
+    small[400:600, 400:600] = True
+    touching = np.zeros((n, n), bool)
+    touching[0:300, 100:900] = True  # 800 px of the top row: 94 m, under the rule
+    cut = np.zeros((n, n), bool)
+    cut[0:600, :] = True  # the whole top row and 600 px down each side: 261 m on the border
+    assert round(field_taps.on_the_border_m(touching)) == 94 and round(field_taps.on_the_border_m(cut)) == 261
+    assert field_taps.without_edge_choices([(0, small), (1, touching), (2, cut)]) == ([(0, small), (1, touching)], 1)
+    # a field larger than the window: every choice is cut, so none is left out
+    assert field_taps.without_edge_choices([(2, cut)]) == ([(2, cut)], 0)
+
+    class WholeWindowThird(RecordedShapeModel):
+        def ask(self, window_array, taps, before):
+            masks, low = super().ask(window_array, taps, before)
+            masks[3] = True  # choice 2 is everything the model saw
+            return masks, low
+
+    s3, _ = _prepared_store(monkeypatch)
+    monkeypatch.setattr(field_taps, "_tap_model", lambda s3_, bucket: _ready(WholeWindowThird()))
+    found, left_out = asyncio.run(field_taps.outlines_and_left_out(s3, "b", "photo.tif", [_tap(60, 10)], None))
+    assert [o["choice"] for o in found] == [0, 1] and left_out == 1
+    # the choice that was not offered cannot be kept either
+    with pytest.raises(TapError):
+        asyncio.run(field_taps.keep(s3, "b", "photo.tif", [_tap(60, 10)], 2, "user-1"))
+
+
+async def _ready(model):
+    return model
+
+
 def test_the_part_under_a_tap_is_read_at_the_nearest_pixel():
     # Cyampirita field s05: the tap fell at (429.32, 635.77) and the field's outline began at row 636
     mask = np.zeros((field_taps.WINDOW_PX, field_taps.WINDOW_PX), bool)

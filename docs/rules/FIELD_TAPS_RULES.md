@@ -52,6 +52,10 @@ with up to two more taps ("this part too" / "not this part"), and keep it with i
    one caller at a time. Turned-down taps are counted for good; the latest 2,000 are kept in full.
 15. A manifest prepared with other settings, or a window missing from storage, reads as "not prepared", never as
    a server error. Who kept a field stays in the record and is not sent to the screen.
+16. A first-tap choice with 120 m or more of itself on the border of its window (`EDGE_CHOICE_M`) is left out:
+   there the window cut it, not the ground. The answer says how many were left out (`left_out`) and the screen says
+   so. Nothing is left out when no other choice remains, so a field larger than a window can still be outlined.
+   A rule for plots smaller than a window; a choice that was left out cannot be kept from one tap.
 
 ## What was measured (plans/PLAN_RWANDA_CROPS.md, 2026-11-12)
 
@@ -62,6 +66,7 @@ with up to two more taps ("this part too" / "not this part"), and keep it with i
 | Server timing | Light half in a throw-away container on the server, one thread | the model alone 0.18 s a tap (median); a whole first tap with this module's code (model, cleaning three outlines, shapes) 0.4 to 0.6 s on six fields |
 | 74 | Area of a first-tap outline (best of three, no correction) against a hand drawing, 20 exam fields | median area error 7.6%; within 5% on 9 of 20. A band of 2.17 m x perimeter / area holds 18 of 20 but is too wide to print (a third of the area at the median) |
 | 75 | Area of an outline after up to two correcting taps, through the app's own code, 26 exam fields | median area error 5.9%; within 5% on 11 of 26. A band of 1.44 m x perimeter / area holds 23 of 26 but is a fifth of the area at the median: still too wide to print |
+| 76 | Rule 16 on the three choices of a first tap, 26 exam fields (70 choices) | 12 choices left out; all 12 were unusable (IoU < 0.5) and 2 to 35 times the drawn field; no field lost its best choice. It catches 12 of 21 over-large choices; the rest took in a neighbour away from the border. On the 31 tuning fields: 15 left out, 14 unusable, one 0.6 ha field lost its best choice |
 
 Not measured: taps by a real person (the test placed them with a script from hand-drawn outlines), corners, ground
 that is not a field, any photo other than Cyampirita. The first correction made the outline worse on 6 of 26 fields

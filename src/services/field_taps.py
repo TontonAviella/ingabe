@@ -58,6 +58,7 @@ MAX_LINE_REACH_M = 500  # no corner of a hand-moved line may lie further than th
 MAX_TURNED_DOWN_ROWS = 2000  # turned-down taps kept in full; older ones stay in the count only
 MAX_LINE_POINTS = 600  # a hand-moved line with more points than this is refused
 SAME_OUTLINE = 0.9  # two choices that overlap this much are one outline shown twice; the later one is dropped
+EDGE_CHOICE_M = 120.0  # a first-tap choice with this much of itself on the window's border is left out (Test 76)
 SIMPLIFY_M = 0.25  # about two pixels of a window: corners stay, the staircase of pixels goes
 PREPARE_MODEL = "sam_vit_h_4b8939"  # the heavy half the stored windows must come from
 
@@ -214,6 +215,21 @@ def _distinct(choices: list[tuple[int, np.ndarray]]) -> list[tuple[int, np.ndarr
     return kept
 
 
+def on_the_border_m(mask: np.ndarray) -> float:
+    """How many metres of an outline lie on the outermost pixels of its window: there the window cut it, not the
+    ground."""
+    on_border = int(mask[0].sum()) + int(mask[-1].sum()) + int(mask[:, 0].sum()) + int(mask[:, -1].sum())
+    return on_border * WINDOW_M / mask.shape[0]
+
+
+def without_edge_choices(choices: list[tuple[int, np.ndarray]]) -> tuple[list[tuple[int, np.ndarray]], int]:
+    """The first-tap choices without those that run along the window's border, and how many were left out. Measured
+    on Cyampirita (Test 76): such a choice was a usable outline 0 times in 12 on the exam fields and once in 15 on
+    the tuning fields. A rule for plots smaller than a window, so nothing is left out when no other choice remains."""
+    inside = [(choice, mask) for choice, mask in choices if on_the_border_m(mask) < EDGE_CHOICE_M]
+    return (inside, len(choices) - len(inside)) if inside else (choices, 0)
+
+
 def outline_masks(model: TapModel, window_array: np.ndarray, taps: Sequence[tuple[float, float, int]],
                   pick: Optional[int]) -> list[tuple[int, np.ndarray]]:
     """The outlines for these taps as (choice number, mask). One tap: the model's three choices (0, 1, 2), fewer
@@ -342,10 +358,11 @@ async def grid(s3: Any, bucket: str, photo_key: str) -> Optional[Grid]:
         return None
 
 
-async def outlines(s3: Any, bucket: str, photo_key: str, taps: Sequence[Tap],
-                   pick: Optional[int]) -> list[dict[str, Any]]:
-    """The outlines for these taps: {"choice", "geometry", "area_ha"} each. TapError when the taps cannot be
-    answered (not prepared here, too many corrections, a correction with no pick)."""
+async def outlines_and_left_out(s3: Any, bucket: str, photo_key: str, taps: Sequence[Tap],
+                                pick: Optional[int]) -> tuple[list[dict[str, Any]], int]:
+    """The outlines for these taps, {"choice", "geometry", "area_ha"} each, and how many first-tap choices were left
+    out for running along the window's border. TapError when the taps cannot be answered (not prepared here, too
+    many corrections, a correction with no pick)."""
     prepared = await grid(s3, bucket, photo_key)
     if prepared is None:
         raise TapError("This photo is not prepared for outlines yet.")
@@ -353,13 +370,22 @@ async def outlines(s3: Any, bucket: str, photo_key: str, taps: Sequence[Tap],
     model = await _tap_model(s3, bucket)
     array = await _window_array(s3, bucket, photo_key, window)
     found = []
+    left_out = 0
     async with _model_work:
         masks = await asyncio.to_thread(outline_masks, model, array, placed, pick)
+        if len(placed) == 1:
+            masks, left_out = without_edge_choices(masks)
         for choice, mask in masks:
             outline = await asyncio.to_thread(outline_shape, prepared, window, mask)
             if outline is not None:
                 found.append({"choice": choice, **outline})
-    return found
+    return found, left_out
+
+
+async def outlines(s3: Any, bucket: str, photo_key: str, taps: Sequence[Tap],
+                   pick: Optional[int]) -> list[dict[str, Any]]:
+    """The outlines for these taps alone; see outlines_and_left_out."""
+    return (await outlines_and_left_out(s3, bucket, photo_key, taps, pick))[0]
 
 
 def moved_line(ring: Sequence[Sequence[float]], first_tap: Tap) -> dict[str, Any]:

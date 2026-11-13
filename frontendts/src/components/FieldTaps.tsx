@@ -39,6 +39,7 @@ const EMPTY: GeoJSON.FeatureCollection = { type: 'FeatureCollection', features: 
 interface Step {
   taps: Tap[];
   outlines: TapOutline[];
+  leftOut: number; // first-tap choices not offered: they ran along the edge of what was read here
 }
 
 // off: closed. first: waiting for the first tap, or showing its three outlines. review: one outline picked.
@@ -263,7 +264,8 @@ export function FieldTaps({
       const waiting = setTimeout(() => setSlow(true), 1200);
       const asked = round.current;
       try {
-        const { outlines } = await outlinesFor(layerId, taps, chosen);
+        const { outlines, left_out } = await outlinesFor(layerId, taps, chosen);
+        const leftOut = left_out ?? 0;
         if (asked !== round.current) return; // the reader closed or started again while this was on its way
         if (outlines.length === 0) {
           if (taps.length === 1) record(taps, null, 'no_outline');
@@ -274,7 +276,7 @@ export function FieldTaps({
           );
           if (taps.length === 1) return;
         }
-        setSteps((before) => (taps.length === 1 ? [{ taps, outlines }] : [...before, { taps, outlines }]));
+        setSteps((before) => (taps.length === 1 ? [{ taps, outlines, leftOut }] : [...before, { taps, outlines, leftOut }]));
         setMode(taps.length === 1 ? 'first' : 'review');
       } catch (error) {
         if (asked === round.current) setProblem((error as ServerError).message);
@@ -542,6 +544,12 @@ export function FieldTaps({
               <button type="button" className={plain} onClick={() => giveUp('none_of_these', 'first')}>
                 None of these
               </button>
+              {step.leftOut > 0 && (
+                <p className="m-0 w-full text-[12px] opacity-80">
+                  {step.leftOut === 1 ? 'A larger outline was' : `${step.leftOut} larger outlines were`} left out for running past the edge
+                  of what was read here. On the test photo such outlines were almost never a single field.
+                </p>
+              )}
             </div>
           )}
           {step && pick !== null && mode === 'move' && (

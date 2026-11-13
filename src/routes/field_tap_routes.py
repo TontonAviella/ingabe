@@ -84,10 +84,11 @@ async def outline_field_from_taps(body: TapsIn, layer: MapLayer = Depends(get_la
     """The outlines for these taps: up to three for one tap, one for a picked outline and its corrections."""
     key = await _photo_key(layer)
     try:
-        found = await field_taps.outlines(await get_async_s3_client(), get_bucket_name(), key, _taps(body), body.pick)
+        found, left_out = await field_taps.outlines_and_left_out(
+            await get_async_s3_client(), get_bucket_name(), key, _taps(body), body.pick)
     except field_taps.TapError as e:
         raise HTTPException(422, str(e)) from None
-    return {"outlines": found}
+    return {"outlines": found, "left_out": left_out}
 
 
 @router.post("/layer/{layer_id}/field-taps/kept", operation_id="keep_field_outline")

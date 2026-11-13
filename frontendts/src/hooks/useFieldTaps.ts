@@ -63,7 +63,8 @@ export function useFieldTapState(layerId: string | null) {
   });
 }
 
-export function outlinesFor(layerId: string, taps: Tap[], pick: number | null): Promise<{ outlines: TapOutline[] }> {
+/** left_out: first-tap choices the server did not offer because they ran along the edge of what was read. */
+export function outlinesFor(layerId: string, taps: Tap[], pick: number | null): Promise<{ outlines: TapOutline[]; left_out?: number }> {
   return sendJson(`${url(layerId)}/outline`, 'POST', { taps, pick });
 }
 
