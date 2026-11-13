@@ -328,12 +328,13 @@ describe('outlining a field by tapping it', () => {
     click(byButton('Not this part') as HTMLButtonElement);
     await vi.waitFor(() => expect(m.listening()).toBe(true));
     m.tap(30.4, -1.9);
-    await vi.waitFor(() => expect(m.listening()).toBe(false));
-    const signs = m
-      .drawn()
-      .features.filter((f) => f.properties?.kind === 'label' && ['+', '−'].includes(f.properties?.label))
-      .map((f) => f.properties?.label);
-    expect(signs).toEqual(['+', '−']);
+    // wait for the marks themselves: the crosshair goes as soon as the tap is sent, before the answer is drawn
+    const signs = () =>
+      m
+        .drawn()
+        .features.filter((f) => f.properties?.kind === 'label' && ['+', '−'].includes(f.properties?.label))
+        .map((f) => f.properties?.label);
+    await vi.waitFor(() => expect(signs()).toEqual(['+', '−']));
   });
 
   it('drops an answer that arrives after the reader closed the panel', async () => {

@@ -281,13 +281,26 @@ def test_a_hand_moved_corner_must_be_a_real_place_near_the_tap():
 
 def test_keeps_at_the_same_moment_are_all_kept_with_their_own_numbers(monkeypatch):
     s3, _ = _prepared_store(monkeypatch)
+    square = {"type": "Polygon", "coordinates": [[list(_corner(50, 0)), list(_corner(70, 0)), list(_corner(70, 20)),
+                                                   list(_corner(50, 20)), list(_corner(50, 0))]]}
+
+    async def ready_outlines(s3_, bucket, photo_key, taps, pick):  # no model work: all six reach the record at once
+        return [{"choice": choice, "geometry": square, "area_ha": 0.04} for choice in range(3)]
+
     read = s3.get_object
 
-    async def slow_read(Bucket, Key):  # storage answers after a pause, so two keeps really do overlap
-        found = await read(Bucket, Key)
-        await asyncio.sleep(0)
-        return found
+    async def slow_read(Bucket, Key):
+        # the kept record comes back after a pause, so every keep has read it before any of them writes. Without
+        # the per-photo guard they overwrite each other (checked on a copy with the guard taken out: the test fails)
+        found_ = None
+        try:
+            found_ = await read(Bucket, Key)
+        finally:
+            if Key == field_taps._kept_key("photo.tif"):
+                await asyncio.sleep(0.05)
+        return found_
 
+    monkeypatch.setattr(field_taps, "outlines", ready_outlines)
     monkeypatch.setattr(s3, "get_object", slow_read)
 
     async def both():
