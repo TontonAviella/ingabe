@@ -191,7 +191,7 @@ async def load(s3: Any, bucket: str, *, layer_id: str, name: str, bounds: Any, m
         west, south, east, north = analysis.bounds
         photos_here = await conn.fetchval(_PHOTOS_HERE_SQL, layer_id, west, south, east, north)
         reader = await reader_roles.role_in(conn, "agriculture", audience, user_id, org_id)
-        maps = await photo_plots.plot_maps(conn, layer_id, analysis.bounds)
+        maps = await photo_plots.plot_sources(conn, s3, bucket, layer_id, analysis.bounds, metadata)
         project_id = await project_of(conn, layer_id)
     records = await farm_records.load_records(s3, bucket, project_id) if project_id else []
     plots, plot_map, map_error = await photo_plots.plots_from_chosen_map(

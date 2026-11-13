@@ -65,3 +65,45 @@ async def test_only_the_readers_own_maps_can_be_a_photos_plots(auth_client):
     # A photo already set to the hexagons goes back to the plots Ingabe found.
     chosen = await photo_plots.plots_from_chosen_map(None, "", photo, {photo_plots.PLOT_MAP_KEY: hexagons}, "", "", maps)
     assert chosen == (None, None, None)
+
+
+def _square(west: float, south: float) -> dict:
+    return {"type": "Polygon", "coordinates": [[[west, south], [west + 0.001, south], [west + 0.001, south + 0.001],
+                                                [west, south + 0.001], [west, south]]]}
+
+
+@pytest.mark.anyio
+async def test_outlined_fields_are_the_plots_until_the_reader_chooses_otherwise(monkeypatch):
+    from src.services import drone_plots, field_taps
+    from src.services.test_farm_records import _FakeS3
+
+    s3, metadata = _FakeS3(), {"cog_key": "photo.tif"}
+    monkeypatch.setenv("FIELD_TAPS", "1")
+    assert await photo_plots.outlined_fields(s3, "b", metadata) is None  # nothing kept: nothing to choose
+
+    rows = [{"id": "a", "number": 3, "geometry": _square(30.42, -1.70)},
+            {"id": "b", "number": 7, "geometry": _square(30.43, -1.69)}]
+    s3.objects[field_taps._kept_key("photo.tif")] = json.dumps({"outlines": rows, "next_number": 8}).encode()
+    source, version = await photo_plots.outlined_fields(s3, "b", metadata)
+    assert (source.layer_id, source.name, source.shapes) == (photo_plots.FIELDS, photo_plots.FIELDS_NAME, 2)
+    own_map = (drone_plots.PlotMap(layer_id="Lmap", name="Farm map", shapes=4), "Lmap:v1")
+    maps = [(source, version), own_map]
+
+    # nothing chosen: the fields; a chosen map wins; "found" goes back to Ingabe's plots; a map that is gone, too
+    assert photo_plots.chosen_source(metadata, maps) == photo_plots.FIELDS
+    assert photo_plots.chosen_source({**metadata, photo_plots.PLOT_MAP_KEY: "Lmap"}, maps) == "Lmap"
+    assert photo_plots.chosen_source({**metadata, photo_plots.PLOT_MAP_KEY: photo_plots.FOUND}, maps) is None
+    assert photo_plots.chosen_source({**metadata, photo_plots.PLOT_MAP_KEY: "Lgone"}, maps) is None
+    assert photo_plots.chosen_source(metadata, [own_map]) is None
+
+    # each field is a plot under its own field number
+    plots = await photo_plots._field_plots(s3, "b", metadata)
+    assert [p.number for p in plots] == [3, 7] and plots[0].geometry.bounds[0] == pytest.approx(30.42)
+
+    # the version follows the fields: moving a line or removing a field makes a new plot set
+    rows[1]["geometry"] = _square(30.431, -1.69)
+    s3.objects[field_taps._kept_key("photo.tif")] = json.dumps({"outlines": rows, "next_number": 8}).encode()
+    assert (await photo_plots.outlined_fields(s3, "b", metadata))[1] != version
+
+    monkeypatch.delenv("FIELD_TAPS")
+    assert await photo_plots.outlined_fields(s3, "b", metadata) is None  # switch off: the fields are not a source
