@@ -3,8 +3,9 @@ outlines live in src/services/field_taps.py. Switch FIELD_TAPS (off: every route
 
 from __future__ import annotations
 
+import asyncio
 import logging
-from typing import Any, Optional
+from typing import Annotated, Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
@@ -33,7 +34,7 @@ class TapsIn(BaseModel):
     pick: Optional[int] = Field(default=None, ge=0, le=2, description="the chosen outline, needed to correct or keep")
 
 
-Corner = tuple[float, float]
+Corner = tuple[Annotated[float, Field(allow_inf_nan=False)], Annotated[float, Field(allow_inf_nan=False)]]
 
 
 class KeepIn(TapsIn):
@@ -111,7 +112,7 @@ async def measure_moved_field_line(body: MovedLineIn, layer: MapLayer = Depends(
     await _photo_key(layer)
     tap = field_taps.Tap(lon=body.first_tap.lon, lat=body.first_tap.lat, add=True)
     try:
-        return field_taps.moved_line(body.moved, tap)
+        return await asyncio.to_thread(field_taps.moved_line, body.moved, tap)
     except field_taps.TapError as e:
         raise HTTPException(422, str(e)) from None
 

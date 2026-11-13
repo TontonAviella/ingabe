@@ -260,6 +260,19 @@ def test_field_outlines_count_and_measure_the_plots(photo):
     assert answer["overlay"]["geojson"]["features"][0]["properties"]["label"] == "Plot 1 · 0.79 ha"
 
 
+def test_plots_that_are_the_readers_outlined_fields_are_called_that(photo):
+    fields = dataclasses.replace(_plot_set(), source=drone_plots.OUTLINED_FIELDS_NAME)
+    choice = drone_plots.PlotMap(layer_id=drone_plots.OUTLINED_FIELDS, name=drone_plots.OUTLINED_FIELDS_NAME, shapes=10)
+    here = drone_cards.Here(photos=1, plots=fields, plot_maps=(choice,), plot_map=drone_plots.OUTLINED_FIELDS)
+    answer = drone_cards.answer_card("field_outlines", _analysis(photo), "farmer", here)
+    assert answer["what"].startswith("You outlined 10 fields on this photo")
+    text = json.dumps(answer)
+    assert "Your map" not in text and "Fields you outlined on this photo by tapping" in text
+    options = {o["id"]: o for o in answer["choices"]["options"]}
+    assert options[drone_plots.OUTLINED_FIELDS]["selected"] is True and options["found"]["selected"] is False
+    assert options[drone_plots.OUTLINED_FIELDS]["detail"] == "Outlined by you on this photo · 10 fields"
+
+
 @pytest.mark.parametrize("audience", ["farmer", "insurer", "agronomist", "scientist"])
 def test_no_plot_card_talks_about_money(photo, audience):
     here = drone_cards.Here(photos=1, plots=_plot_set())
@@ -423,8 +436,6 @@ def test_while_open_soil_is_measured_the_problems_answer_says_so(photo):
 
 
 def _replace(here, spots):
-    import dataclasses
-
     return dataclasses.replace(here, spots=spots)
 
 

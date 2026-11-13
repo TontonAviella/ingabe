@@ -16,7 +16,7 @@ import pytest
 
 from src.database.pool import _build_postgres_url
 from src.dependencies.session import ServiceUserContext, verify_session_required
-from src.services import field_taps
+from src.services import field_taps, photo_plots
 from src.services.test_field_taps import CRS, GRID, NORTH, WEST, WINDOW_ARRAY, RecordedShapeModel, _tap
 from src.utils import get_bucket_name, get_s3_client
 from src.wsgi import app
@@ -225,3 +225,37 @@ async def test_a_photo_that_was_not_prepared_and_a_tower_project(client, photo, 
     tower = await photo(industry="telecom")
     _as(tower["owner"])
     assert (await client.get(f"/api/layer/{tower['layer']}/field-taps")).status_code == 404
+
+
+@pytest.mark.anyio
+async def test_kept_fields_can_be_chosen_as_the_photos_plots_or_set_aside(client, photo, taps_on):
+    ids = await photo()
+    _as(ids["owner"])
+    source = f"/api/layer/{ids['layer']}/plots/source"
+    taps = f"/api/layer/{ids['layer']}/field-taps"
+
+    async def chosen():
+        conn = await _admin()
+        try:
+            return await conn.fetchval("SELECT metadata->>$2 FROM map_layers WHERE layer_id = $1", ids["layer"],
+                                       photo_plots.PLOT_MAP_KEY)
+        finally:
+            await conn.close()
+
+    # no field kept yet: the fields are not a source that can be chosen
+    assert (await client.put(source, json={"source": photo_plots.FIELDS})).status_code == 400
+    kept = await client.post(f"{taps}/kept", json=_json(_tap(60, 10), pick=0))
+    assert kept.status_code == 200, kept.text
+    # with a field kept, "found" is remembered as a choice: with nothing chosen the fields would be used
+    assert (await client.put(source, json={"source": photo_plots.FOUND})).status_code == 200
+    assert await chosen() == photo_plots.FOUND
+    assert (await client.put(source, json={"source": photo_plots.FIELDS})).status_code == 200
+    assert await chosen() == photo_plots.FIELDS
+    # any other source is still looked up among the project's maps; this test photo has no outline on the map,
+    # so that lookup stops where it always did ("the photo's outline is not known yet") and nothing is stored
+    assert (await client.put(source, json={"source": "Lnotamap0000"})).status_code == 409
+    assert await chosen() == photo_plots.FIELDS
+    # once the last field is gone, choosing "found" clears the choice, as it did before fields existed
+    assert (await client.delete(f"{taps}/kept/{kept.json()['id']}")).status_code == 200
+    assert (await client.put(source, json={"source": photo_plots.FOUND})).status_code == 200
+    assert await chosen() is None

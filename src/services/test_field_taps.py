@@ -269,6 +269,65 @@ def test_a_kept_hand_moved_line_is_marked_and_keeps_the_models_outline_beside_it
     assert len(asyncio.run(field_taps.kept(s3, "b", "photo.tif"))) == 2
 
 
+def test_a_hand_moved_corner_must_be_a_real_place_near_the_tap():
+    square = [_corner(50, 0), _corner(70, 0), _corner(70, 20), _corner(50, 20)]
+    for bad in (float("nan"), float("inf"), 400.0):
+        with pytest.raises(field_taps.TapError, match="not a place on the map"):
+            field_taps.moved_line([(bad, square[0][1]), *square[1:]], _tap(60, 10))
+    far = _corner(50, -(field_taps.MAX_LINE_REACH_M + 50))  # a corner over 500 m north of the tap
+    with pytest.raises(field_taps.TapError, match="from the spot you tapped"):
+        field_taps.moved_line([far, *square[1:]], _tap(60, 10))
+
+
+def test_keeps_at_the_same_moment_are_all_kept_with_their_own_numbers(monkeypatch):
+    s3, _ = _prepared_store(monkeypatch)
+    read = s3.get_object
+
+    async def slow_read(Bucket, Key):  # storage answers after a pause, so two keeps really do overlap
+        found = await read(Bucket, Key)
+        await asyncio.sleep(0)
+        return found
+
+    monkeypatch.setattr(s3, "get_object", slow_read)
+
+    async def both():
+        return await asyncio.gather(*[field_taps.keep(s3, "b", "photo.tif", [_tap(60, 10)], n % 3, f"user-{n}")
+                                      for n in range(6)])
+
+    rows = asyncio.run(both())
+    kept = asyncio.run(field_taps.kept(s3, "b", "photo.tif"))
+    assert len(kept) == 6 and sorted(r["number"] for r in rows) == [1, 2, 3, 4, 5, 6]
+    assert sorted(k["id"] for k in kept) == sorted(r["id"] for r in rows)
+
+
+def test_who_kept_a_field_is_recorded_but_not_shown_on_the_screen(monkeypatch):
+    s3, _ = _prepared_store(monkeypatch)
+    asyncio.run(field_taps.keep(s3, "b", "photo.tif", [_tap(60, 10)], 0, "user-1"))
+    assert asyncio.run(field_taps.kept(s3, "b", "photo.tif"))[0]["kept_by"] == "user-1"
+    assert "kept_by" not in asyncio.run(field_taps.state(s3, "b", "photo.tif"))["kept"][0]
+
+
+def test_turned_down_taps_are_counted_for_good_and_kept_in_full_up_to_a_limit(monkeypatch):
+    s3, _ = _prepared_store(monkeypatch)
+    monkeypatch.setattr(field_taps, "MAX_TURNED_DOWN_ROWS", 3)
+    for n in range(5):
+        asyncio.run(field_taps.turn_down(s3, "b", "photo.tif", [_tap(60, 10)], None, "closed", f"user-{n}"))
+    rows = asyncio.run(field_taps.turned_down(s3, "b", "photo.tif"))
+    assert [r["turned_down_by"] for r in rows] == ["user-2", "user-3", "user-4"]  # the latest three, in full
+    assert asyncio.run(field_taps.state(s3, "b", "photo.tif"))["turned_down"] == 5  # all five still counted
+
+
+def test_a_refused_manifest_or_a_missing_window_reads_as_not_prepared(monkeypatch):
+    s3, _ = _prepared_store(monkeypatch)
+    # a window named in the manifest but gone from storage: said in plain words, not a server error
+    with pytest.raises(field_taps.TapError, match="not prepared"):
+        asyncio.run(field_taps.outlines(s3, "b", "photo.tif", [_tap(0, 0)], None))
+    record = json.loads(s3.objects[field_taps.manifest_key("photo.tif")])
+    record["step_m"] = 30
+    s3.objects[field_taps.manifest_key("photo.tif")] = json.dumps(record).encode()
+    assert asyncio.run(field_taps.state(s3, "b", "photo.tif"))["prepared"] is False
+
+
 def test_a_tap_that_was_not_kept_is_recorded_with_its_reason(monkeypatch):
     s3, _ = _prepared_store(monkeypatch)
     assert asyncio.run(field_taps.state(s3, "b", "photo.tif"))["turned_down"] == 0

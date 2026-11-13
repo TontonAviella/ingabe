@@ -27,6 +27,8 @@ import asyncio
 import hashlib
 import io
 import json
+import logging
+import math
 import os
 import threading
 import uuid
@@ -45,10 +47,14 @@ from shapely.ops import transform as reproject
 
 from src.services import ground_area, stored_files
 
+logger = logging.getLogger(__name__)
+
 WINDOW_M = 120.0
 WINDOW_PX = 1024
 STEP_M = 60.0
 MAX_CORRECTIONS = 2
+MAX_LINE_REACH_M = 500  # no corner of a hand-moved line may lie further than this from the first tap
+MAX_TURNED_DOWN_ROWS = 2000  # turned-down taps kept in full; older ones stay in the count only
 MAX_LINE_POINTS = 600  # a hand-moved line with more points than this is refused
 SAME_OUTLINE = 0.9  # two choices that overlap this much are one outline shown twice; the later one is dropped
 SIMPLIFY_M = 0.25  # about two pixels of a window: corners stay, the staircase of pixels goes
@@ -188,7 +194,9 @@ class TapModel:
 def _part_under(mask: np.ndarray, col: float, row: float) -> Optional[np.ndarray]:
     """The connected part of an outline under the first tap, holes filled; None when the tap is not on it."""
     labelled, _ = ndimage.label(mask)
-    part = labelled[int(round(row)), int(round(col))]  # the nearest pixel, as measured: a small field can be lost by one
+    # the nearest pixel, as measured: a small field can be lost by one; a tap on the very last half pixel stays inside
+    r, c = min(int(round(row)), mask.shape[0] - 1), min(int(round(col)), mask.shape[1] - 1)
+    part = labelled[r, c]
     if part == 0:
         return None
     return ndimage.binary_fill_holes(labelled == part)
@@ -258,6 +266,11 @@ def _turned_down_key(photo_key: str) -> str:
 
 _model: Optional[TapModel] = None
 _model_lock = threading.Lock()
+# One process serves the app (UVICORN_WORKERS=1), so these in-process guards are enough; with more workers the
+# kept and turned-down records would need a guard in storage itself.
+_model_fetch = asyncio.Lock()  # one download of the tap model at a time
+_model_work = asyncio.Semaphore(2)  # outlines being computed at once: the server has no GPU and other work to do
+_record_locks: dict[str, asyncio.Lock] = {}  # per photo: read, change and write a record as one step
 _windows: OrderedDict[str, np.ndarray] = OrderedDict()
 
 
@@ -266,16 +279,18 @@ async def _tap_model(s3: Any, bucket: str) -> TapModel:
     global _model
     if _model is not None:
         return _model
-    if not (os.path.exists(_TAP_MODEL_PATH) and stored_files.file_sha256(_TAP_MODEL_PATH) == TAP_MODEL_SHA256):
-        response = await s3.get_object(Bucket=bucket, Key=TAP_MODEL_KEY)
-        async with response["Body"] as body:
-            raw = await body.read()
+
+    def on_disk() -> bool:
+        return os.path.exists(_TAP_MODEL_PATH) and stored_files.file_sha256(_TAP_MODEL_PATH) == TAP_MODEL_SHA256
+
+    def write(raw: bytes) -> None:
         if hashlib.sha256(raw).hexdigest() != TAP_MODEL_SHA256:
             raise RuntimeError(f"the tap model in storage ({TAP_MODEL_KEY}) does not match its sha256")
         os.makedirs(os.path.dirname(_TAP_MODEL_PATH), exist_ok=True)
-        with open(_TAP_MODEL_PATH + ".part", "wb") as f:
+        part = f"{_TAP_MODEL_PATH}.{uuid.uuid4().hex[:8]}.part"
+        with open(part, "wb") as f:
             f.write(raw)
-        os.replace(_TAP_MODEL_PATH + ".part", _TAP_MODEL_PATH)
+        os.replace(part, _TAP_MODEL_PATH)
 
     def load() -> TapModel:
         global _model
@@ -284,7 +299,13 @@ async def _tap_model(s3: Any, bucket: str) -> TapModel:
                 _model = TapModel(_TAP_MODEL_PATH)
             return _model
 
-    return await asyncio.to_thread(load)
+    async with _model_fetch:  # hashing, writing and loading all happen off the event loop, one caller at a time
+        if _model is None and not await asyncio.to_thread(on_disk):
+            response = await s3.get_object(Bucket=bucket, Key=TAP_MODEL_KEY)
+            async with response["Body"] as body:
+                raw = await body.read()
+            await asyncio.to_thread(write, raw)
+        return await asyncio.to_thread(load)
 
 
 async def _window_array(s3: Any, bucket: str, photo_key: str, window: tuple[int, int]) -> np.ndarray:
@@ -292,9 +313,14 @@ async def _window_array(s3: Any, bucket: str, photo_key: str, window: tuple[int,
     if key in _windows:
         _windows.move_to_end(key)
         return _windows[key]
-    response = await s3.get_object(Bucket=bucket, Key=key)
+    try:
+        response = await s3.get_object(Bucket=bucket, Key=key)
+    except s3.exceptions.NoSuchKey:
+        logger.error("field taps: window %s is in the manifest but not in storage", key)
+        raise TapError("This part of the photo is not prepared for outlines.") from None
     async with response["Body"] as body:
-        array = np.load(io.BytesIO(await body.read()), allow_pickle=False)
+        raw = await body.read()
+    array = await asyncio.to_thread(lambda: np.load(io.BytesIO(raw), allow_pickle=False))
     if array.shape != (1, 256, 64, 64):
         raise RuntimeError(f"stored window {key} has shape {array.shape}, not (1, 256, 64, 64)")
     _windows[key] = array
@@ -306,7 +332,13 @@ async def _window_array(s3: Any, bucket: str, photo_key: str, window: tuple[int,
 async def grid(s3: Any, bucket: str, photo_key: str) -> Optional[Grid]:
     """The photo's prepared grid, or None when the photo was not prepared."""
     record = await stored_files.load_json(s3, bucket, manifest_key(photo_key))
-    return None if record is None else grid_of(record)
+    if record is None:
+        return None
+    try:
+        return grid_of(record)
+    except ValueError as e:  # prepared with other settings: never measured, so the photo counts as not prepared
+        logger.warning("field taps: the manifest of %s is refused: %s", photo_key, e)
+        return None
 
 
 async def outlines(s3: Any, bucket: str, photo_key: str, taps: Sequence[Tap],
@@ -319,12 +351,13 @@ async def outlines(s3: Any, bucket: str, photo_key: str, taps: Sequence[Tap],
     window, placed = place(prepared, taps)
     model = await _tap_model(s3, bucket)
     array = await _window_array(s3, bucket, photo_key, window)
-    masks = await asyncio.to_thread(outline_masks, model, array, placed, pick)
     found = []
-    for choice, mask in masks:
-        outline = await asyncio.to_thread(outline_shape, prepared, window, mask)
-        if outline is not None:
-            found.append({"choice": choice, **outline})
+    async with _model_work:
+        masks = await asyncio.to_thread(outline_masks, model, array, placed, pick)
+        for choice, mask in masks:
+            outline = await asyncio.to_thread(outline_shape, prepared, window, mask)
+            if outline is not None:
+                found.append({"choice": choice, **outline})
     return found
 
 
@@ -332,6 +365,15 @@ def moved_line(ring: Sequence[Sequence[float]], first_tap: Tap) -> dict[str, Any
     """An outline whose line the reader moved by hand, as {"geometry", "area_ha"}: `ring` is its corners as
     (longitude, latitude), closed or not. TapError when it is not one simple shape around the first tap."""
     points = [(float(p[0]), float(p[1])) for p in ring]
+    # A corner must be a real place, near the tapped field: a hand-moved line adjusts an outline, it does not
+    # draw a new one somewhere else.
+    reach_lat = MAX_LINE_REACH_M / 111_000
+    reach_lon = reach_lat / max(math.cos(math.radians(first_tap.lat)), 0.01)
+    for lon, lat in points:
+        if not (math.isfinite(lon) and math.isfinite(lat) and -180 <= lon <= 180 and -90 <= lat <= 90):
+            raise TapError("A corner of the outline is not a place on the map.")
+        if abs(lon - first_tap.lon) > reach_lon or abs(lat - first_tap.lat) > reach_lat:
+            raise TapError(f"A corner is more than {MAX_LINE_REACH_M} m from the spot you tapped. Start again with a new tap.")
     if len(points) > 1 and points[0] == points[-1]:
         points = points[:-1]
     if not 3 <= len(points) <= MAX_LINE_POINTS:
@@ -400,22 +442,24 @@ async def keep(s3: Any, bucket: str, photo_key: str, taps: Sequence[Tap], pick: 
            "corrections": len(taps) - 1, "by_hand": False, "kept_by": user_id,
            "kept_at": datetime.now(timezone.utc).isoformat(timespec="seconds")}
     if moved is not None:
-        own = moved_line(moved, taps[0])
+        own = await asyncio.to_thread(moved_line, moved, taps[0])
         row.update(by_hand=True, model_geometry=row["geometry"], model_area_ha=row["area_ha"],
                    model_overlap=_overlap(row["geometry"], own["geometry"]), **own)
-    rows, number = await _kept_record(s3, bucket, photo_key)
-    row.update(number=number, centre=_centre(row["geometry"]))
-    await _store_kept(s3, bucket, photo_key, rows + [row], number + 1)
+    async with _record_locks.setdefault(photo_key, asyncio.Lock()):  # two keeps at once: neither is lost
+        rows, number = await _kept_record(s3, bucket, photo_key)
+        row.update(number=number, centre=_centre(row["geometry"]))
+        await _store_kept(s3, bucket, photo_key, rows + [row], number + 1)
     return row
 
 
 async def remove(s3: Any, bucket: str, photo_key: str, outline_id: str) -> bool:
     """Take a kept outline off the photo; False when there is none with this id."""
-    rows, following = await _kept_record(s3, bucket, photo_key)
-    left = [row for row in rows if row["id"] != outline_id]
-    if len(left) == len(rows):
-        return False
-    await _store_kept(s3, bucket, photo_key, left, following)
+    async with _record_locks.setdefault(photo_key, asyncio.Lock()):
+        rows, following = await _kept_record(s3, bucket, photo_key)
+        left = [row for row in rows if row["id"] != outline_id]
+        if len(left) == len(rows):
+            return False
+        await _store_kept(s3, bucket, photo_key, left, following)
     return True
 
 
@@ -424,10 +468,18 @@ async def remove(s3: Any, bucket: str, photo_key: str, outline_id: str) -> bool:
 TURN_DOWN_REASONS = ("none_of_these", "started_again", "closed", "no_outline")
 
 
-async def turned_down(s3: Any, bucket: str, photo_key: str) -> list[dict[str, Any]]:
-    """The taps on this photo that ended without a kept outline, oldest first."""
+async def _turned_down_record(s3: Any, bucket: str, photo_key: str) -> tuple[list[dict[str, Any]], int]:
+    """(the turned-down taps still kept in full, oldest first; how many there have been in all)."""
     record = await stored_files.load_json(s3, bucket, _turned_down_key(photo_key))
-    return [] if record is None else list(record["taps"])
+    if record is None:
+        return [], 0
+    rows = list(record["taps"])
+    return rows, max(int(record.get("total", 0)), len(rows))
+
+
+async def turned_down(s3: Any, bucket: str, photo_key: str) -> list[dict[str, Any]]:
+    """The taps on this photo that ended without a kept outline, oldest first (the latest MAX_TURNED_DOWN_ROWS)."""
+    return (await _turned_down_record(s3, bucket, photo_key))[0]
 
 
 async def turn_down(s3: Any, bucket: str, photo_key: str, taps: Sequence[Tap], pick: Optional[int], reason: str,
@@ -439,9 +491,11 @@ async def turn_down(s3: Any, bucket: str, photo_key: str, taps: Sequence[Tap], p
     row = {"id": uuid.uuid4().hex[:12], "taps": [{"lon": t.lon, "lat": t.lat, "add": t.add} for t in taps],
            "pick": pick, "corrections": len(taps) - 1, "reason": reason, "turned_down_by": user_id,
            "turned_down_at": datetime.now(timezone.utc).isoformat(timespec="seconds")}
-    rows = await turned_down(s3, bucket, photo_key)
-    await s3.put_object(Bucket=bucket, Key=_turned_down_key(photo_key),
-                        Body=json.dumps({"taps": rows + [row]}).encode(), ContentType="application/json")
+    async with _record_locks.setdefault(photo_key, asyncio.Lock()):
+        rows, total = await _turned_down_record(s3, bucket, photo_key)
+        body = {"taps": (rows + [row])[-MAX_TURNED_DOWN_ROWS:], "total": total + 1}
+        await s3.put_object(Bucket=bucket, Key=_turned_down_key(photo_key), Body=json.dumps(body).encode(),
+                            ContentType="application/json")
     return row
 
 
@@ -450,5 +504,7 @@ async def state(s3: Any, bucket: str, photo_key: str) -> dict[str, Any]:
     prepared = await grid(s3, bucket, photo_key)
     return {"prepared": prepared is not None, "windows": len(prepared.windows) if prepared else 0,
             "max_corrections": MAX_CORRECTIONS, "measured": MEASURED,
-            "kept": await kept(s3, bucket, photo_key) if prepared else [],
-            "turned_down": len(await turned_down(s3, bucket, photo_key)) if prepared else 0}
+            # who kept a field stays in the record; the screen does not need it and a viewer is not shown it
+            "kept": [{k: v for k, v in row.items() if k != "kept_by"}
+                     for row in await kept(s3, bucket, photo_key)] if prepared else [],
+            "turned_down": (await _turned_down_record(s3, bucket, photo_key))[1] if prepared else 0}

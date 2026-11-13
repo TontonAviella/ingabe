@@ -336,6 +336,50 @@ describe('outlining a field by tapping it', () => {
     expect(signs).toEqual(['+', '−']);
   });
 
+  it('drops an answer that arrives after the reader closed the panel', async () => {
+    const server = fakeServer(true);
+    const m = fakeMap();
+    mount(<FieldTaps map={m.map} layers={[photo]} hiddenLayerIDs={[]} />);
+    await vi.waitFor(() => expect(byButton('Outline a field')).not.toBeNull());
+    click(byButton('Outline a field') as HTMLButtonElement);
+    await vi.waitFor(() => expect(m.listening()).toBe(true));
+    // the outline answer is held back until the reader has closed the panel
+    const gate: { release: (() => void) | null } = { release: null };
+    const held = new Promise<void>((resolve) => {
+      gate.release = resolve;
+    });
+    const answer = fetchMock.getMockImplementation() as NonNullable<ReturnType<typeof fetchMock.getMockImplementation>>;
+    fetchMock.mockImplementation(async (input, init) => {
+      if (String(input).endsWith('/outline')) await held;
+      return answer(input, init);
+    });
+    m.tap(30.1, -1.9);
+    await vi.waitFor(() => expect(byText('Working…')).not.toBeNull());
+    click(byButton('Close') as HTMLButtonElement);
+    await vi.waitFor(() => expect(byButton('Outline a field')).not.toBeNull());
+    gate.release?.();
+    await new Promise((r) => setTimeout(r, 30));
+    expect(byButton('Outline a field')).not.toBeNull(); // still closed: the late answer did not reopen it
+    expect(byButton(/^A · /)).toBeNull();
+    expect(server.turnedDown).toEqual([]); // nothing had been offered, so nothing was turned down
+  });
+
+  it('says why when a field could not be removed', async () => {
+    const server = fakeServer(true);
+    server.kept.push({ id: 'a', number: 4, centre: [30.5, -1.5], geometry: square(1), area_ha: 0.18, corrections: 0, kept_at: 'then' });
+    const m = fakeMap();
+    mount(<FieldTaps map={m.map} layers={[photo]} hiddenLayerIDs={[]} />);
+    await vi.waitFor(() => expect(byButton(/^1 field outlined · show$/)).not.toBeNull());
+    m.clickOn('a');
+    await vi.waitFor(() => expect(byText('Field 4 · 0.18 ha')).not.toBeNull());
+    click(byButton('Remove') as HTMLButtonElement);
+    await vi.waitFor(() => expect(byText('Remove Field 4? Its number will not be used again.')).not.toBeNull());
+    // the fake server knows no DELETE route, so it answers 404 "Not Found"
+    click(byButton('Remove') as HTMLButtonElement);
+    await vi.waitFor(() => expect(byText('Not Found')).not.toBeNull());
+    expect(byText('Field 4 · 0.18 ha')).not.toBeNull(); // the field is still there and still selected
+  });
+
   it('tells the server each time offered outlines are not kept, with the reason', async () => {
     const server = fakeServer(true);
     const m = fakeMap();

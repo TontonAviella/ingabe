@@ -41,6 +41,15 @@ with up to two more taps ("this part too" / "not this part"), and keep it with i
    still wins, and "Found by Ingabe" in the card's "Plots from" choice goes back to Ingabe's own plots. Keeping,
    removing or moving a field makes a new plot set, so checks made on the earlier set do not carry over.
 
+13. A hand-moved corner must be a real place within 500 m of the first tap; anything else is refused in plain
+   words. Kept and turned-down records are read, changed and written as one step per photo, so two keeps at the
+   same moment are both kept, each with its own number. This guard is in the app's one process
+   (`UVICORN_WORKERS=1`); more workers would need a guard in storage itself.
+14. At most two outlines are computed at once, and the tap model is fetched, checked and loaded off the event loop,
+   one caller at a time. Turned-down taps are counted for good; the latest 2,000 are kept in full.
+15. A manifest prepared with other settings, or a window missing from storage, reads as "not prepared", never as
+   a server error. Who kept a field stays in the record and is not sent to the screen.
+
 ## What was measured (plans/PLAN_RWANDA_CROPS.md, 2026-11-12)
 
 | Test | What | Result |

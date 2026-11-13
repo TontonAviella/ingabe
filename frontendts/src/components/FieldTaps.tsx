@@ -54,7 +54,8 @@ const ha = (value: number) => {
   if (m2 < 10) return 'under 10 m²';
   return `${m2 >= 100 ? Math.round(m2 / 10) * 10 : Math.round(m2)} m²`;
 };
-const link = 'inline-flex min-h-9 cursor-pointer items-center px-1 text-[12px] text-fg-muted underline';
+// 44 px tall under a finger, 36 px with a mouse
+const link = 'inline-flex min-h-11 cursor-pointer items-center px-2 text-[12.5px] text-fg-soft underline sm:min-h-9';
 
 const closed = (ring: Corner[]): GeoJSON.Polygon => ({ type: 'Polygon', coordinates: [[...ring, ring[0]]] });
 
@@ -220,6 +221,8 @@ export function FieldTaps({
   const [ringArea, setRingArea] = useState<number | null>(null);
   const ringRef = useRef<Corner[] | null>(null);
   ringRef.current = ring;
+  // Each start-again makes earlier answers stale: one that arrives late is dropped, not shown.
+  const round = useRef(0);
 
   const prepared = !!state.data?.prepared;
   const kept = state.data?.kept ?? [];
@@ -231,6 +234,7 @@ export function FieldTaps({
   useDrawn(map, prepared ? shown : EMPTY);
 
   const startAgain = useCallback((next: Mode) => {
+    round.current += 1;
     setSteps([]);
     setPick(null);
     setProblem(null);
@@ -257,8 +261,10 @@ export function FieldTaps({
       setBusy(true);
       setProblem(null);
       const waiting = setTimeout(() => setSlow(true), 1200);
+      const asked = round.current;
       try {
         const { outlines } = await outlinesFor(layerId, taps, chosen);
+        if (asked !== round.current) return; // the reader closed or started again while this was on its way
         if (outlines.length === 0) {
           if (taps.length === 1) record(taps, null, 'no_outline');
           setProblem(
@@ -271,7 +277,7 @@ export function FieldTaps({
         setSteps((before) => (taps.length === 1 ? [{ taps, outlines }] : [...before, { taps, outlines }]));
         setMode(taps.length === 1 ? 'first' : 'review');
       } catch (error) {
-        setProblem((error as ServerError).message);
+        if (asked === round.current) setProblem((error as ServerError).message);
       } finally {
         clearTimeout(waiting);
         setSlow(false);
@@ -341,6 +347,7 @@ export function FieldTaps({
     const onUp = () => {
       if (!pull) return;
       pull = null;
+      setRingArea(null); // not measured yet: Keep waits for the server's answer on this line
       measureMovedLine(layerId, firstTap, corners)
         .then((answer) => {
           setRingArea(answer.area_ha);
@@ -395,7 +402,7 @@ export function FieldTaps({
     setMode(steps.length > 1 ? 'review' : 'first');
   };
 
-  const button = 'min-h-9 px-3 rounded-[12px] text-[13px] font-semibold cursor-pointer disabled:opacity-50';
+  const button = 'min-h-11 px-3 rounded-[12px] text-[13px] font-semibold cursor-pointer disabled:opacity-50 sm:min-h-9';
   const plain = `${button} bg-panel-2 text-fg hover:bg-panel-3`;
   const strong = `${button} bg-caramel text-panel hover:bg-caramel-hi`;
   const picked = pick !== null ? (step?.outlines.find((o) => o.choice === pick) ?? null) : null;
@@ -432,7 +439,9 @@ export function FieldTaps({
                     onSuccess: () => {
                       setSelectedId(null);
                       setRemoving(false);
+                      setProblem(null);
                     },
+                    onError: (e) => setProblem(e.message),
                   })
                 }
               >
@@ -442,6 +451,11 @@ export function FieldTaps({
                 Keep
               </button>
             </div>
+          )}
+          {problem && (
+            <p role="alert" className="m-0 text-[13px] text-caramel-hi">
+              {problem}
+            </p>
           )}
           {onAskSage && (
             <form
@@ -458,7 +472,7 @@ export function FieldTaps({
               }}
             >
               <input
-                className="min-h-9 flex-1 rounded-[12px] border border-white/10 bg-panel-2 px-3 text-[13px] text-fg"
+                className="min-h-11 sm:min-h-9 flex-1 rounded-[12px] border border-white/10 bg-panel-2 px-3 text-[13px] text-fg"
                 placeholder={`Ask Sage about Field ${selected.number}…`}
                 aria-label={`Ask Sage about Field ${selected.number}`}
                 value={question}
@@ -476,7 +490,7 @@ export function FieldTaps({
           {kept.length ? (
             <button
               type="button"
-              className="inline-flex min-h-9 cursor-pointer items-center text-[13px] text-fg-soft underline"
+              className="inline-flex min-h-11 sm:min-h-9 cursor-pointer items-center text-[13px] text-fg-soft underline"
               onClick={() => setListed(!listed)}
             >
               {kept.length} field{kept.length === 1 ? '' : 's'} outlined · {listed ? 'hide' : 'show'}
@@ -490,7 +504,7 @@ export function FieldTaps({
         </div>
       ) : (
         <>
-          <p className="m-0 text-[14px] font-semibold">
+          <p role="status" aria-live="polite" className="m-0 text-[14px] font-semibold">
             {busy
               ? slow
                 ? 'Getting the outline ready. The first tap after a restart can take about 10 seconds.'
@@ -584,7 +598,11 @@ export function FieldTaps({
           {step && pick !== null && !canCorrect && !ring && mode !== 'move' && (
             <p className="m-0 text-[12px] text-fg-muted">No corrections left for this field. Keep it, go back, or start again.</p>
           )}
-          {problem && <p className="m-0 text-[13px] text-caramel-hi">{problem}</p>}
+          {problem && (
+            <p role="alert" className="m-0 text-[13px] text-caramel-hi">
+              {problem}
+            </p>
+          )}
           <div className="flex items-center justify-between gap-3">
             <button type="button" className={link} onClick={() => giveUp('started_again', 'first')}>
               Start again
@@ -601,7 +619,7 @@ export function FieldTaps({
             <li key={k.id} className="text-[13px]">
               <button
                 type="button"
-                className="flex min-h-9 w-full cursor-pointer items-center text-left underline-offset-2 hover:underline"
+                className="flex min-h-11 sm:min-h-9 w-full cursor-pointer items-center text-left underline-offset-2 hover:underline"
                 onClick={() => {
                   setSelectedId(k.id);
                   setRemoving(false);
@@ -618,8 +636,8 @@ export function FieldTaps({
         </ul>
       )}
       {open && (
-        <details className="text-[11.5px] leading-snug text-fg-muted">
-          <summary className="cursor-pointer">What was measured, and what was not</summary>
+        <details className="text-[12.5px] leading-snug text-fg-soft">
+          <summary className="flex min-h-11 sm:min-h-9 cursor-pointer items-center">What was measured, and what was not</summary>
           <p className="m-0 mt-1">{state.data?.measured}</p>
         </details>
       )}
