@@ -34,7 +34,7 @@ import re
 from typing import Any, Callable, Optional
 
 from src.database.pool import get_request_industry
-from src.services import tower_inspection
+from src.services import field_taps, tower_inspection
 
 INDUSTRIES: dict[str, dict[str, str]] = {
     "agriculture": {"label": "Agriculture", "note": "Farms, plots and crops"},
@@ -110,6 +110,7 @@ CAPABILITIES: dict[str, frozenset[str]] = {
     # --- Automatic jobs on a drone photo ---
     "drone_first_look": AGRICULTURE,  # Sage's first message about green cover and plots
     "drone_cards": AGRICULTURE,  # the question cards: plots, crops, bare ground, the crop survey
+    "field_taps": AGRICULTURE,  # tap a field on a drone photo for its outline and area (switch FIELD_TAPS)
     "district_ndvi_map": AGRICULTURE,  # district vegetation colours and NDVI in the admin outlines tooltip
     # --- Telecom towers: the work on a photo inspection's photos (switch TOWERS) ---
     # marks, the finder's suggestions and their review (/api/towers/...): tower parts in Telecom, maize plants in
@@ -126,6 +127,7 @@ SWITCHES: dict[str, Callable[[], bool]] = {
     name: tower_inspection.enabled
     for name in ("tower_inspection", "tower_cards", "get_tower_inspection_findings", "tower_photos_needing_review")
 }
+SWITCHES["field_taps"] = field_taps.enabled
 
 
 def check_industry(industry: str) -> str:

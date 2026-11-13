@@ -89,6 +89,8 @@ services:
       # Example finder: mark a few objects in a drone photo, YOLOE-11s finds the rest
       # (src/services/example_finder.py). Off: its routes answer 404.
       - EXAMPLE_FINDER=${EXAMPLE_FINDER:-0}
+      # Field outlines from taps on a prepared drone photo (src/services/field_taps.py); off: its routes answer 404.
+      - FIELD_TAPS=${FIELD_TAPS:-0}
       # Torch threads in the example finder's own process (src/services/example_finder_model.py).
       - FINDER_THREADS=${FINDER_THREADS:-4}
       # Trained detectors and SAM 3 through Roboflow's hosted API for the targets that have one
