@@ -646,3 +646,41 @@ def test_a_hand_moved_outline_larger_than_two_hectares_is_refused():
     big = [_corner(60, 10), _corner(260, 10), _corner(260, 210), _corner(60, 210)]  # 200 m x 200 m = 4 ha
     with pytest.raises(TapError, match="at most 2 ha"):
         field_taps.moved_line([(c[0], c[1]) for c in big], _tap(70, 20))
+
+
+def test_one_outline_that_cannot_be_measured_does_not_hold_up_the_fields_after_it(tmp_path, monkeypatch):
+    path = _photo_file(tmp_path)
+    geometry, area = _field_on_photo()
+    covers = field_taps.green_covers(path, [("bad", {"type": "Polygon", "coordinates": "nonsense"}, area),
+                                            ("good", geometry, area)])
+    assert covers["bad"] == {"share": None, "why_not": "This field's outline could not be measured."}
+    assert covers["good"]["share"] == pytest.approx(0.5, abs=0.02)
+    # a photo whose pixels are not square at the measured size is not read at all
+    import rasterio
+    from rasterio.transform import Affine
+
+    squashed = str(tmp_path / "squashed.tif")
+    with rasterio.open(squashed, "w", driver="GTiff", width=40, height=40, count=3, dtype="uint8", crs=CRS,
+                       transform=Affine(0.0325, 0, WEST + 100, 0, -0.0001, NORTH - 100)) as out:
+        out.write(np.zeros((3, 40, 40), np.uint8))
+    assert "3 cm pixels" in field_taps.green_cover(squashed, geometry, area)["why_not"]
+
+
+def test_a_keep_does_not_wait_behind_a_background_batch_for_its_green_cover(monkeypatch):
+    s3, _ = _prepared_store(monkeypatch)
+    _fresh_cover_jobs(monkeypatch)
+    _mark_checked(s3)
+    monkeypatch.setattr(field_taps, "COVER_KEEP_WAIT_S", 0.05)
+    monkeypatch.setattr(field_taps, "green_cover", lambda url, geometry, area: {"share": 0.42, "why_not": None})
+
+    async def keep_while_busy():
+        busy = asyncio.Semaphore(1)
+        monkeypatch.setattr(field_taps, "_cover_work", busy)
+        await busy.acquire()  # a background batch is reading the photo
+        try:
+            return await field_taps.keep(s3, "b", "photo.tif", "layer-1", [_tap(60, 10)], 0, "user-1", cog_url="photo-url")
+        finally:
+            busy.release()
+
+    row = asyncio.run(keep_while_busy())
+    assert row["number"] == 1 and "green_cover" not in row  # kept at once; the background job measures it

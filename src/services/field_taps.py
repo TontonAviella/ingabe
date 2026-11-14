@@ -45,6 +45,7 @@ import rasterio
 from rasterio.features import geometry_mask, shapes
 from rasterio.windows import from_bounds
 from scipy import ndimage
+from shapely.errors import ShapelyError
 from shapely.geometry import Point, Polygon, mapping, shape
 from shapely.ops import transform as reproject
 
@@ -281,6 +282,7 @@ COVER_MAX_SPAN_M = 150.0  # the box around a field that is read: a thin outline 
 COVER_PIXEL_M = (0.025, 0.045)  # the test photo's pixels are 3.25 cm
 COVER_BATCH = 20  # fields measured between two writes of the record, in the background
 COVER_RETRY_S = 300  # after a photo could not be read, wait this long before trying again
+COVER_KEEP_WAIT_S = 2.0  # a keep waits this long for its turn to read the photo; past it, the background job measures
 COVER_NOT_CHECKED = (
     "Not measured on this photo yet: the colour rule was checked on one photo, and how green leaves look depends "
     "on the camera and the day."
@@ -300,9 +302,11 @@ def _cover_from_pixels(rgb: np.ndarray, valid: np.ndarray) -> Optional[float]:
     `rgb` is (3, rows, cols) of 0..255."""
     if not valid.any():
         return None
-    mean = ndimage.uniform_filter(rgb.astype(np.float32) / 255.0, size=(1, 3, 3), mode="nearest")
-    green = (2 * mean[1] - mean[0] - mean[2]) > GREEN_THRESHOLD
-    return float(green[valid].mean())
+    # excess green of each pixel first, in whole numbers, then its 3 x 3 mean: the mean of a sum is the sum of the
+    # means, so this is the measured rule with a third of the memory (one band is filtered, not three)
+    excess = 2 * rgb[1].astype(np.int16) - rgb[0] - rgb[2]
+    mean = ndimage.uniform_filter(excess.astype(np.float32), size=3, mode="nearest")
+    return float((mean[valid] > GREEN_THRESHOLD * 255.0).mean())
 
 
 def _not_measured(why: str) -> dict[str, Any]:
@@ -326,8 +330,9 @@ def _cover_on(ds: Any, geometry: dict[str, Any], area_ha: float) -> dict[str, An
         return by_size
     if ds.crs is None or not ds.crs.is_projected:
         return _not_measured("Not measured: this photo's coordinates are not in metres.")
-    pixel = abs(ds.transform.a)
-    if ds.count < 3 or not COVER_PIXEL_M[0] <= pixel <= COVER_PIXEL_M[1]:
+    across, down = abs(ds.transform.a), abs(ds.transform.e)
+    square = ds.transform.b == 0 and ds.transform.d == 0 and all(COVER_PIXEL_M[0] <= p <= COVER_PIXEL_M[1] for p in (across, down))
+    if ds.count < 3 or not square:
         return _not_measured("Not measured at this photo's detail: it was tested on 3 cm pixels.")
     outline = reproject(Transformer.from_crs("EPSG:4326", ds.crs, always_xy=True).transform, shape(geometry))
     inner = outline.buffer(-COVER_INSET_M)
@@ -359,9 +364,18 @@ def green_cover(cog_url: str, geometry: dict[str, Any], area_ha: float) -> dict[
 
 
 def green_covers(cog_url: str, fields: Sequence[tuple[str, dict[str, Any], float]]) -> dict[str, dict[str, Any]]:
-    """green_cover for several fields, each (id, geometry, area_ha), with the photo opened once."""
+    """green_cover for several fields, each (id, geometry, area_ha), with the photo opened once. A field whose own
+    outline cannot be measured gets that as its reason, so it does not hold up the fields after it; a photo that
+    cannot be read raises, to be tried again later."""
+    covers = {}
     with rasterio.Env(**GDAL_HTTP_TIMEOUTS), rasterio.open(cog_url) as ds:
-        return {field_id: _cover_on(ds, geometry, area_ha) for field_id, geometry, area_ha in fields}
+        for field_id, geometry, area_ha in fields:
+            try:
+                covers[field_id] = _cover_on(ds, geometry, area_ha)
+            except (ValueError, TypeError, KeyError, ShapelyError):  # this outline, not the photo
+                logger.exception("field taps: the outline of field %s cannot be measured for green cover", field_id)
+                covers[field_id] = _not_measured("This field's outline could not be measured.")
+    return covers
 
 
 def _prefix(photo_key: str) -> str:
@@ -615,7 +629,7 @@ async def _fill_green_cover(s3: Any, bucket: str, photo_key: str, layer_id: str,
                 return
             async with _cover_work:
                 covers = await asyncio.to_thread(
-                    green_covers, cog_url, [(row["id"], row["geometry"], row["area_ha"]) for row in todo])
+                    green_covers, cog_url, [(row["id"], row["geometry"], row.get("area_ha", 0.0)) for row in todo])
             async with _lock(photo_key, layer_id):  # a keep or remove meanwhile is not lost
                 rows, following = await _kept_record(s3, bucket, photo_key, layer_id)
                 for row in rows:
@@ -666,10 +680,15 @@ async def keep(s3: Any, bucket: str, photo_key: str, layer_id: str, taps: Sequen
         row.update(by_hand=True, model_geometry=row["geometry"], model_area_ha=row["area_ha"],
                    model_overlap=_overlap(row["geometry"], own["geometry"]), **own)
     if cog_url is not None and await cover_checked(s3, bucket, photo_key):
-        try:
-            async with _cover_work:
+        try:  # not behind a whole background batch: past a short wait the field is kept and measured later
+            await asyncio.wait_for(_cover_work.acquire(), COVER_KEEP_WAIT_S)
+            try:
                 cover = await asyncio.to_thread(green_cover, cog_url, row["geometry"], row["area_ha"])
+            finally:
+                _cover_work.release()
             row["green_cover"] = _stamped(cover)
+        except asyncio.TimeoutError:
+            pass
         except Exception:  # the field is kept either way; its cover is measured later, in the background
             logger.exception("field taps: green cover of a newly kept field could not be read")
     async with _lock(photo_key, layer_id):  # two keeps at once: neither is lost

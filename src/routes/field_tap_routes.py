@@ -76,7 +76,8 @@ async def get_field_taps(layer: MapLayer = Depends(get_layer),
     """Whether this photo is prepared for outlines, what was measured, and the outlines kept on it."""
     key = await _photo_key(layer)
     s3, bucket = await get_async_s3_client(), get_bucket_name()
-    cog_url = await photo_context.cog_url(s3, bucket, layer.metadata_dict or {})
+    # a link that outlasts the background job measuring green cover, as the other background photo readers use
+    cog_url = await photo_context.cog_url(s3, bucket, layer.metadata_dict or {}, photo_context.LONG_URL_SECONDS)
     return await field_taps.state(s3, bucket, key, layer.layer_id, cog_url)
 
 

@@ -26,7 +26,7 @@ from src.services.remote_cog_layer import validate_remote_cog_bounds
 from src.services.shown_maps import SHOWN_MAPS_SQL
 from src.structures import async_read_conn
 
-_LONG_URL_SECONDS = 4 * 3600  # the plot search and the survey read the photo for many minutes
+LONG_URL_SECONDS = 4 * 3600  # the plot search and the survey read the photo for many minutes
 
 # Distinct photos (by uploaded file) in the layer's project whose outline overlaps this layer's.
 _PHOTOS_HERE_SQL = """
@@ -100,7 +100,7 @@ async def _found_plots(s3: Any, bucket: str, metadata: dict[str, Any], *, start:
     plots = await drone_plots.load_plots(s3, bucket, key)
     job = drone_plots.job(key)
     if start and plots is None and (job is None or (retry_failed and job.state == "failed")):
-        job = drone_plots.start_finding(s3, bucket, key, await cog_url(s3, bucket, metadata, _LONG_URL_SECONDS))
+        job = drone_plots.start_finding(s3, bucket, key, await cog_url(s3, bucket, metadata, LONG_URL_SECONDS))
     return plots, (None if plots is not None else job)
 
 
@@ -111,7 +111,7 @@ async def _survey(s3: Any, bucket: str, metadata: dict[str, Any], plots: drone_p
     survey = await drone_vision.load_survey(s3, bucket, key)
     job = drone_vision.job(key)
     if start and survey is None and (job is None or (retry_failed and job.state == "failed")):
-        job = drone_vision.start_survey(s3, bucket, key, await cog_url(s3, bucket, metadata, _LONG_URL_SECONDS),
+        job = drone_vision.start_survey(s3, bucket, key, await cog_url(s3, bucket, metadata, LONG_URL_SECONDS),
                                         plots, place, scope)
     return survey, (None if survey is not None else job)
 
