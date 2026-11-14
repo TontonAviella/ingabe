@@ -125,17 +125,18 @@ function fakeMap() {
     },
     /** True while the screen waits for a tap on the photo (it shows the crosshair then). */
     listening: () => canvas.style.cursor === 'crosshair',
-    /** Press at one place, drag to another, let go. True when the press took hold of the line (the map held still). */
-    pull: (from: [number, number], to: [number, number]) => {
+    /** Press at the first place, draw through the others, let go. True when the press took hold of the line (the
+     * map held still). */
+    draw: (...path: [number, number][]) => {
       const preventDefault = vi.fn();
       const event = (c: [number, number]) => ({
         lngLat: { lng: c[0], lat: c[1] },
-        point: { x: from[0] * 1000, y: -from[1] * 1000 },
+        point: { x: c[0] * 1000, y: -c[1] * 1000 },
         preventDefault,
       });
-      for (const fn of handlers.get('mousedown') ?? []) fn(event(from));
-      for (const fn of handlers.get('mousemove') ?? []) fn(event(to));
-      for (const fn of handlers.get('mouseup') ?? []) fn(event(to));
+      for (const fn of handlers.get('mousedown') ?? []) fn(event(path[0]));
+      for (const c of path.slice(1)) for (const fn of handlers.get('mousemove') ?? []) fn(event(c));
+      for (const fn of handlers.get('mouseup') ?? []) fn(event(path[path.length - 1]));
       return preventDefault.mock.calls.length > 0;
     },
     /** A click on the map, on the kept field with this id or on bare ground (null). */
@@ -212,7 +213,7 @@ describe('outlining a field by tapping it', () => {
     expect(server.turnedDown).toEqual([]);
   });
 
-  it('lets the reader pull the line of the picked outline, and keeps it marked as moved by hand', async () => {
+  it('lets the reader draw the true edge over the picked outline, undo a stroke, and keeps it marked as moved by hand', async () => {
     const server = fakeServer(true);
     const m = fakeMap();
     mount(<FieldTaps map={m.map} layers={[photo]} hiddenLayerIDs={[]} />);
@@ -224,47 +225,85 @@ describe('outlining a field by tapping it', () => {
     click(byButton(/^A · /) as HTMLButtonElement); // the square from (30, -2) to (31, -1)
     await vi.waitFor(() => expect(byButton('Move the line')).not.toBeNull());
     click(byButton('Move the line') as HTMLButtonElement);
-    await vi.waitFor(() => expect(byText('Pull the line to the true edge of the field.')).not.toBeNull());
+    await vi.waitFor(() => expect(byText('Draw along the true edge: start on the line and end on the line.')).not.toBeNull());
     const has = (ring: number[][], lng: number, lat: number) =>
       ring.some((c) => Math.abs(c[0] - lng) < 1e-9 && Math.abs(c[1] - lat) < 1e-9);
+    expect((byButton('Undo last') as HTMLButtonElement).disabled).toBe(true);
 
     // a press away from the line moves nothing and leaves the map free to pan
-    expect(m.pull([30.5, -1.5], [30.6, -1.5])).toBe(false);
+    expect(m.draw([30.5, -1.5], [30.6, -1.5])).toBe(false);
     expect(server.measured).toEqual([]);
 
-    // pull the south-east corner east: the map holds still, the line bends there, the server measures it
-    expect(m.pull([31, -2], [31.5, -2])).toBe(true);
+    // draw a curve out from the east side and back to it: the map holds still, the curve takes the place of that
+    // stretch of the side, the rest of the outline stays, and the server measures the new line
+    expect(m.draw([31, -1.7], [31.1, -1.65], [31.2, -1.5], [31.1, -1.35], [31, -1.3])).toBe(true);
     await vi.waitFor(() => expect(server.measured).toHaveLength(1));
     const moved = server.measured[0].moved;
-    expect(has(moved, 31.5, -2)).toBe(true); // the grabbed corner went all the way
-    expect(has(moved, 30, -1)).toBe(true); // the far corner stayed
-    expect(moved.some((c) => c[0] > 31.01 && c[0] < 31.49)).toBe(true); // its neighbours went part of the way
+    expect(has(moved, 31.2, -1.5) && has(moved, 31.1, -1.65) && has(moved, 31.1, -1.35)).toBe(true); // the curve as drawn
+    for (const [lng, lat] of [
+      [30, -2],
+      [31, -2],
+      [31, -1],
+      [30, -1],
+    ])
+      expect(has(moved, lng, lat)).toBe(true); // every corner stayed
     expect(server.measured[0].first_tap.lon).toBe(30.1);
     await vi.waitFor(() => expect(byText('0.42 ha')).not.toBeNull());
 
+    // a stroke that cuts a corner off keeps the side of it the reader first tapped
+    m.draw([30.3, -2], [30.3, -1.7], [30, -1.7]);
+    await vi.waitFor(() => expect(server.measured).toHaveLength(2));
+    const corner = server.measured[1].moved;
+    expect(has(corner, 30, -2) && has(corner, 30.3, -1.7)).toBe(true); // the tapped corner, cut along the stroke
+    expect(has(corner, 31, -1)).toBe(false);
+
+    // "Undo last" takes back one stroke, and the server measures the line that is back
+    click(byButton('Undo last') as HTMLButtonElement);
+    await vi.waitFor(() => expect(server.measured).toHaveLength(3));
+    expect(server.measured[2].moved).toEqual(moved);
+
     // a line the server refuses cannot be kept, and its reason is shown word for word
-    m.pull([30, -2], [41, -2]);
+    m.draw([31, -1.9], [41, -1.85], [31, -1.8]);
     await vi.waitFor(() => expect(byText('The line crosses itself. Move that corner back.')).not.toBeNull());
     click(byButton('Done') as HTMLButtonElement);
     await vi.waitFor(() => expect((byButton('Keep') as HTMLButtonElement).disabled).toBe(true));
     // corrections by tap are for the model's outline, not for a hand-moved one
     expect((byButton('This part too') as HTMLButtonElement).disabled).toBe(true);
 
-    // Back drops the hand-moved line and returns the outline as the model drew it
+    // Back drops the hand-drawn line and returns the outline as the model drew it
     click(byButton('Back') as HTMLButtonElement);
     await vi.waitFor(() => expect(byText('Your field: 0.10 ha')).not.toBeNull());
 
     click(byButton('Move the line') as HTMLButtonElement);
-    await vi.waitFor(() => expect(byText('Pull the line to the true edge of the field.')).not.toBeNull());
-    m.pull([31, -1], [31.25, -0.75]);
-    await vi.waitFor(() => expect(server.measured).toHaveLength(3));
+    await vi.waitFor(() => expect(byText('Draw along the true edge: start on the line and end on the line.')).not.toBeNull());
+    m.draw([30.4, -1], [30.5, -0.8], [30.6, -1]);
+    await vi.waitFor(() => expect(server.measured).toHaveLength(5));
     click(byButton('Done') as HTMLButtonElement);
     await vi.waitFor(() => expect(byText('Your field: 0.42 ha · line moved by hand')).not.toBeNull());
     click(byButton('Keep') as HTMLButtonElement);
     await vi.waitFor(() => expect(server.kept).toHaveLength(1));
-    expect(has((server.kept[0] as KeptOutline & { moved: number[][] }).moved, 31.25, -0.75)).toBe(true);
+    expect(has((server.kept[0] as KeptOutline & { moved: number[][] }).moved, 30.5, -0.8)).toBe(true);
     click((await vi.waitFor(() => byButton(/^1 field outlined · show$/))) as HTMLButtonElement);
     await vi.waitFor(() => expect(byText(/Field 1 · 0\.42 ha · by hand/)).not.toBeNull());
+  });
+
+  it('folds the panel to its one line of buttons and opens it again', async () => {
+    fakeServer(true);
+    const m = fakeMap();
+    localStorage.removeItem('ingabe.fieldTapsFolded');
+    mount(<FieldTaps map={m.map} layers={[photo]} hiddenLayerIDs={[]} />);
+    await vi.waitFor(() => expect(byButton('Outline a field')).not.toBeNull());
+    click(byButton('Outline a field') as HTMLButtonElement);
+    await vi.waitFor(() => expect(m.listening()).toBe(true));
+    expect(byText(MEASURED)).not.toBeNull();
+    click(byButton('Fold the panel') as HTMLButtonElement);
+    await vi.waitFor(() => expect(byText(MEASURED)).toBeNull());
+    expect(byText('Tap inside the field.')).not.toBeNull(); // what to do stays
+    m.tap(30.1, -1.9);
+    await vi.waitFor(() => expect(byButton(/^A · /)).not.toBeNull()); // and so do the choices
+    click(byButton('Show the whole panel') as HTMLButtonElement);
+    await vi.waitFor(() => expect(byText(MEASURED)).not.toBeNull());
+    expect(byButton('Close')).not.toBeNull();
   });
 
   it('names a kept field by its number and size when it is clicked, and sends a question about it to Sage', async () => {
