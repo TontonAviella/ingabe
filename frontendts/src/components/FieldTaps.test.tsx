@@ -258,7 +258,8 @@ describe('outlining a field by tapping it', () => {
     const moved = server.measured[0].moved;
     expect(has(moved, 31.1, -1.5)).toBe(true); // the pressed place went where the finger went
     expect(east(moved)).toBeCloseTo(31.1, 6); // and nothing went further
-    expect(has(moved, 30, -2) && has(moved, 30, -1)).toBe(true); // the west side's corners are exactly where they were
+    // the west side's corners are exactly where they were, to the last digit
+    expect(moved.some((c) => c[0] === 30 && c[1] === -2) && moved.some((c) => c[0] === 30 && c[1] === -1)).toBe(true);
     expect(server.measured[0].first_tap.lon).toBe(30.1);
     await vi.waitFor(() => expect(byText('0.42 ha')).not.toBeNull());
 

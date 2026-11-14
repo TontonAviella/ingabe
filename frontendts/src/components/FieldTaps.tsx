@@ -391,7 +391,10 @@ export function FieldTaps({
       if (Math.hypot(e.point.x - pull.grab.x, e.point.y - pull.grab.y) < PULL_START_PX) return; // a press, not yet a pull
       const next = pulled(pull.base, pull.grab, e.point, pull.keep);
       if (!next) return; // this far the pull would leave the tapped spot outside: the last good line stays
+      const { base, before } = pull;
       pull.now = capped(next, MAX_CORNERS).map((p) => {
+        const kept = base.indexOf(p); // a corner the pull did not reach keeps its own place, to the last digit
+        if (kept >= 0) return before[kept];
         const { lng, lat } = map.unproject([p.x, p.y]);
         return [lng, lat] as Corner;
       });
