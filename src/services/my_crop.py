@@ -40,6 +40,7 @@ from shapely.geometry import Point
 from shapely.prepared import prep
 
 from src.services import plant_counts, plant_finder, stored_files
+from src.services.gdal_http import GDAL_HTTP_TIMEOUTS
 
 logger = logging.getLogger(__name__)
 
@@ -149,7 +150,8 @@ def prepare(cog_url: str, feature: dict[str, Any], s3: Any, bucket: str, photo_k
     """Make and keep the parts of every square of the field that has none yet; blocking, run it in a thread. `s3`
     is a synchronous boto3 client. The look model is loaded for the job and let go after it (about 900 MB while
     it runs)."""
-    with rasterio.open(cog_url) as ds:
+    # with time limits: a read that stalls would hold the one place in the queue for good
+    with rasterio.Env(**GDAL_HTTP_TIMEOUTS), rasterio.open(cog_url) as ds:
         placed = plant_finder.layout(ds, feature)
         todo = [key for key in placed.squares if not _has_square(s3, bucket, photo_key, *key)]
         done = len(placed.squares) - len(todo)
@@ -173,7 +175,7 @@ def answer(cog_url: str, feature: dict[str, Any], s3: Any, bucket: str, photo_ke
            crop_taps: Sequence[tuple[float, float]], other_taps: Sequence[tuple[float, float]]) -> dict[str, Any]:
     """The reader's crop in one field from the kept parts; blocking, run it in a thread. Taps are (lon, lat).
     NotReady when a square has no parts yet; TapProblem when a tap cannot be used."""
-    with rasterio.open(cog_url) as ds:
+    with rasterio.Env(**GDAL_HTTP_TIMEOUTS), rasterio.open(cog_url) as ds:
         placed = plant_finder.layout(ds, feature)
         to_photo = Transformer.from_crs("EPSG:4326", ds.crs, always_xy=True).transform
         to_wgs84 = Transformer.from_crs(ds.crs, "EPSG:4326", always_xy=True).transform
@@ -273,6 +275,9 @@ async def _prepare(key: str, cog_url: str, feature: dict[str, Any], s3: Any, buc
     except Exception:
         logger.exception("only my crop: the field could not be read")
         job["error"] = "The photo could not be read for this field. Try again in a moment."
+    except BaseException:  # stopped (the app is shutting down): never left looking as if it were still working
+        job["error"] = "Reading this field was stopped. Try again."
+        raise
     else:
         if _jobs.get(key) is job:
             del _jobs[key]
