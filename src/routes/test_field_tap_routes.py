@@ -143,6 +143,7 @@ async def test_a_tap_is_outlined_corrected_kept_and_removed(client, photo, taps_
     assert three.status_code == 200, three.text
     assert [o["choice"] for o in three.json()["outlines"]] == [0, 1, 2]
     assert three.json()["outlines"][0]["geometry"]["type"] == "Polygon"
+    assert three.json()["left_out"] == 0  # none of these choices runs along the window's border
 
     no_pick = await client.post(f"{base}/outline", json=_json(_tap(60, 10), _tap(70, 10)))
     assert no_pick.status_code == 422 and "Pick one" in no_pick.json()["detail"]
@@ -153,7 +154,12 @@ async def test_a_tap_is_outlined_corrected_kept_and_removed(client, photo, taps_
     kept = await client.post(f"{base}/kept", json=_json(_tap(60, 10), _tap(70, 10), pick=0))
     assert kept.status_code == 200, kept.text
     assert kept.json()["area_ha"] == corrected.json()["outlines"][0]["area_ha"] and kept.json()["corrections"] == 1
-    assert kept.json()["kept_by"] == ids["owner"]
+    # who kept it stays in the record: the answer to the keep is what the screen is shown, as in the state
+    assert "kept_by" not in kept.json()
+    # this photo is not marked as one the green rule was checked on: the field says so, and nothing is measured
+    shown = (await client.get(base)).json()
+    assert shown["cover_measured"] == field_taps.COVER_MEASURED and shown["cover_filling"] is False
+    assert shown["kept"][0]["green_cover"] == {"share": None, "why_not": field_taps.COVER_NOT_CHECKED}
     assert [k["id"] for k in (await client.get(base)).json()["kept"]] == [kept.json()["id"]]
 
     square = [[t.lon, t.lat] for t in (_tap(50, 0), _tap(72, 0), _tap(72, 20), _tap(50, 20))]
@@ -170,7 +176,7 @@ async def test_a_tap_is_outlined_corrected_kept_and_removed(client, photo, taps_
 
     turned = await client.post(f"{base}/turned-down", json={**_json(_tap(60, 10)), "reason": "none_of_these"})
     assert turned.status_code == 200, turned.text
-    assert turned.json()["reason"] == "none_of_these" and turned.json()["turned_down_by"] == ids["owner"]
+    assert turned.json()["reason"] == "none_of_these" and "turned_down_by" not in turned.json()
     assert (await client.post(f"{base}/turned-down", json={**_json(_tap(60, 10)), "reason": "bored"})).status_code == 422
     state = (await client.get(base)).json()
     assert state["turned_down"] == 1 and len(state["kept"]) == 1

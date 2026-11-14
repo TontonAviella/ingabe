@@ -434,7 +434,7 @@ export function FieldTaps({
               </button>
             )}
           </div>
-          {selected.green_cover?.why_not && <p className="m-0 text-[12px] opacity-80">Green cover: {selected.green_cover.why_not}</p>}
+          {selected.green_cover?.why_not && <p className="m-0 text-[12px] text-fg-muted">Green cover: {selected.green_cover.why_not}</p>}
           {removing && (
             <div className="flex flex-wrap items-center gap-2">
               <span className="text-[13px]">Remove Field {selected.number}? Its number will not be used again.</span>
@@ -551,7 +551,7 @@ export function FieldTaps({
                 None of these
               </button>
               {step.leftOut > 0 && (
-                <p className="m-0 w-full text-[12px] opacity-80">
+                <p className="m-0 w-full text-[12px] text-fg-muted">
                   {step.leftOut === 1 ? 'A larger outline was' : `${step.leftOut} larger outlines were`} left out for running past the edge
                   of what was read here. On the test photo such outlines were almost never a single field.
                 </p>

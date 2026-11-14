@@ -49,7 +49,7 @@ SELECT l.layer_id, l.name, l.feature_count, l.last_edited
 """
 
 
-_fields_version: dict[str, str] = {}  # per photo: the version of the reader's outlined fields last measured
+_fields_version: dict[str, str] = {}  # per photo layer: the version of the reader's outlined fields last measured
 
 
 def photo_key(metadata: dict[str, Any]) -> str:
@@ -74,12 +74,14 @@ async def plot_maps(conn: Any, layer_id: str, bounds: list[float]) -> list[tuple
              f"{r['layer_id']}:{r['last_edited'].isoformat() if r['last_edited'] else ''}") for r in rows]
 
 
-async def outlined_fields(s3: Any, bucket: str, metadata: dict[str, Any]) -> Optional[tuple[drone_plots.PlotMap, str]]:
-    """(source, version) for the fields the reader outlined on this photo, or None when there are none or the
-    FIELD_TAPS switch is off. The version changes when a field is kept, removed or its line moved."""
+async def outlined_fields(s3: Any, bucket: str, layer_id: str,
+                          metadata: dict[str, Any]) -> Optional[tuple[drone_plots.PlotMap, str]]:
+    """(source, version) for the fields the reader outlined on this photo layer, or None when there are none or the
+    FIELD_TAPS switch is off. The version changes when a field is kept, removed or its line moved. The fields
+    belong to the layer, not to the stored image copies of it share."""
     if not field_taps.enabled():
         return None
-    rows = await field_taps.kept(s3, bucket, photo_key(metadata))
+    rows = await field_taps.kept(s3, bucket, photo_key(metadata), layer_id)
     if not rows:
         return None
     said = json.dumps([[row["id"], row["number"], row["geometry"]] for row in rows], sort_keys=True)
@@ -91,7 +93,7 @@ async def plot_sources(conn: Any, s3: Any, bucket: str, layer_id: str, bounds: l
                        metadata: dict[str, Any]) -> list[tuple[drone_plots.PlotMap, str]]:
     """Every source of plots the reader can choose for this photo besides Ingabe's own: their outlined fields
     first, then the polygon maps of the project that cover the photo."""
-    fields = await outlined_fields(s3, bucket, metadata)
+    fields = await outlined_fields(s3, bucket, layer_id, metadata)
     return ([fields] if fields else []) + await plot_maps(conn, layer_id, bounds)
 
 
@@ -102,9 +104,9 @@ def chosen_source(metadata: dict[str, Any], maps: list[tuple[drone_plots.PlotMap
     return wanted if wanted != FOUND and any(m.layer_id == wanted for m, _ in maps) else None
 
 
-async def _field_plots(s3: Any, bucket: str, metadata: dict[str, Any]) -> list[drone_plots.MapPlot]:
+async def _field_plots(s3: Any, bucket: str, layer_id: str, metadata: dict[str, Any]) -> list[drone_plots.MapPlot]:
     """The reader's outlined fields as plots; each keeps its field number as its plot number."""
-    rows = await field_taps.kept(s3, bucket, photo_key(metadata))
+    rows = await field_taps.kept(s3, bucket, photo_key(metadata), layer_id)
     return [drone_plots.MapPlot(shape(row["geometry"]), number=row["number"]) for row in rows]
 
 
@@ -120,14 +122,15 @@ async def plots_from_chosen_map(
     plot_map, version = chosen
     if plot_map.layer_id == FIELDS:
         # every keep or remove makes a new version; the one before it is measured plots nobody reads any more
-        before = _fields_version.get(photo_key(metadata))
+        mine = f"{photo_key(metadata)}|{layer_id}"  # per photo layer: copies of a photo keep their own fields
+        before = _fields_version.get(mine)
         if before and before != version:
             await drone_plots.forget_map_plots(s3, bucket, photo_key(metadata), before)
-        _fields_version[photo_key(metadata)] = version
+        _fields_version[mine] = version
     try:
         plots = await drone_plots.load_map_plots(
             s3, bucket, photo_key(metadata), version, cog_url, plot_map.name,
-            (lambda: _field_plots(s3, bucket, metadata)) if plot_map.layer_id == FIELDS
+            (lambda: _field_plots(s3, bucket, layer_id, metadata)) if plot_map.layer_id == FIELDS
             else (lambda: _map_plots(user_id, plot_map.layer_id)))
     except Exception as exc:  # the cards say the map could not be read and use the plots Ingabe found
         logger.exception("plot map %s could not be read for %s", plot_map.layer_id, layer_id)
@@ -139,7 +142,7 @@ async def current_plots(s3: Any, bucket: str, layer_id: str, bounds: Optional[li
                         user_id: str, cog_url: str) -> Optional[drone_plots.PlotSet]:
     """The photo's plots as the cards use them: from the chosen plot map, else the reader's outlined fields, else
     those Ingabe found (None if not yet)."""
-    fields = await outlined_fields(s3, bucket, metadata)
+    fields = await outlined_fields(s3, bucket, layer_id, metadata)
     maps = [fields] if fields else []
     if metadata.get(PLOT_MAP_KEY) not in (None, FIELDS, FOUND) and bounds:
         async with async_read_conn("drone_plot_maps", user_id=user_id) as conn:

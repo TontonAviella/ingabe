@@ -185,7 +185,7 @@ async def choose_drone_plot_source(
     """Use the reader's own plot map for this photo's plots, or go back to the plots Ingabe found."""
     metadata = _photo_ready(layer)
     s3 = await get_async_s3_client()
-    fields = await photo_plots.outlined_fields(s3, get_bucket_name(), metadata)
+    fields = await photo_plots.outlined_fields(s3, get_bucket_name(), layer.layer_id, metadata)
     if choice.source == photo_plots.FOUND and fields is None:
         sql, args = "UPDATE map_layers SET metadata = metadata - $2::text WHERE layer_id = $1", (layer.layer_id, photo_plots.PLOT_MAP_KEY)
     else:
@@ -329,7 +329,8 @@ async def check_drone_plot(
         raise HTTPException(404, "This photo is not in a project")
     try:
         checks = await field_checks.add_check(s3, get_bucket_name(), project_id,
-                                              field_checks.checks_set_id(photo_plots.photo_key(metadata), plots),
+                                              field_checks.checks_set_id(photo_plots.photo_key(metadata), plots,
+                                                                         layer.layer_id),
                                               number, check.crop)
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from None

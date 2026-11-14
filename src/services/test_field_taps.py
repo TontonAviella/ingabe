@@ -168,10 +168,10 @@ def test_a_choice_that_runs_along_the_window_border_is_left_out_unless_it_is_the
     assert [o["choice"] for o in found] == [0, 1] and left_out == 1
     # the choice that was not offered cannot be kept, nor corrected and then kept
     with pytest.raises(TapError):
-        asyncio.run(field_taps.keep(s3, "b", "photo.tif", [_tap(60, 10)], 2, "user-1"))
+        asyncio.run(field_taps.keep(s3, "b", "photo.tif", "layer-1", [_tap(60, 10)], 2, "user-1"))
     with pytest.raises(TapError, match="not offered"):
-        asyncio.run(field_taps.keep(s3, "b", "photo.tif", [_tap(60, 10), _tap(70, 10)], 2, "user-1"))
-    assert asyncio.run(field_taps.keep(s3, "b", "photo.tif", [_tap(60, 10), _tap(70, 10)], 1, "user-1"))["pick"] == 1
+        asyncio.run(field_taps.keep(s3, "b", "photo.tif", "layer-1", [_tap(60, 10), _tap(70, 10)], 2, "user-1"))
+    assert asyncio.run(field_taps.keep(s3, "b", "photo.tif", "layer-1", [_tap(60, 10), _tap(70, 10)], 1, "user-1"))["pick"] == 1
 
 
 async def _ready(model):
@@ -225,7 +225,7 @@ def _prepared_store(monkeypatch) -> tuple[_FakeS3, RecordedShapeModel]:
 
 def test_a_photo_that_was_not_prepared_says_so(monkeypatch):
     s3 = _FakeS3()
-    state = asyncio.run(field_taps.state(s3, "b", "other.tif"))
+    state = asyncio.run(field_taps.state(s3, "b", "other.tif", "layer-1"))
     assert state["prepared"] is False and state["kept"] == [] and state["measured"] == field_taps.MEASURED
     with pytest.raises(TapError, match="not prepared"):
         asyncio.run(field_taps.outlines(s3, "b", "other.tif", [_tap(60, 10)], None))
@@ -237,36 +237,36 @@ def test_kept_outlines_are_computed_here_and_can_be_removed(monkeypatch):
     assert [o["choice"] for o in three] == [0, 1, 2]
     assert three[0]["area_ha"] < three[1]["area_ha"] < three[2]["area_ha"]
 
-    row = asyncio.run(field_taps.keep(s3, "b", "photo.tif", [_tap(60, 10), _tap(70, 10)], 0, "user-1"))
+    row = asyncio.run(field_taps.keep(s3, "b", "photo.tif", "layer-1", [_tap(60, 10), _tap(70, 10)], 0, "user-1"))
     assert row["corrections"] == 1 and row["kept_by"] == "user-1"
     # choice 0 (half side 50 px) grown to 100 px: a 200 px square of a 120 m / 1024 px window
     assert row["area_ha"] == pytest.approx((200 * 120 / 1024) ** 2 / 10_000, rel=0.02)
-    state = asyncio.run(field_taps.state(s3, "b", "photo.tif"))
+    state = asyncio.run(field_taps.state(s3, "b", "photo.tif", "layer-1"))
     assert state["prepared"] and state["windows"] == 4 and [k["id"] for k in state["kept"]] == [row["id"]]
 
-    assert asyncio.run(field_taps.remove(s3, "b", "photo.tif", "nope")) is False
-    assert asyncio.run(field_taps.remove(s3, "b", "photo.tif", row["id"])) is True
-    assert asyncio.run(field_taps.kept(s3, "b", "photo.tif")) == []
+    assert asyncio.run(field_taps.remove(s3, "b", "photo.tif", "layer-1", "nope")) is False
+    assert asyncio.run(field_taps.remove(s3, "b", "photo.tif", "layer-1", row["id"])) is True
+    assert asyncio.run(field_taps.kept(s3, "b", "photo.tif", "layer-1")) == []
 
 
 def test_a_field_keeps_its_number_and_a_number_is_never_used_twice(monkeypatch):
     s3, _ = _prepared_store(monkeypatch)
-    one = asyncio.run(field_taps.keep(s3, "b", "photo.tif", [_tap(60, 10)], 0, "user-1"))
-    two = asyncio.run(field_taps.keep(s3, "b", "photo.tif", [_tap(60, 10)], 1, "user-1"))
+    one = asyncio.run(field_taps.keep(s3, "b", "photo.tif", "layer-1", [_tap(60, 10)], 0, "user-1"))
+    two = asyncio.run(field_taps.keep(s3, "b", "photo.tif", "layer-1", [_tap(60, 10)], 1, "user-1"))
     assert (one["number"], two["number"]) == (1, 2)
     # the centre is a point inside the outline: where the number is written
     assert shape(one["geometry"]).contains(Point(one["centre"]))
-    assert asyncio.run(field_taps.remove(s3, "b", "photo.tif", two["id"])) is True
-    three = asyncio.run(field_taps.keep(s3, "b", "photo.tif", [_tap(60, 10)], 2, "user-1"))
+    assert asyncio.run(field_taps.remove(s3, "b", "photo.tif", "layer-1", two["id"])) is True
+    three = asyncio.run(field_taps.keep(s3, "b", "photo.tif", "layer-1", [_tap(60, 10)], 2, "user-1"))
     assert three["number"] == 3  # 2 is gone for good
-    assert [k["number"] for k in asyncio.run(field_taps.kept(s3, "b", "photo.tif"))] == [1, 3]
+    assert [k["number"] for k in asyncio.run(field_taps.kept(s3, "b", "photo.tif", "layer-1"))] == [1, 3]
 
     # outlines kept before fields had numbers are numbered in the order they were kept, and stay so
     old = [{k: v for k, v in row.items() if k not in ("number", "centre")} for row in (one, three)]
-    s3.objects[field_taps._kept_key("photo.tif")] = json.dumps({"outlines": old}).encode()
-    assert [(k["number"], k["centre"]) for k in asyncio.run(field_taps.kept(s3, "b", "photo.tif"))] == [
+    s3.objects[field_taps._kept_key("photo.tif", "layer-1")] = json.dumps({"outlines": old}).encode()
+    assert [(k["number"], k["centre"]) for k in asyncio.run(field_taps.kept(s3, "b", "photo.tif", "layer-1"))] == [
         (1, one["centre"]), (2, three["centre"])]
-    assert asyncio.run(field_taps.keep(s3, "b", "photo.tif", [_tap(60, 10)], 1, "user-1"))["number"] == 3
+    assert asyncio.run(field_taps.keep(s3, "b", "photo.tif", "layer-1", [_tap(60, 10)], 1, "user-1"))["number"] == 3
 
 
 def _corner(east_m: float, south_m: float) -> tuple[float, float]:
@@ -289,19 +289,19 @@ def test_a_line_moved_by_hand_is_measured_here_and_must_stay_one_shape_around_th
 
 def test_a_kept_hand_moved_line_is_marked_and_keeps_the_models_outline_beside_it(monkeypatch):
     s3, _ = _prepared_store(monkeypatch)
-    plain = asyncio.run(field_taps.keep(s3, "b", "photo.tif", [_tap(60, 10)], 0, "user-1"))
+    plain = asyncio.run(field_taps.keep(s3, "b", "photo.tif", "layer-1", [_tap(60, 10)], 0, "user-1"))
     assert plain["by_hand"] is False and "model_geometry" not in plain
 
     wider = [_corner(50, 0), _corner(72, 0), _corner(72, 20), _corner(50, 20)]
-    row = asyncio.run(field_taps.keep(s3, "b", "photo.tif", [_tap(60, 10)], 0, "user-1", moved=wider))
+    row = asyncio.run(field_taps.keep(s3, "b", "photo.tif", "layer-1", [_tap(60, 10)], 0, "user-1", moved=wider))
     assert row["by_hand"] is True and row["area_ha"] == pytest.approx(0.044, rel=0.03)
     # the model's own outline and area stay on the record, with how much the two overlap
     assert row["model_geometry"] == plain["geometry"] and row["model_area_ha"] == plain["area_ha"]
     assert 0 < row["model_overlap"] < 1
     with pytest.raises(field_taps.TapError, match="spot you tapped"):
-        asyncio.run(field_taps.keep(s3, "b", "photo.tif", [_tap(60, 10)], 0, "user-1",
+        asyncio.run(field_taps.keep(s3, "b", "photo.tif", "layer-1", [_tap(60, 10)], 0, "user-1",
                                     moved=[_corner(80, 0), _corner(100, 0), _corner(100, 20)]))
-    assert len(asyncio.run(field_taps.kept(s3, "b", "photo.tif"))) == 2
+    assert len(asyncio.run(field_taps.kept(s3, "b", "photo.tif", "layer-1"))) == 2
 
 
 def test_a_hand_moved_corner_must_be_a_real_place_near_the_tap():
@@ -331,7 +331,7 @@ def test_keeps_at_the_same_moment_are_all_kept_with_their_own_numbers(monkeypatc
         try:
             found_ = await read(Bucket, Key)
         finally:
-            if Key == field_taps._kept_key("photo.tif"):
+            if Key == field_taps._kept_key("photo.tif", "layer-1"):
                 await asyncio.sleep(0.05)
         return found_
 
@@ -339,11 +339,11 @@ def test_keeps_at_the_same_moment_are_all_kept_with_their_own_numbers(monkeypatc
     monkeypatch.setattr(s3, "get_object", slow_read)
 
     async def both():
-        return await asyncio.gather(*[field_taps.keep(s3, "b", "photo.tif", [_tap(60, 10)], n % 3, f"user-{n}")
+        return await asyncio.gather(*[field_taps.keep(s3, "b", "photo.tif", "layer-1", [_tap(60, 10)], n % 3, f"user-{n}")
                                       for n in range(6)])
 
     rows = asyncio.run(both())
-    kept = asyncio.run(field_taps.kept(s3, "b", "photo.tif"))
+    kept = asyncio.run(field_taps.kept(s3, "b", "photo.tif", "layer-1"))
     assert len(kept) == 6 and sorted(r["number"] for r in rows) == [1, 2, 3, 4, 5, 6]
     assert sorted(k["id"] for k in kept) == sorted(r["id"] for r in rows)
 
@@ -352,27 +352,27 @@ def test_a_photo_holds_a_limited_number_of_kept_fields(monkeypatch):
     s3, _ = _prepared_store(monkeypatch)
     monkeypatch.setattr(field_taps, "MAX_KEPT_FIELDS", 2)
     for _ in range(2):
-        asyncio.run(field_taps.keep(s3, "b", "photo.tif", [_tap(60, 10)], 0, "user-1"))
+        asyncio.run(field_taps.keep(s3, "b", "photo.tif", "layer-1", [_tap(60, 10)], 0, "user-1"))
     with pytest.raises(field_taps.TapError, match="already has 2 outlined fields"):
-        asyncio.run(field_taps.keep(s3, "b", "photo.tif", [_tap(60, 10)], 0, "user-1"))
-    assert len(asyncio.run(field_taps.kept(s3, "b", "photo.tif"))) == 2
+        asyncio.run(field_taps.keep(s3, "b", "photo.tif", "layer-1", [_tap(60, 10)], 0, "user-1"))
+    assert len(asyncio.run(field_taps.kept(s3, "b", "photo.tif", "layer-1"))) == 2
 
 
 def test_who_kept_a_field_is_recorded_but_not_shown_on_the_screen(monkeypatch):
     s3, _ = _prepared_store(monkeypatch)
-    asyncio.run(field_taps.keep(s3, "b", "photo.tif", [_tap(60, 10)], 0, "user-1"))
-    assert asyncio.run(field_taps.kept(s3, "b", "photo.tif"))[0]["kept_by"] == "user-1"
-    assert "kept_by" not in asyncio.run(field_taps.state(s3, "b", "photo.tif"))["kept"][0]
+    asyncio.run(field_taps.keep(s3, "b", "photo.tif", "layer-1", [_tap(60, 10)], 0, "user-1"))
+    assert asyncio.run(field_taps.kept(s3, "b", "photo.tif", "layer-1"))[0]["kept_by"] == "user-1"
+    assert "kept_by" not in asyncio.run(field_taps.state(s3, "b", "photo.tif", "layer-1"))["kept"][0]
 
 
 def test_turned_down_taps_are_counted_for_good_and_kept_in_full_up_to_a_limit(monkeypatch):
     s3, _ = _prepared_store(monkeypatch)
     monkeypatch.setattr(field_taps, "MAX_TURNED_DOWN_ROWS", 3)
     for n in range(5):
-        asyncio.run(field_taps.turn_down(s3, "b", "photo.tif", [_tap(60, 10)], None, "closed", f"user-{n}"))
-    rows = asyncio.run(field_taps.turned_down(s3, "b", "photo.tif"))
+        asyncio.run(field_taps.turn_down(s3, "b", "photo.tif", "layer-1", [_tap(60, 10)], None, "closed", f"user-{n}"))
+    rows = asyncio.run(field_taps.turned_down(s3, "b", "photo.tif", "layer-1"))
     assert [r["turned_down_by"] for r in rows] == ["user-2", "user-3", "user-4"]  # the latest three, in full
-    assert asyncio.run(field_taps.state(s3, "b", "photo.tif"))["turned_down"] == 5  # all five still counted
+    assert asyncio.run(field_taps.state(s3, "b", "photo.tif", "layer-1"))["turned_down"] == 5  # all five still counted
 
 
 def test_a_refused_manifest_or_a_missing_window_reads_as_not_prepared(monkeypatch):
@@ -383,23 +383,23 @@ def test_a_refused_manifest_or_a_missing_window_reads_as_not_prepared(monkeypatc
     record = json.loads(s3.objects[field_taps.manifest_key("photo.tif")])
     record["step_m"] = 30
     s3.objects[field_taps.manifest_key("photo.tif")] = json.dumps(record).encode()
-    assert asyncio.run(field_taps.state(s3, "b", "photo.tif"))["prepared"] is False
+    assert asyncio.run(field_taps.state(s3, "b", "photo.tif", "layer-1"))["prepared"] is False
 
 
 def test_a_tap_that_was_not_kept_is_recorded_with_its_reason(monkeypatch):
     s3, _ = _prepared_store(monkeypatch)
-    assert asyncio.run(field_taps.state(s3, "b", "photo.tif"))["turned_down"] == 0
-    first = asyncio.run(field_taps.turn_down(s3, "b", "photo.tif", [_tap(60, 10)], None, "none_of_these", "user-1"))
-    asyncio.run(field_taps.turn_down(s3, "b", "photo.tif", [_tap(60, 10), _tap(70, 10)], 1, "closed", "user-2"))
-    rows = asyncio.run(field_taps.turned_down(s3, "b", "photo.tif"))
+    assert asyncio.run(field_taps.state(s3, "b", "photo.tif", "layer-1"))["turned_down"] == 0
+    first = asyncio.run(field_taps.turn_down(s3, "b", "photo.tif", "layer-1", [_tap(60, 10)], None, "none_of_these", "user-1"))
+    asyncio.run(field_taps.turn_down(s3, "b", "photo.tif", "layer-1", [_tap(60, 10), _tap(70, 10)], 1, "closed", "user-2"))
+    rows = asyncio.run(field_taps.turned_down(s3, "b", "photo.tif", "layer-1"))
     assert [(r["reason"], r["pick"], r["corrections"], r["turned_down_by"]) for r in rows] == [
         ("none_of_these", None, 0, "user-1"), ("closed", 1, 1, "user-2")]
     assert rows[0]["id"] == first["id"] and rows[0]["taps"] == [{"lon": _tap(60, 10).lon, "lat": _tap(60, 10).lat, "add": True}]
     # kept outlines are a separate record: turning taps down never touches them
-    state = asyncio.run(field_taps.state(s3, "b", "photo.tif"))
+    state = asyncio.run(field_taps.state(s3, "b", "photo.tif", "layer-1"))
     assert state["turned_down"] == 2 and state["kept"] == []
     with pytest.raises(field_taps.TapError, match="reason"):
-        asyncio.run(field_taps.turn_down(s3, "b", "photo.tif", [_tap(60, 10)], None, "bored", "user-1"))
+        asyncio.run(field_taps.turn_down(s3, "b", "photo.tif", "layer-1", [_tap(60, 10)], None, "bored", "user-1"))
 
 
 def test_the_real_export_answers_in_the_recorded_shapes():
@@ -481,53 +481,168 @@ def _mark_checked(s3) -> None:
     s3.objects[field_taps.cover_rule_key("photo.tif")] = json.dumps(field_taps.cover_rule_record("Tests 77 and 78")).encode()
 
 
-def test_a_kept_field_gets_its_green_cover_and_older_fields_get_it_later(monkeypatch, tmp_path):
+def _fresh_cover_jobs(monkeypatch) -> None:
+    monkeypatch.setattr(field_taps, "_fills", {})
+    monkeypatch.setattr(field_taps, "_fill_retry_at", {})
+
+
+async def _state_after_filling(s3, path, layer="layer-1"):
+    """The photo's state once the background job that state() started has finished."""
+    first = await field_taps.state(s3, "b", "photo.tif", layer, path)
+    job = field_taps._fills.get(f"photo.tif|{layer}")
+    if job is not None:
+        await job
+    return first, await field_taps.state(s3, "b", "photo.tif", layer, path)
+
+
+MEASURED_42 = {"share": 0.42, "why_not": None, "threshold": field_taps.GREEN_THRESHOLD}
+
+
+def test_a_kept_field_gets_its_green_cover_and_older_fields_get_it_in_the_background(monkeypatch, tmp_path):
     s3, _ = _prepared_store(monkeypatch)
+    _fresh_cover_jobs(monkeypatch)
     _mark_checked(s3)
     path = _photo_file(tmp_path)
-    measured = []
+    opened = []
+    monkeypatch.setattr(field_taps, "green_cover", lambda url, geometry, area: {"share": 0.42, "why_not": None})
 
-    def fake_cover(cog_url, geometry, area_ha):
-        measured.append(cog_url)
-        return {"share": 0.42, "why_not": None}
+    def fake_covers(cog_url, fields):
+        opened.append([field_id for field_id, _, _ in fields])
+        return {field_id: {"share": 0.42, "why_not": None} for field_id, _, _ in fields}
 
-    monkeypatch.setattr(field_taps, "green_cover", fake_cover)
-    row = asyncio.run(field_taps.keep(s3, "b", "photo.tif", [_tap(60, 10)], 0, "user-1", cog_url=path))
-    assert row["green_cover"] == {"share": 0.42, "why_not": None} and measured == [path]
-    # a field kept before green cover existed has none until the screen next asks for the photo's state
-    old = asyncio.run(field_taps.keep(s3, "b", "photo.tif", [_tap(60, 10)], 1, "user-1"))
+    monkeypatch.setattr(field_taps, "green_covers", fake_covers)
+    row = asyncio.run(field_taps.keep(s3, "b", "photo.tif", "layer-1", [_tap(60, 10)], 0, "user-1", cog_url=path))
+    assert row["green_cover"] == MEASURED_42
+    # a field kept before green cover existed has none; opening the photo does not wait for it and writes nothing
+    old = asyncio.run(field_taps.keep(s3, "b", "photo.tif", "layer-1", [_tap(60, 10)], 1, "user-1"))
     assert "green_cover" not in old
-    state = asyncio.run(field_taps.state(s3, "b", "photo.tif", path))
-    assert [k.get("green_cover") for k in state["kept"]] == [{"share": 0.42, "why_not": None}] * 2
-    assert len(measured) == 2  # the first field was not measured again
-    assert state["cover_measured"] == field_taps.COVER_MEASURED
+    stored = s3.objects[field_taps._kept_key("photo.tif", "layer-1")]
+    first, later = asyncio.run(_state_after_filling(s3, path))
+    assert first["cover_filling"] is True and [k.get("green_cover") for k in first["kept"]] == [MEASURED_42, None]
+    assert later["cover_filling"] is False and [k["green_cover"] for k in later["kept"]] == [MEASURED_42] * 2
+    assert opened == [[old["id"]]]  # only the field without a figure, the photo opened once
+    assert s3.objects[field_taps._kept_key("photo.tif", "layer-1")] != stored
+    assert later["cover_measured"] == field_taps.COVER_MEASURED
 
     def broken(cog_url, geometry, area_ha):
         raise OSError("photo unreachable")
 
     monkeypatch.setattr(field_taps, "green_cover", broken)
-    later = asyncio.run(field_taps.keep(s3, "b", "photo.tif", [_tap(60, 10)], 2, "user-1", cog_url=path))
-    assert "green_cover" not in later  # kept all the same; measured on a later visit
+    kept_anyway = asyncio.run(field_taps.keep(s3, "b", "photo.tif", "layer-1", [_tap(60, 10)], 2, "user-1", cog_url=path))
+    assert "green_cover" not in kept_anyway  # kept all the same; measured later, in the background
 
 
-def test_green_cover_is_only_given_on_a_photo_the_rule_was_checked_on(monkeypatch, tmp_path):
+def test_missing_green_cover_is_measured_in_batches_and_a_photo_that_cannot_be_read_is_left_alone_for_a_while(
+        monkeypatch, tmp_path):
     s3, _ = _prepared_store(monkeypatch)
-    path = _photo_file(tmp_path)
-    measured = []
+    _fresh_cover_jobs(monkeypatch)
+    _mark_checked(s3)
+    monkeypatch.setattr(field_taps, "COVER_BATCH", 2)
+    for pick in (0, 1, 2, 0, 1):
+        asyncio.run(field_taps.keep(s3, "b", "photo.tif", "layer-1", [_tap(60, 10)], pick, "user-1"))
+    batches = []
+
+    def fake_covers(cog_url, fields):
+        batches.append(len(fields))
+        return {field_id: {"share": None, "why_not": "Not measured for a field this small."} for field_id, _, _ in fields}
+
+    monkeypatch.setattr(field_taps, "green_covers", fake_covers)
+    _, later = asyncio.run(_state_after_filling(s3, "photo-url"))
+    assert batches == [2, 2, 1] and all(k["green_cover"]["why_not"] for k in later["kept"])
+    # a figure, or a reason, that is kept is not measured again
+    asyncio.run(_state_after_filling(s3, "photo-url"))
+    assert batches == [2, 2, 1]
+
+    # a photo that cannot be read: one try, then nothing until COVER_RETRY_S has passed
+    asyncio.run(field_taps.keep(s3, "b", "photo.tif", "layer-1", [_tap(60, 10)], 2, "user-1"))
+    tries = []
+
+    def unreadable(cog_url, fields):
+        tries.append(len(fields))
+        raise OSError("photo unreachable")
+
+    monkeypatch.setattr(field_taps, "green_covers", unreadable)
+    first, later = asyncio.run(_state_after_filling(s3, "photo-url"))
+    assert first["cover_filling"] is True and later["cover_filling"] is False and tries == [1]
+    assert "green_cover" not in later["kept"][-1]
+    monkeypatch.setattr(field_taps, "_fill_retry_at", {})  # the wait is over
+    asyncio.run(_state_after_filling(s3, "photo-url"))
+    assert tries == [1, 1]
+
+
+def test_green_cover_is_only_given_on_a_photo_the_rule_was_checked_on_and_nothing_is_written_to_say_so(monkeypatch):
+    s3, _ = _prepared_store(monkeypatch)
+    _fresh_cover_jobs(monkeypatch)
+    read = []
 
     def fake_cover(cog_url, geometry, area_ha):
-        measured.append(area_ha)
+        read.append(area_ha)
         return {"share": 0.42, "why_not": None}
 
     monkeypatch.setattr(field_taps, "green_cover", fake_cover)
+    monkeypatch.setattr(field_taps, "green_covers", lambda url, fields: {i: fake_cover(url, g, a) for i, g, a in fields})
     not_checked = {"share": None, "why_not": field_taps.COVER_NOT_CHECKED}
-    row = asyncio.run(field_taps.keep(s3, "b", "photo.tif", [_tap(60, 10)], 0, "user-1", cog_url=path))
-    assert row["green_cover"] == not_checked and measured == []  # the photo is not even read
+    row = asyncio.run(field_taps.keep(s3, "b", "photo.tif", "layer-1", [_tap(60, 10)], 0, "user-1", cog_url="photo-url"))
+    assert "green_cover" not in row and read == []  # the photo is not even read
+    stored = dict(s3.objects)
+    first, later = asyncio.run(_state_after_filling(s3, "photo-url"))
+    assert [k["green_cover"] for k in later["kept"]] == [not_checked] and first["cover_filling"] is False
+    assert s3.objects == stored and read == []  # opening an unchecked photo reads no photo and writes nothing
     # once the photo is marked as checked, the next visit measures it
     _mark_checked(s3)
-    state = asyncio.run(field_taps.state(s3, "b", "photo.tif", path))
-    assert [k["green_cover"] for k in state["kept"]] == [{"share": 0.42, "why_not": None}] and len(measured) == 1
-    # a mark for another threshold than the one measured is no mark; figures already kept are no longer shown
-    s3.objects[field_taps.cover_rule_key("photo.tif")] = json.dumps({**field_taps.cover_rule_record("x"), "threshold": 0.05}).encode()
-    state = asyncio.run(field_taps.state(s3, "b", "photo.tif", path))
-    assert [k["green_cover"] for k in state["kept"]] == [not_checked] and len(measured) == 1
+    _, later = asyncio.run(_state_after_filling(s3, "photo-url"))
+    assert [k["green_cover"] for k in later["kept"]] == [MEASURED_42] and len(read) == 1
+    # a mark that is not this rule's is no mark: a figure already kept is no longer shown
+    for record in ({**field_taps.cover_rule_record("x"), "threshold": 0.05}, {**field_taps.cover_rule_record("x"), "version": 2},
+                   {}, ["not a record"]):
+        s3.objects[field_taps.cover_rule_key("photo.tif")] = json.dumps(record).encode()
+        _, later = asyncio.run(_state_after_filling(s3, "photo-url"))
+        assert [k["green_cover"] for k in later["kept"]] == [not_checked] and len(read) == 1
+    # a figure from another threshold than today's is measured again, not shown
+    _mark_checked(s3)
+    monkeypatch.setattr(field_taps, "GREEN_THRESHOLD", 0.2)
+    _mark_checked(s3)
+    first, later = asyncio.run(_state_after_filling(s3, "photo-url"))
+    assert "green_cover" not in first["kept"][0] and later["kept"][0]["green_cover"]["threshold"] == 0.2 and len(read) == 2
+
+
+def test_fields_kept_on_one_copy_of_a_photo_do_not_appear_on_another(monkeypatch):
+    s3, _ = _prepared_store(monkeypatch)
+    mine = asyncio.run(field_taps.keep(s3, "b", "photo.tif", "layer-1", [_tap(60, 10)], 0, "user-1"))
+    asyncio.run(field_taps.turn_down(s3, "b", "photo.tif", "layer-1", [_tap(60, 10)], None, "closed", "user-1"))
+    # another layer showing the same stored image: prepared just the same, with no fields and no turned-down taps
+    other = asyncio.run(field_taps.state(s3, "b", "photo.tif", "layer-2"))
+    assert other["prepared"] and other["kept"] == [] and other["turned_down"] == 0
+    theirs = asyncio.run(field_taps.keep(s3, "b", "photo.tif", "layer-2", [_tap(60, 10)], 1, "user-2"))
+    assert theirs["number"] == 1  # their own numbering
+    assert asyncio.run(field_taps.remove(s3, "b", "photo.tif", "layer-2", mine["id"])) is False
+    assert [k["id"] for k in asyncio.run(field_taps.kept(s3, "b", "photo.tif", "layer-1"))] == [mine["id"]]
+
+
+def test_green_cover_never_reads_more_than_the_box_it_was_measured_on(tmp_path):
+    """A thin outline can have a small area and a box a kilometre wide: the box decides how much is read."""
+    from shapely.geometry import Polygon, mapping
+    from shapely.ops import transform as reproject
+
+    from src.services import ground_area
+
+    path = _photo_file(tmp_path)
+    x, y = WEST + 100, NORTH - 100
+    comb = reproject(_TO_LONLAT, Polygon([(x, y), (x + 400, y), (x + 400, y - 3), (x + 3, y - 3), (x + 3, y - 400),
+                                         (x, y - 400)]))
+    area = ground_area.area_ha(comb)
+    assert field_taps.COVER_MIN_HA < area < field_taps.COVER_MAX_HA
+    cover = field_taps.green_cover(path, mapping(comb), area)
+    assert cover["share"] is None and "150 m across" in cover["why_not"]
+    # the other reasons a field gets no figure
+    sliver = reproject(_TO_LONLAT, Polygon([(x, y), (x + 100, y), (x + 100, y - 0.8), (x, y - 0.8)]))
+    assert field_taps.green_cover(path, mapping(sliver), 0.01)["why_not"] == "Not measured for a field this narrow."
+    geometry, _ = _field_on_photo()
+    away = reproject(_TO_LONLAT, Polygon([(x + 500, y), (x + 520, y), (x + 520, y - 20), (x + 500, y - 20)]))
+    assert field_taps.green_cover(path, mapping(away), 0.04)["why_not"] == "The photo has no picture inside this field."
+
+
+def test_a_hand_moved_outline_larger_than_two_hectares_is_refused():
+    big = [_corner(60, 10), _corner(260, 10), _corner(260, 210), _corner(60, 210)]  # 200 m x 200 m = 4 ha
+    with pytest.raises(TapError, match="at most 2 ha"):
+        field_taps.moved_line([(c[0], c[1]) for c in big], _tap(70, 20))

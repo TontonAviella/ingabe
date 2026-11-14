@@ -58,14 +58,25 @@ with up to two more taps ("this part too" / "not this part"), and keep it with i
    A rule for plots smaller than a window; a choice that was left out can be neither corrected nor kept.
 17. Each kept field carries its green cover: the share of its ground under living green plants of any kind, crop
    and weeds alike, from the photo's colour by the rule Tests 77 and 78 measured, unchanged (excess green 2g - r - b
-   of the 3 x 3 pixel mean above 0.15, counted 0.5 m in from the line; `green_cover`). It is measured when the
-   field is kept; fields kept before it existed get it when the screen next opens the photo, 20 at a time. It is
-   only given where it was measured: on a photo marked as checked (`scripts/mark_cover_checked.py`, run only after a
-   pre-registered test of the rule on that photo passed; the mark names the test and the threshold, and a mark for
-   another threshold counts as none), for fields of 0.007 to 0.7 ha, on photos with 2.5 to 4.5 cm pixels.
-   Elsewhere the field says why not and shows no figure; taking the mark off hides every figure on that photo.
-   Cyampirita is the one photo checked (Tests 77 and 78). Shown in whole per cent. If the photo cannot be read the field is kept
-   anyway and its cover is measured on a later visit. What it means is said by the server (`COVER_MEASURED`).
+   of the 3 x 3 pixel mean above 0.15, counted 0.5 m in from the line; `green_cover`). It is only given where it
+   was measured: on a photo marked as checked (`scripts/mark_cover_checked.py`, run only after a pre-registered
+   test of the rule on that photo passed; the mark names the test and the threshold, and a mark for another
+   threshold counts as none), for fields of 0.007 to 0.7 ha no wider than 150 m, on photos in metres with 2.5 to
+   4.5 cm pixels. Elsewhere the field says why not and shows no figure. Shown in whole per cent. Cyampirita is the
+   one photo checked (Tests 77 and 78). What it means is said by the server (`COVER_MEASURED`).
+18. Opening a photo only reads. A field's cover is measured when it is kept (one read at a time); fields still
+   without a figure are measured in the background, one job per photo layer, 20 fields between two writes, the
+   photo opened once a batch with the network timeouts every photo read uses. The state says `cover_filling` while
+   a job runs and the screen asks again every 3 s until it is done. A photo that cannot be read stops the job and
+   is not tried again for 5 minutes. Every limit is checked before a pixel is read: the box around a field decides
+   how much is read, not its area. A stored figure carries the threshold that made it and is measured again when
+   the threshold changes. On a photo that is not marked, nothing is stored: each field is shown as not measured.
+19. Kept fields and turned-down taps belong to one photo layer, the thing whose access the routes check
+   (`_fields_prefix`). The prepared windows and the cover mark belong to the stored image, which copies of a layer
+   share. A field kept on one copy of a photo never appears on another copy, in the cards or to Sage; a person's
+   checks on outlined fields are kept per layer too (`field_checks.checks_set_id`).
+20. A hand-moved outline may be at most 2 ha. The answers to keeping a field and to turning taps down leave out
+   who did it, as the state does.
 
 ## What was measured (plans/PLAN_RWANDA_CROPS.md, 2026-11-12)
 

@@ -363,6 +363,43 @@ describe('outlining a field by tapping it', () => {
     expect(byText('Green cover: Not measured for fields over 0.7 ha: it was tested on smaller fields.')).not.toBeNull();
   });
 
+  it('asks again while the server is still measuring green cover, and stops once it is done', async () => {
+    const server = fakeServer(true);
+    server.kept.push({ id: 'a', number: 3, centre: [30.5, -1.5], geometry: square(1), area_ha: 0.18, corrections: 0, kept_at: 'then' });
+    const plain = fetchMock.getMockImplementation() as typeof fetch;
+    let asked = 0;
+    fetchMock.mockImplementation(async (input, init) => {
+      const res = await plain(input, init);
+      if (String(input) !== `/api/layer/${LAYER}/field-taps`) return res;
+      asked += 1;
+      const body = await res.json();
+      if (asked === 1)
+        return new Response(JSON.stringify({ ...body, cover_filling: true }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      body.kept[0].green_cover = { share: 0.62, why_not: null };
+      return new Response(JSON.stringify({ ...body, cover_filling: false }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    });
+    const m = fakeMap();
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      mount(<FieldTaps map={m.map} layers={[photo]} hiddenLayerIDs={[]} />);
+      await vi.waitFor(() => expect(byButton(/^1 field outlined · show$/)).not.toBeNull());
+      m.clickOn('a');
+      await vi.waitFor(() => expect(byText('Field 3 · 0.18 ha')).not.toBeNull()); // no figure yet
+      await vi.advanceTimersByTimeAsync(3_100);
+      await vi.waitFor(() => expect(byText('Field 3 · 0.18 ha · green cover 62%')).not.toBeNull());
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(asked).toBe(2); // done: no more asking
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('shows a small field in square metres and marks added and removed parts by sign, not colour alone', async () => {
     const server = fakeServer(true);
     server.kept.push({ id: 'a', number: 1, centre: [30.5, -1.5], geometry: square(1), area_ha: 0.004, corrections: 0, kept_at: 'then' });

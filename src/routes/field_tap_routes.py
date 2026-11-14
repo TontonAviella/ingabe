@@ -77,7 +77,7 @@ async def get_field_taps(layer: MapLayer = Depends(get_layer),
     key = await _photo_key(layer)
     s3, bucket = await get_async_s3_client(), get_bucket_name()
     cog_url = await photo_context.cog_url(s3, bucket, layer.metadata_dict or {})
-    return await field_taps.state(s3, bucket, key, cog_url)
+    return await field_taps.state(s3, bucket, key, layer.layer_id, cog_url)
 
 
 @router.post("/layer/{layer_id}/field-taps/outline", operation_id="outline_field_from_taps")
@@ -103,8 +103,9 @@ async def keep_field_outline(body: KeepIn, layer: MapLayer = Depends(edit_layer)
         raise HTTPException(422, "Pick one of the outlines before keeping it.")
     try:
         s3, bucket = await get_async_s3_client(), get_bucket_name()
-        return await field_taps.keep(s3, bucket, key, _taps(body), body.pick, session.get_user_id(), body.moved,
-                                     await photo_context.cog_url(s3, bucket, layer.metadata_dict or {}))
+        row = await field_taps.keep(s3, bucket, key, layer.layer_id, _taps(body), body.pick, session.get_user_id(),
+                                    body.moved, await photo_context.cog_url(s3, bucket, layer.metadata_dict or {}))
+        return field_taps.shown(row)
     except field_taps.TapError as e:
         raise HTTPException(422, str(e)) from None
 
@@ -127,8 +128,9 @@ async def turn_down_field_outlines(body: TurnDownIn, layer: MapLayer = Depends(e
     """Record that these taps ended without a kept outline, so the share of taps that are kept can be counted."""
     key = await _photo_key(layer)
     try:
-        return await field_taps.turn_down(await get_async_s3_client(), get_bucket_name(), key, _taps(body),
-                                          body.pick, body.reason, session.get_user_id())
+        row = await field_taps.turn_down(await get_async_s3_client(), get_bucket_name(), key, layer.layer_id,
+                                         _taps(body), body.pick, body.reason, session.get_user_id())
+        return {k: v for k, v in row.items() if k != "turned_down_by"}
     except field_taps.TapError as e:
         raise HTTPException(422, str(e)) from None
 
@@ -137,6 +139,6 @@ async def turn_down_field_outlines(body: TurnDownIn, layer: MapLayer = Depends(e
 async def remove_field_outline(outline_id: str, layer: MapLayer = Depends(edit_layer),
                                session: UserContext = Depends(verify_session_required)) -> dict[str, Any]:
     key = await _photo_key(layer)
-    if not await field_taps.remove(await get_async_s3_client(), get_bucket_name(), key, outline_id):
+    if not await field_taps.remove(await get_async_s3_client(), get_bucket_name(), key, layer.layer_id, outline_id):
         raise HTTPException(404, "No such kept outline on this photo")
     return {"removed": outline_id}

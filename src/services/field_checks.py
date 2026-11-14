@@ -37,13 +37,16 @@ def plot_set_id(photo_key: str, plots: Any) -> str:
     return f"{photo_key}|{plots.source}|{plots.found_at}"
 
 
-def checks_set_id(photo_key: str, plots: Any) -> str:
+def checks_set_id(photo_key: str, plots: Any, layer_id: Optional[str] = None) -> str:
     """The plot set a person's checks and crop examples belong to. For plots Ingabe found or read from a map this is
     plot_set_id: a new search gives new polygons under the old numbers. The fields a reader outlined are different:
     a kept field never changes shape and its number is never given to another field, so its checks stay with it
     when other fields are kept or removed (otherwise every new field would make the reader's checks vanish)."""
     if plots.source == drone_plots.OUTLINED_FIELDS_NAME:
-        return f"{photo_key}|{plots.source}"
+        # the fields belong to one photo layer: a copy of the photo has its own fields under the same numbers
+        if not layer_id:
+            raise ValueError("a reader's outlined fields belong to a photo layer")
+        return f"{photo_key}|{plots.source}|{layer_id}"
     return plot_set_id(photo_key, plots)
 
 

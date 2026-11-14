@@ -46,6 +46,8 @@ export interface FieldTapState {
   measured: string;
   /** What the green cover figure is and how it was measured, written by the server. */
   cover_measured: string;
+  /** true while the server is measuring green cover for kept fields in the background: ask again soon. */
+  cover_filling?: boolean;
   kept: KeptOutline[];
   /** How many taps on this photo ended without a kept outline. */
   turned_down: number;
@@ -64,6 +66,8 @@ export function useFieldTapState(layerId: string | null) {
     enabled: !!layerId,
     retry: (count, error) => !(error.status >= 400 && error.status < 500) && count < 2,
     staleTime: 60_000,
+    // green cover of fields kept earlier is measured in the background: ask again until the server says it is done
+    refetchInterval: (query) => (query.state.data?.cover_filling ? 3_000 : false),
   });
 }
 

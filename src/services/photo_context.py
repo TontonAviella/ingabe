@@ -154,7 +154,7 @@ class PlotLooks:
 
 async def plot_looks(s3: Any, bucket: str, metadata: dict[str, Any], plots: drone_plots.PlotSet,
                      project_id: Optional[str], *, place: Optional[str], scope: str, start: bool,
-                     retry_failed: bool) -> PlotLooks:
+                     retry_failed: bool, layer_id: Optional[str] = None) -> PlotLooks:
     """The looks at a plot set, the one way the cards and Sage take a plot's crop. With `start`, the vision survey
     and the fingerprints are started in the background when they have not run yet. With the survey switched off
     (drone_vision.survey_enabled), no plot is looked at: the crops come from the fingerprint calls and the checks,
@@ -164,7 +164,7 @@ async def plot_looks(s3: Any, bucket: str, metadata: dict[str, Any], plots: dron
                                            retry_failed=retry_failed)
     else:
         survey, survey_job = drone_vision.no_looks(plots), None
-    plot_set = field_checks.checks_set_id(photo_plots.photo_key(metadata), plots)
+    plot_set = field_checks.checks_set_id(photo_plots.photo_key(metadata), plots, layer_id)
     checks = await field_checks.load_checks(s3, bucket, project_id, plot_set)
     # The crop of each plot comes from its fingerprint and the checked plots when there are any; the looks
     # keep stage, weeds and problems. Checks then override both, and the record compares the calls (each made
@@ -201,7 +201,7 @@ async def load(s3: Any, bucket: str, *, layer_id: str, name: str, bounds: Any, m
         plots, plot_job = await _found_plots(s3, bucket, metadata, start=start_jobs, retry_failed=retry_failed)
     looks = (await plot_looks(s3, bucket, metadata, plots, project_id, place=analysis.look.place,
                               scope=drone_vision.reference_scope(org_id, user_id), start=start_jobs,
-                              retry_failed=retry_failed)
+                              retry_failed=retry_failed, layer_id=layer_id)
              if plots is not None else PlotLooks())
     here = drone_cards.Here(photos=max(1, int(photos_here or 0)), plots=plots, plot_job=plot_job,
                             plot_maps=tuple(m for m, _ in maps), plot_map=plot_map, plot_map_error=map_error,
