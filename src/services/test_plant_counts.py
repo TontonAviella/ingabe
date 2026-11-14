@@ -43,6 +43,7 @@ def test_every_crown_is_one_dot(tmp_path):
     assert count.area_m2 == pytest.approx(33.4, rel=0.02) and count.per_m2 == pytest.approx(42 / 33.4, rel=0.03)
     assert len(count.points["features"]) == 42 and count.cm_per_px == 3.0
     assert count.gap_share < 0.05  # crowns 0.9 m apart: nothing is farther than 1 m from a plant
+    assert (count.solid_patches, count.solid_share) == (0, 0.0)  # crowns that stand apart: no solid patch
 
 
 def test_a_coarse_photo_or_a_big_plot_cannot_be_counted(tmp_path):
@@ -61,3 +62,42 @@ def test_a_missing_row_shows_as_gaps(tmp_path):
     sparse, plot = _photo(tmp_path, 0.03, rows=3, spacing_m=0.9)  # rows 4-6 missing: the lower half is bare
     thin = plant_counts.count_plants(str(sparse), plot)
     assert thin.plants == 21 and thin.gap_share > whole.gap_share + 0.2
+
+
+def _photo_with_a_bush(tmp_path):
+    """The photo of _photo with a 2.4 m x 2.4 m block of solid green (a bush, weeds, plants grown together) laid over
+    the bottom-right crowns."""
+    path, plot = _photo(tmp_path, 0.03)
+    with rasterio.open(path, "r+") as ds:
+        rgb = ds.read()
+        rows = slice(int(3.3 / 0.03), int(5.7 / 0.03))
+        cols = slice(int(4.3 / 0.03), int(6.7 / 0.03))
+        rgb[0][rows, cols], rgb[1][rows, cols], rgb[2][rows, cols] = 70, 150, 55
+        ds.write(rgb)
+    return path, plot
+
+
+def test_a_patch_of_solid_green_is_not_counted_as_thousands_of_plants(tmp_path):
+    """Field 24 on Cyampirita, 2026-11-14: 697 m2 with twelve solid patches was given 4,987 plants, because every pixel
+    on a patch's flat top counted as a plant. A solid patch is counted once and said to be a patch."""
+    path, plot = _photo_with_a_bush(tmp_path)
+    count = plant_counts.count_plants(str(path), plot)
+    # 42 crowns were planted; the bush covers 9 of them and is one more dot, not thousands
+    assert 30 <= count.plants <= 42
+    assert len(count.points["features"]) == count.plants
+    # no count may be denser than its own rule allows: two dots are never closer than half of SPACING_M
+    assert count.per_m2 <= 1 / (plant_counts.SPACING_M / 2) ** 2
+    # the part where single plants cannot be told apart is measured and said, with how many patches it is in
+    assert count.solid_patches == 1
+    assert count.solid_share == pytest.approx(2.4 * 2.4 / count.area_m2, rel=0.25)
+    assert count.method == plant_counts.METHOD != "green crowns v1"  # counts kept by the old method are not reused
+
+
+def test_a_plot_that_is_mostly_solid_green_cannot_be_counted(tmp_path):
+    path, plot = _photo(tmp_path, 0.03)
+    with rasterio.open(path, "r+") as ds:
+        rgb = ds.read()
+        rgb[0][:, :], rgb[1][:, :], rgb[2][:, :] = 70, 150, 55  # a closed canopy
+        ds.write(rgb)
+    with pytest.raises(plant_counts.CannotCount, match="grown together"):
+        plant_counts.count_plants(str(path), plot)
