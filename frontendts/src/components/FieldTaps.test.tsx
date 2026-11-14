@@ -337,6 +337,26 @@ describe('outlining a field by tapping it', () => {
     await vi.waitFor(() => expect(server.measured).toHaveLength(2));
   });
 
+  it('sits at the bottom left while idle, clear of where Sage answers, and takes the centre once a field is outlined or picked', async () => {
+    const server = fakeServer(true);
+    server.kept.push({ id: 'a', number: 3, centre: [30.5, -1.5], geometry: square(1), area_ha: 0.18, corrections: 0, kept_at: 'then' });
+    const m = fakeMap();
+    mount(<FieldTaps map={m.map} layers={[photo]} hiddenLayerIDs={[]} />);
+    await vi.waitFor(() => expect(byButton('Outline a field')).not.toBeNull());
+    const panel = () => (byButton('Outline a field') ?? byButton('Close'))?.closest('[data-docked]') as HTMLElement;
+    expect(panel().dataset.docked).toBe('true');
+    expect(panel().className).toContain('z-40'); // above Sage's answer, which a narrow screen stretches to the corner
+    expect(panel().className).toContain('left-4');
+    m.clickOn('a'); // a picked field brings its row and the box to ask Sage: centre
+    await vi.waitFor(() => expect(panel().dataset.docked).toBe('false'));
+    m.clickOn(null);
+    await vi.waitFor(() => expect(panel().dataset.docked).toBe('true'));
+    click(byButton('Outline a field') as HTMLButtonElement);
+    await vi.waitFor(() => expect(m.listening()).toBe(true));
+    expect(panel().dataset.docked).toBe('false');
+    expect(panel().className).toContain('left-1/2');
+  });
+
   it('folds the panel to its one line of buttons and opens it again', async () => {
     fakeServer(true);
     const m = fakeMap();
