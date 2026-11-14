@@ -459,12 +459,19 @@ export function FieldTaps({
   const strong = `${button} bg-caramel text-panel hover:bg-caramel-hi`;
   const picked = pick !== null ? (step?.outlines.find((o) => o.choice === pick) ?? null) : null;
   const canCorrect = corrections < (state.data?.max_corrections ?? 0);
+  // Idle (nothing being outlined, no field picked) the panel is one small row at the bottom left, clear of the
+  // bottom centre where Sage's answer shows, and above it where a narrow screen makes the answer reach the corner
+  // (like "Hide panels"): an answer on screen must never cover "Outline a field".
+  const docked = mode === 'off' && !selected;
 
   return (
     <div
-      className={`absolute bottom-28 left-1/2 z-30 flex -translate-x-1/2 flex-col gap-2 rounded-[18px] border border-caramel/30 bg-panel p-3 text-fg shadow-lg ${
-        open ? 'w-[min(92vw,460px)]' : 'w-[min(92vw,340px)]'
+      className={`absolute flex flex-col gap-2 rounded-[18px] border border-caramel/30 bg-panel p-3 text-fg shadow-lg ${
+        docked
+          ? 'z-40 bottom-36 left-4 w-[min(92vw,340px)]'
+          : `z-30 bottom-28 left-1/2 -translate-x-1/2 ${open ? 'w-[min(92vw,460px)]' : 'w-[min(92vw,340px)]'}`
       }`}
+      data-docked={docked}
     >
       {selected && (
         <div className="flex flex-col gap-2">

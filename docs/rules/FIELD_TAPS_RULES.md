@@ -112,4 +112,7 @@ before the second repaired it, so the screen keeps a "back" step.
 - The photo is the object: while a field is being outlined the layer list, the cards, the legends and the Sage box
   and Sage's answer step aside and come back when the panel closes; "Hide panels" on the map does the same at any time and is
   remembered on the device. The tap panel folds to its line of buttons (the arrow at its corner), also remembered.
+- While nothing is being outlined and no field is picked, the tap panel sits at the bottom left, clear of the bottom
+  centre where Sage's answer shows: an answer on screen never covers "Outline a field". Once a field is being outlined
+  or is picked, the panel takes the bottom centre (Sage's answer has stepped aside by then).
 - Small text actions have a 36 px tap height.
