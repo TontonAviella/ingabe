@@ -477,8 +477,13 @@ def test_green_cover_is_read_inside_the_field_and_only_where_it_was_measured(tmp
     assert "3 cm pixels" in field_taps.green_cover(coarse, *_field_on_photo(0.10, 200))["why_not"]
 
 
+def _mark_checked(s3) -> None:
+    s3.objects[field_taps.cover_rule_key("photo.tif")] = json.dumps(field_taps.cover_rule_record("Tests 77 and 78")).encode()
+
+
 def test_a_kept_field_gets_its_green_cover_and_older_fields_get_it_later(monkeypatch, tmp_path):
     s3, _ = _prepared_store(monkeypatch)
+    _mark_checked(s3)
     path = _photo_file(tmp_path)
     measured = []
 
@@ -503,3 +508,26 @@ def test_a_kept_field_gets_its_green_cover_and_older_fields_get_it_later(monkeyp
     monkeypatch.setattr(field_taps, "green_cover", broken)
     later = asyncio.run(field_taps.keep(s3, "b", "photo.tif", [_tap(60, 10)], 2, "user-1", cog_url=path))
     assert "green_cover" not in later  # kept all the same; measured on a later visit
+
+
+def test_green_cover_is_only_given_on_a_photo_the_rule_was_checked_on(monkeypatch, tmp_path):
+    s3, _ = _prepared_store(monkeypatch)
+    path = _photo_file(tmp_path)
+    measured = []
+
+    def fake_cover(cog_url, geometry, area_ha):
+        measured.append(area_ha)
+        return {"share": 0.42, "why_not": None}
+
+    monkeypatch.setattr(field_taps, "green_cover", fake_cover)
+    not_checked = {"share": None, "why_not": field_taps.COVER_NOT_CHECKED}
+    row = asyncio.run(field_taps.keep(s3, "b", "photo.tif", [_tap(60, 10)], 0, "user-1", cog_url=path))
+    assert row["green_cover"] == not_checked and measured == []  # the photo is not even read
+    # once the photo is marked as checked, the next visit measures it
+    _mark_checked(s3)
+    state = asyncio.run(field_taps.state(s3, "b", "photo.tif", path))
+    assert [k["green_cover"] for k in state["kept"]] == [{"share": 0.42, "why_not": None}] and len(measured) == 1
+    # a mark for another threshold than the one measured is no mark; figures already kept are no longer shown
+    s3.objects[field_taps.cover_rule_key("photo.tif")] = json.dumps({**field_taps.cover_rule_record("x"), "threshold": 0.05}).encode()
+    state = asyncio.run(field_taps.state(s3, "b", "photo.tif", path))
+    assert [k["green_cover"] for k in state["kept"]] == [not_checked] and len(measured) == 1

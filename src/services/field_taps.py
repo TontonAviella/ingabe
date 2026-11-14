@@ -269,18 +269,24 @@ def outline_shape(grid: Grid, window: tuple[int, int], mask: np.ndarray) -> Opti
 # Green cover: the share of a kept field's ground covered by living green plants of any kind, crop and weeds alike
 # (colour cannot tell them apart). The rule is the one Tests 77 and 78 measured, unchanged: excess green 2g - r - b
 # (each 0..1) of the 3 x 3 pixel mean above GREEN_THRESHOLD, counted 0.5 m in from the field's line. It is only
-# given where it was measured: fields of COVER_MIN_HA to COVER_MAX_HA on photos with pixels of COVER_PIXEL_M.
+# given where it was measured: on photos the rule was checked on (cover_checked), for fields of COVER_MIN_HA to
+# COVER_MAX_HA, on photos with pixels of COVER_PIXEL_M.
 GREEN_THRESHOLD = 0.15
 COVER_INSET_M = 0.5
 COVER_MIN_HA, COVER_MAX_HA = 0.007, 0.7  # the drawn fields it was measured on: 0.0077 to 0.68 ha
 COVER_PIXEL_M = (0.025, 0.045)  # the test photo's pixels are 3.25 cm
 COVER_FILL_PER_CALL = 20  # fields kept before green cover existed get it here, a few at a time
+COVER_NOT_CHECKED = (
+    "Not measured on this photo yet: the colour rule was checked on one photo, and how green leaves look depends "
+    "on the camera and the day."
+)
 COVER_MEASURED = (
     "Green cover is the share of the field's ground under living green plants of any kind, crop and weeds alike: "
     "the colour of a photo cannot tell them apart. Measured on one photo (Cyampirita, 26 fields) against careful "
     "readers of 40 points per field: within about 3 points for a typical field, and within 10 points on 20 of 24 "
     "fields. Least sure on sparse, pale or blurred ground, where even careful readers could not tell plant from "
-    "soil. It is a reading of the day the photo was taken, not a yield."
+    "soil. It is a reading of the day the photo was taken, not a yield. It is given only on photos the rule was "
+    "checked on: on another photo with paler colour the same rule found almost no green where plants stood."
 )
 
 
@@ -511,8 +517,31 @@ async def _store_kept(s3: Any, bucket: str, photo_key: str, rows: list[dict[str,
                         ContentType="application/json")
 
 
-async def _with_green_cover(cog_url: Optional[str], row: dict[str, Any]) -> dict[str, Any]:
-    """The row with its green cover measured; a photo that cannot be read leaves it unmeasured, to try again."""
+def cover_rule_key(photo_key: str) -> str:
+    """Where the record lives that says the green rule was checked on this photo."""
+    return f"{_prefix(photo_key)}/cover_rule.json"
+
+
+def cover_rule_record(checked_by: str) -> dict[str, Any]:
+    """The record `scripts/mark_cover_checked.py` stores for a photo the green rule was checked on."""
+    return {"version": 1, "threshold": GREEN_THRESHOLD, "checked_by": checked_by,
+            "checked_at": datetime.now(timezone.utc).isoformat(timespec="seconds")}
+
+
+async def cover_checked(s3: Any, bucket: str, photo_key: str) -> bool:
+    """Whether the green rule was checked on this photo. A threshold measures how green one camera on one day
+    recorded leaves (Test 79: on Kabarama the same rule called 21 of 24 squares 0 to 1% green), so it is only used
+    on a photo it was checked on, and only at the threshold that was checked."""
+    record = await stored_files.load_json(s3, bucket, cover_rule_key(photo_key))
+    return bool(record) and record.get("version") == 1 and record.get("threshold") == GREEN_THRESHOLD
+
+
+async def _with_green_cover(cog_url: Optional[str], row: dict[str, Any], checked: bool) -> dict[str, Any]:
+    """The row with its green cover measured, or marked not checked on this photo; a photo that cannot be read
+    leaves it unmeasured, to try again."""
+    if not checked:
+        row["green_cover"] = {"share": None, "why_not": COVER_NOT_CHECKED}
+        return row
     if cog_url is None:
         return row
     try:
@@ -522,20 +551,31 @@ async def _with_green_cover(cog_url: Optional[str], row: dict[str, Any]) -> dict
     return row
 
 
+def _cover_to_redo(row: dict[str, Any], checked: bool) -> bool:
+    cover = row.get("green_cover")
+    if not checked:
+        return cover != {"share": None, "why_not": COVER_NOT_CHECKED}
+    return cover is None or cover.get("why_not") == COVER_NOT_CHECKED
+
+
 async def fill_green_cover(s3: Any, bucket: str, photo_key: str, cog_url: str) -> None:
-    """Measure green cover for up to COVER_FILL_PER_CALL kept fields that have none yet (kept before it existed,
-    or the photo could not be read then)."""
-    missing = [row for row in await kept(s3, bucket, photo_key) if "green_cover" not in row][:COVER_FILL_PER_CALL]
-    if not missing:
+    """Bring every kept field's green cover in line with whether the rule was checked on this photo: on a photo it
+    was not checked on, no field shows a figure; on one it was, up to COVER_FILL_PER_CALL fields without a figure
+    (kept before it existed, before the photo was checked, or when the photo could not be read) are measured."""
+    checked = await cover_checked(s3, bucket, photo_key)
+    todo = [row for row in await kept(s3, bucket, photo_key) if _cover_to_redo(row, checked)]
+    if checked:
+        todo = todo[:COVER_FILL_PER_CALL]
+    if not todo:
         return
     measured = {row["id"]: row["green_cover"] for row in
-                [await _with_green_cover(cog_url, dict(row)) for row in missing] if "green_cover" in row}
+                [await _with_green_cover(cog_url, dict(row), checked) for row in todo] if "green_cover" in row}
     if not measured:
         return
     async with _record_locks.setdefault(photo_key, asyncio.Lock()):  # a keep or remove meanwhile is not lost
         rows, following = await _kept_record(s3, bucket, photo_key)
         for row in rows:
-            if row["id"] in measured and "green_cover" not in row:
+            if row["id"] in measured and _cover_to_redo(row, checked):
                 row["green_cover"] = measured[row["id"]]
         await _store_kept(s3, bucket, photo_key, rows, following)
 
@@ -561,7 +601,7 @@ async def keep(s3: Any, bucket: str, photo_key: str, taps: Sequence[Tap], pick: 
         own = await asyncio.to_thread(moved_line, moved, taps[0])
         row.update(by_hand=True, model_geometry=row["geometry"], model_area_ha=row["area_ha"],
                    model_overlap=_overlap(row["geometry"], own["geometry"]), **own)
-    row = await _with_green_cover(cog_url, row)
+    row = await _with_green_cover(cog_url, row, await cover_checked(s3, bucket, photo_key))
     async with _record_locks.setdefault(photo_key, asyncio.Lock()):  # two keeps at once: neither is lost
         rows, number = await _kept_record(s3, bucket, photo_key)
         if len(rows) >= MAX_KEPT_FIELDS:

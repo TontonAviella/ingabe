@@ -60,8 +60,11 @@ with up to two more taps ("this part too" / "not this part"), and keep it with i
    and weeds alike, from the photo's colour by the rule Tests 77 and 78 measured, unchanged (excess green 2g - r - b
    of the 3 x 3 pixel mean above 0.15, counted 0.5 m in from the line; `green_cover`). It is measured when the
    field is kept; fields kept before it existed get it when the screen next opens the photo, 20 at a time. It is
-   only given where it was measured: fields of 0.007 to 0.7 ha on photos with 2.5 to 4.5 cm pixels; elsewhere the
-   field says why not and shows no figure. Shown in whole per cent. If the photo cannot be read the field is kept
+   only given where it was measured: on a photo marked as checked (`scripts/mark_cover_checked.py`, run only after a
+   pre-registered test of the rule on that photo passed; the mark names the test and the threshold, and a mark for
+   another threshold counts as none), for fields of 0.007 to 0.7 ha, on photos with 2.5 to 4.5 cm pixels.
+   Elsewhere the field says why not and shows no figure; taking the mark off hides every figure on that photo.
+   Cyampirita is the one photo checked (Tests 77 and 78). Shown in whole per cent. If the photo cannot be read the field is kept
    anyway and its cover is measured on a later visit. What it means is said by the server (`COVER_MEASURED`).
 
 ## What was measured (plans/PLAN_RWANDA_CROPS.md, 2026-11-12)
@@ -76,6 +79,7 @@ with up to two more taps ("this part too" / "not this part"), and keep it with i
 | 76 | Rule 16 on the three choices of a first tap, 26 exam fields (70 choices) | 12 choices left out; all 12 were unusable (IoU < 0.5) and 2 to 35 times the drawn field; no field lost its best choice. It catches 12 of 21 over-large choices; the rest took in a neighbour away from the border. On the 31 tuning fields: 15 left out, 14 unusable, one 0.6 ha field lost its best choice |
 | 77 | Green cover from colour, threshold set on 31 tuning fields, against two blind readers of 40 random points in each of 26 exam fields | threshold 0.15; point accuracy 88%, median field error 0.06, 16 of 26 within 0.10: good enough to build on, not for clients. Colour read high on sparse ground (median error 0.16 on 9 fields under half cover; 0.03 on 16 fields of 0.7 or more) |
 | 78 | Tiebreak on the 103 points where readers and colour disagreed, by two readers of another model with an 8 m view, and Test 77 scored again | the tiebreak sided with colour on 42% (split); 25 points stayed undecidable. Scored again: point accuracy 94.5%, median field error 0.03, 20 of 24 within 0.10: passes the client bar, narrowly (counting the 25 undecidable points against colour gives 18 of 26) |
+| 79 | The same rule on a second photo (Kabarama, 4.56 cm, muted colour), 24 random 20 m squares; stopped before any reader | the rule called 21 of 24 squares 0 to 1% green although the photo shows plants; a colour threshold does not carry from one camera and day to another, so green cover is given only on photos it was checked on |
 
 Not measured: green cover on any photo but Cyampirita, or against the ground itself (the readers read the same photo); taps by a real person (the test placed them with a script from hand-drawn outlines), corners, ground
 that is not a field, any photo other than Cyampirita. The first correction made the outline worse on 6 of 26 fields
