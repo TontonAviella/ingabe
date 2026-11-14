@@ -21,4 +21,5 @@ def test_the_map_gets_the_plants_alone_unless_the_other_green_was_asked_for():
     assert [f["properties"]["kind_code"] for f in alone["features"]] == [0, 0]
     assert tools.points_drawn(found, show_other_green=True) is found
     assert len(found["features"]) == 5  # the kept answer itself is not changed
-    assert tools.CountPlantsArgs(layer_id="L", plot_number=2).show_other_green is False  # not drawn unless asked
+    # the choice is always stated (every tool argument is required), and its description says when to say yes
+    assert "ONLY when the person asks" in tools.CountPlantsArgs.model_fields["show_other_green"].description

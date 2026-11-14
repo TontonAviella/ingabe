@@ -49,7 +49,7 @@ class CountPlantsArgs(BaseModel):
     layer_id: str = Field(..., description="The layer_id of the drone photo (a raster layer on the map).")
     plot_number: int = Field(..., description="The plot's number as shown on the photo and in the question cards.")
     show_other_green: bool = Field(
-        default=False,
+        ...,
         description=("true ONLY when the person asks where the weeds, grass or other green are. Otherwise false: the "
                      "map then shows the crop plants alone, which is what a count is read from."))
 
