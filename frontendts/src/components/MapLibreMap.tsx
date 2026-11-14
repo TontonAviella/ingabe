@@ -120,7 +120,7 @@ async function createAgriIndicesLayer(layerId: string, geojsonUrl: string) {
 }
 
 import { bbox } from '@turf/turf';
-import { Activity, Brain, Database, History, Layers3, MousePointerClick, PanelRightOpen, Send, X, ZoomIn } from 'lucide-react';
+import { Activity, Brain, Database, Eye, EyeOff, History, Layers3, MousePointerClick, PanelRightOpen, Send, X, ZoomIn } from 'lucide-react';
 import {
   AJAXError,
   type LayerSpecification,
@@ -174,6 +174,7 @@ const EMPTY_POINT_CLOUD_LAYERS: MapLayer[] = [];
 // SWAP_XY is created lazily via getDeckModules() since Matrix4 is dynamically imported.
 
 const CHATS_HIDDEN_KEY = 'ingabe.chatsHidden';
+const PANELS_HIDDEN_KEY = 'ingabe.panelsHidden';
 interface MapLibreMapProps {
   mapId: string;
   width?: string;
@@ -327,6 +328,24 @@ export default function MapLibreMap({
       // private window or blocked storage: the choice lasts for this visit only
     }
   };
+  // The panels over the map (layers, cards, legends, the Sage box) can be put away so the photo is seen whole;
+  // remembered on this device. They also step aside by themselves while a field is being outlined.
+  const [panelsHidden, setPanelsHiddenState] = useState(() => {
+    try {
+      return localStorage.getItem(PANELS_HIDDEN_KEY) === '1';
+    } catch {
+      return false;
+    }
+  });
+  const setPanelsHidden = (hidden: boolean) => {
+    setPanelsHiddenState(hidden);
+    try {
+      localStorage.setItem(PANELS_HIDDEN_KEY, hidden ? '1' : '0');
+    } catch {
+      // private window or blocked storage: the choice lasts for this visit only
+    }
+  };
+  const mapClear = panelsHidden || tappingField;
   const [isMapReady, setIsMapReady] = useState(false);
 
   const {
@@ -1748,33 +1767,48 @@ export default function MapLibreMap({
     <>
       <div className={`relative map-container ${className} grow max-h-screen`} style={{ width, height }}>
         <div ref={mapContainerRef} style={{ width: '100%', height: '100%', minHeight: '100vh' }} className="bg-slate-950" />
-        <MapLegends key={mapInstanceId} map={mapRef.current} />
-        <AdminLevelsOverlay key={`admin-${mapInstanceId}`} map={mapRef.current} projectId={project.id} quiet={tappingField} />
-        <DroneCards
-          key={`cards-${mapInstanceId}`}
-          map={mapRef.current}
-          layers={mapData?.layers ?? []}
-          hiddenLayerIDs={hiddenLayerIDs}
-          historyOpen={mobileWorkspacePanel === 'history'}
-          chatsHidden={chatsHidden}
-          onAskSage={(prompt) => void sendMessage(prompt)}
-        />
-        <TowerCards
-          key={`towers-${mapInstanceId}`}
-          map={mapRef.current}
-          layers={mapData?.layers ?? []}
-          hiddenLayerIDs={hiddenLayerIDs}
-          historyOpen={mobileWorkspacePanel === 'history'}
-          chatsHidden={chatsHidden}
-          onAskSage={(prompt) => void sendMessage(prompt)}
-          sage={sageLink}
-        />
-        <CloseLookBubbles
-          key={`close-look-${mapInstanceId}`}
-          map={mapRef.current}
-          layers={mapData?.layers ?? []}
-          hiddenLayerIDs={hiddenLayerIDs}
-        />
+        <AdminLevelsOverlay key={`admin-${mapInstanceId}`} map={mapRef.current} projectId={project.id} quiet={mapClear} />
+        {/* put away, not unmounted: an open card or legend is as it was when the panels come back */}
+        <div className={mapClear ? 'hidden' : 'contents'} data-testid="map-panels">
+          <MapLegends key={mapInstanceId} map={mapRef.current} />
+          <DroneCards
+            key={`cards-${mapInstanceId}`}
+            map={mapRef.current}
+            layers={mapData?.layers ?? []}
+            hiddenLayerIDs={hiddenLayerIDs}
+            historyOpen={mobileWorkspacePanel === 'history'}
+            chatsHidden={chatsHidden}
+            onAskSage={(prompt) => void sendMessage(prompt)}
+          />
+          <TowerCards
+            key={`towers-${mapInstanceId}`}
+            map={mapRef.current}
+            layers={mapData?.layers ?? []}
+            hiddenLayerIDs={hiddenLayerIDs}
+            historyOpen={mobileWorkspacePanel === 'history'}
+            chatsHidden={chatsHidden}
+            onAskSage={(prompt) => void sendMessage(prompt)}
+            sage={sageLink}
+          />
+          <CloseLookBubbles
+            key={`close-look-${mapInstanceId}`}
+            map={mapRef.current}
+            layers={mapData?.layers ?? []}
+            hiddenLayerIDs={hiddenLayerIDs}
+          />
+        </div>
+        {!tappingField && (
+          <button
+            type="button"
+            className="absolute bottom-24 left-4 z-40 flex h-9 items-center gap-2 rounded-full border border-white/10 bg-panel/95 px-3.5 text-[13px] font-semibold text-fg shadow-md hover:border-caramel/60 cursor-pointer"
+            onClick={() => setPanelsHidden(!panelsHidden)}
+            aria-pressed={panelsHidden}
+            title={panelsHidden ? 'Show the layers, cards and Sage box again' : 'Put the panels away to see the whole map'}
+          >
+            {panelsHidden ? <Eye className="size-4 text-caramel" /> : <EyeOff className="size-4 text-caramel" />}
+            {panelsHidden ? 'Show panels' : 'Hide panels'}
+          </button>
+        )}
         <FieldTaps
           key={`field-taps-${mapInstanceId}`}
           map={mapRef.current}
@@ -1803,7 +1837,7 @@ export default function MapLibreMap({
             >
               {mobileWorkspacePanel === 'layers' ? <X className="size-5" /> : <Layers3 className="size-5" />}
             </button>
-            <div className={`${mobileWorkspacePanel === 'layers' ? 'block' : 'hidden'} sm:block`}>
+            <div className={mapClear ? 'hidden' : `${mobileWorkspacePanel === 'layers' ? 'block' : 'hidden'} sm:block`}>
               <LayerList
                 project={project}
                 currentMapData={mapData}
@@ -1929,22 +1963,28 @@ export default function MapLibreMap({
             </CardContent>
           </Card>
         )}
-        <SageReply
-          reply={lastAssistantMsg}
-          replyMessageId={lastMsg && lastMsg.role === 'assistant' ? lastMsg.id : undefined}
-          mapId={mapId}
-          waiting={!!lastMsg && (lastMsg.role === 'user' || lastMsg.role === 'tool' || (lastMsg.role === 'assistant' && !lastMsg.content))}
-          streamingText={streamingText}
-          actions={activeActions}
-          errors={criticalErrors}
-          cancelling={isCancelling}
-          onCancel={() => setIsCancelling(true)}
-          onDismissError={dismissError}
-          actionIcon={getActionIcon}
-          centered={chatsHidden}
-        />
+        {/* Sage's answer steps aside only while a field is being outlined: with "Hide panels" it stays, since a
+            question asked about a field still needs its answer seen */}
+        <div className={tappingField ? 'hidden' : 'contents'}>
+          <SageReply
+            reply={lastAssistantMsg}
+            replyMessageId={lastMsg && lastMsg.role === 'assistant' ? lastMsg.id : undefined}
+            mapId={mapId}
+            waiting={
+              !!lastMsg && (lastMsg.role === 'user' || lastMsg.role === 'tool' || (lastMsg.role === 'assistant' && !lastMsg.content))
+            }
+            streamingText={streamingText}
+            actions={activeActions}
+            errors={criticalErrors}
+            cancelling={isCancelling}
+            onCancel={() => setIsCancelling(true)}
+            onDismissError={dismissError}
+            actionIcon={getActionIcon}
+            centered={chatsHidden}
+          />
+        </div>
         <div
-          className={`z-30 absolute bottom-12 left-1/2 ${chatsHidden ? '' : 'xl:left-3/5'} transform -translate-x-1/2 w-[calc(100%-1rem)] sm:w-4/5 max-w-[34rem] flex items-center min-h-12 rounded-[18px] border border-white/10 bg-panel/95 shadow-[0_12px_32px_rgba(0,0,0,0.45)] backdrop-blur-xl focus-within:border-caramel/60`}
+          className={`z-30 absolute bottom-12 left-1/2 ${chatsHidden ? '' : 'xl:left-3/5'} transform -translate-x-1/2 w-[calc(100%-1rem)] sm:w-4/5 max-w-[34rem] ${mapClear ? 'hidden' : 'flex'} items-center min-h-12 rounded-[18px] border border-white/10 bg-panel/95 shadow-[0_12px_32px_rgba(0,0,0,0.45)] backdrop-blur-xl focus-within:border-caramel/60`}
         >
           <Input
             className={`flex-1 h-12 border-none shadow-none !bg-transparent px-4 text-[15px] text-fg placeholder:text-fg-subtle focus:!ring-0 focus:!ring-offset-0 focus-visible:!ring-0 focus-visible:!ring-offset-0 focus-visible:!outline-none`}

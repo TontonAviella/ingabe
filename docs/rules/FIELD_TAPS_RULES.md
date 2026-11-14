@@ -24,8 +24,15 @@ with up to two more taps ("this part too" / "not this part"), and keep it with i
 7. Areas are hectares on the ellipsoid (`ground_area.area_ha`): map area, as seen from above. On a slope the ground
    surface is larger (6% at 20 degrees); the caveat text says so.
 8. The text about what was measured comes from `field_taps.MEASURED`; screens do not write their own.
-9. The reader may pull the line of the picked outline to the true edge ("Move the line"); the line bends around
-   where it is grabbed. The server checks the moved line
+9. The reader may draw the true edge over the picked outline ("Move the line"): a stroke that starts on the line
+   (within 18 px) takes the place of the stretch of outline between its two ends, so a curved edge takes one
+   stroke (`lib/traceEdge.ts`). A stroke must end within 30 px of the line; one let go further away is dropped and
+   the screen says so, since joining it from there would draw a spike nobody meant. A stroke ends when the button or
+   finger is let go anywhere, also over a panel or outside the map. Of the two
+   stretches a stroke could replace, the one that leaves the first tap inside the outline is replaced, and the
+   shorter when both do; a stroke that would leave the tap outside changes nothing. "Undo last" takes back one
+   stroke, "Undo all" every one. A press away from the line, or with two fingers, moves the map as usual. The
+   server checks the moved line
    is one shape that does not cross itself and still covers the first tap, and measures its area. Kept, it is
    marked `by_hand`, with the model's outline, the model's area and the overlap of the two on the same record.
    A hand-moved outline is the reader's, not the model's: it is never counted in a test of the model.
@@ -102,4 +109,7 @@ before the second repaired it, so the screen keeps a "back" step.
 - "This part too" and "Not this part" taps carry a plus and a minus, not colour alone. Every outline has a dark edge.
 - An answer slower than about a second says what is happening and how long it can take.
 - Removing a kept field asks once. The list of kept fields only selects; removal is on the selected field.
+- The photo is the object: while a field is being outlined the layer list, the cards, the legends and the Sage box
+  and Sage's answer step aside and come back when the panel closes; "Hide panels" on the map does the same at any time and is
+  remembered on the device. The tap panel folds to its line of buttons (the arrow at its corner), also remembered.
 - Small text actions have a 36 px tap height.

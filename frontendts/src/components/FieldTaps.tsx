@@ -1,3 +1,4 @@
+import { ChevronDown, ChevronUp } from 'lucide-react';
 import type { GeoJSONSource, MapMouseEvent, MapTouchEvent, Map as MLMap } from 'maplibre-gl';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
@@ -14,6 +15,7 @@ import {
   useRemoveOutline,
 } from '@/hooks/useFieldTaps';
 import type { ServerError } from '@/lib/serverError';
+import { capped, nearestOnRing, type Pixel, reshaped } from '@/lib/traceEdge';
 import type { MapLayer } from '@/lib/types';
 
 // Tap a field on a prepared drone photo: up to three outlines come back, the reader picks one, may correct it
@@ -34,6 +36,7 @@ const SELECTED_COLOUR = '#f5a524';
 const LABEL_FONT = ['Open Sans Semibold'];
 const CHOICE_NAMES = ['A', 'B', 'C'];
 const EMPTY: GeoJSON.FeatureCollection = { type: 'FeatureCollection', features: [] };
+const FOLDED_KEY = 'ingabe.fieldTapsFolded';
 
 /** One step of the work on a field: the taps so far and what the server drew for them. */
 interface Step {
@@ -43,7 +46,7 @@ interface Step {
 }
 
 // off: closed. first: waiting for the first tap, or showing its three outlines. review: one outline picked.
-// add / remove: waiting for a correcting tap. move: the reader pulls the line of the picked outline.
+// add / remove: waiting for a correcting tap. move: the reader draws the true edge over the picked outline.
 type Mode = 'off' | 'first' | 'review' | 'add' | 'remove' | 'move';
 
 // An area in the unit and to the digits the outline supports: square metres for small fields (a hectare figure with
@@ -64,28 +67,13 @@ const link = 'inline-flex min-h-11 cursor-pointer items-center px-2 text-[12.5px
 
 const closed = (ring: Corner[]): GeoJSON.Polygon => ({ type: 'Polygon', coordinates: [[...ring, ring[0]]] });
 
-// Pulling the line: the reader grabs the outline within GRAB_PX of the pointer and drags. Corners within REACH_PX of
-// the grab follow, the nearest fully and the farthest not at all, so the line bends instead of making a spike. Before
-// a pull the outline gets a corner at least every STEP_PX, so a long straight side can bend too.
-const GRAB_PX = 14;
-const REACH_PX = 60;
-const STEP_PX = 10;
-const MAX_CORNERS = 560; // under the server's limit; past it the outline is pulled with the corners it has
-
-type Pixel = { x: number; y: number };
-
-/** The outline with a corner at least every STEP_PX on screen. */
-function withCloseCorners(ring: Corner[], project: (c: Corner) => Pixel, unproject: (p: Pixel) => Corner): Corner[] {
-  const out: Corner[] = [];
-  ring.forEach((corner, i) => {
-    out.push(corner);
-    const a = project(corner);
-    const b = project(ring[(i + 1) % ring.length]);
-    const pieces = Math.ceil(Math.hypot(b.x - a.x, b.y - a.y) / STEP_PX);
-    for (let k = 1; k < pieces; k++) out.push(unproject({ x: a.x + ((b.x - a.x) * k) / pieces, y: a.y + ((b.y - a.y) * k) / pieces }));
-  });
-  return out.length <= MAX_CORNERS ? out : ring;
-}
+// Drawing the true edge: the reader puts a finger on the outline (within GRAB_PX), draws along the edge of the field
+// and comes back to the outline (within END_PX); what was drawn takes the place of that stretch of outline
+// (lib/traceEdge). A curve takes one stroke. Points closer than TRACE_GAP_PX to the one before are not kept.
+const GRAB_PX = 18;
+const END_PX = 30; // a stroke must end this close to the outline; one that ends further away is dropped, not joined
+const TRACE_GAP_PX = 3;
+const MAX_CORNERS = 560; // under the server's limit; an outline with more is thinned evenly
 
 function features(
   steps: Step[],
@@ -226,6 +214,23 @@ export function FieldTaps({
   const [ringArea, setRingArea] = useState<number | null>(null);
   const ringRef = useRef<Corner[] | null>(null);
   ringRef.current = ring;
+  const [undo, setUndo] = useState<Corner[][]>([]); // the outline before each stroke, latest last
+  // The panel folded to its one line of buttons, so it covers less of the photo; the reader's choice is remembered.
+  const [folded, setFoldedState] = useState(() => {
+    try {
+      return localStorage.getItem(FOLDED_KEY) === '1';
+    } catch {
+      return false;
+    }
+  });
+  const setFolded = (next: boolean) => {
+    setFoldedState(next);
+    try {
+      localStorage.setItem(FOLDED_KEY, next ? '1' : '0');
+    } catch {
+      // a browser that refuses storage still folds for this visit
+    }
+  };
   // Each start-again makes earlier answers stale: one that arrives late is dropped, not shown.
   const round = useRef(0);
 
@@ -245,6 +250,7 @@ export function FieldTaps({
     setProblem(null);
     setRing(null);
     setRingArea(null);
+    setUndo([]);
     setMode(next);
   }, []);
 
@@ -324,35 +330,11 @@ export function FieldTaps({
     };
   }, [map, mode, prepared]);
 
-  // Pulling the line of the picked outline. The corners live here while the reader pulls; the server says
-  // what area the moved line has, or why it is no longer an outline.
+  // The server says what area a hand-drawn line has, or why it is no longer an outline.
   const firstTap = step?.taps[0] ?? null;
-  useEffect(() => {
-    if (!map || mode !== 'move' || !layerId || !firstTap || !ringRef.current) return;
-    let corners = ringRef.current;
-    let pull: { from: Corner; base: Corner[]; weights: number[] } | null = null;
-    const at = (e: MapMouseEvent | MapTouchEvent): Corner => [e.lngLat.lng, e.lngLat.lat];
-    const onDown = (e: MapMouseEvent | MapTouchEvent) => {
-      const project = (c: Corner): Pixel => map.project(c);
-      const base = withCloseCorners(corners, project, (p) => {
-        const { lng, lat } = map.unproject([p.x, p.y]);
-        return [lng, lat];
-      });
-      const far = base.map((c) => Math.hypot(project(c).x - e.point.x, project(c).y - e.point.y));
-      if (Math.min(...far) > GRAB_PX) return; // not on the line: the map pans as usual
-      e.preventDefault(); // the map stays still while the line is pulled
-      pull = { from: at(e), base, weights: far.map((d) => (d < REACH_PX ? 0.5 * (1 + Math.cos((Math.PI * d) / REACH_PX)) : 0)) };
-    };
-    const onMove = (e: MapMouseEvent | MapTouchEvent) => {
-      if (!pull) return;
-      const [lng, lat] = at(e);
-      const { from, base, weights } = pull;
-      corners = base.map((c, i) => [c[0] + weights[i] * (lng - from[0]), c[1] + weights[i] * (lat - from[1])]);
-      setRing(corners);
-    };
-    const onUp = () => {
-      if (!pull) return;
-      pull = null;
+  const measure = useCallback(
+    (corners: Corner[]) => {
+      if (!layerId || !firstTap) return;
       setRingArea(null); // not measured yet: Keep waits for the server's answer on this line
       measureMovedLine(layerId, firstTap, corners)
         .then((answer) => {
@@ -363,22 +345,85 @@ export function FieldTaps({
           setRingArea(null);
           setProblem(error.message);
         });
+    },
+    [layerId, firstTap],
+  );
+
+  // Drawing the true edge over the picked outline. The corners live here while the reader draws.
+  useEffect(() => {
+    if (!map || mode !== 'move' || !layerId || !firstTap || !ringRef.current) return;
+    let stroke: { before: Corner[]; base: Pixel[]; path: Pixel[]; keep: Pixel; now: Corner[] | null } | null = null;
+    const several = (e: MapMouseEvent | MapTouchEvent) => 'points' in e && e.points.length > 1;
+    const onDown = (e: MapMouseEvent | MapTouchEvent) => {
+      const before = ringRef.current;
+      if (!before || several(e)) return; // two fingers zoom the map
+      const base = before.map((c) => map.project(c) as Pixel);
+      if (nearestOnRing(base, e.point).far > GRAB_PX) return; // not on the line: the map pans as usual
+      e.preventDefault(); // the map stays still while the edge is drawn
+      setProblem(null);
+      stroke = { before, base, path: [{ x: e.point.x, y: e.point.y }], keep: map.project([firstTap.lon, firstTap.lat]), now: null };
+    };
+    const end = () => {
+      if (!stroke) return;
+      const { before, base, path, now } = stroke;
+      stroke = null;
+      if (!now) return; // a touch on the line with no stroke changes nothing
+      if (nearestOnRing(base, path[path.length - 1]).far > END_PX) {
+        // let go away from the line: joining it from there would make a spike nobody drew
+        setRing(before);
+        setProblem('End the stroke on the line. Nothing was changed.');
+        return;
+      }
+      setUndo((earlier) => [...earlier, before]);
+      measure(now);
+    };
+    const onMove = (e: MapMouseEvent | MapTouchEvent) => {
+      if (!stroke) return;
+      if (several(e)) {
+        // a second finger came down: the stroke is dropped and the outline is as it was
+        setRing(stroke.before);
+        stroke = null;
+        return;
+      }
+      if (e.originalEvent && 'buttons' in e.originalEvent && e.originalEvent.buttons === 0) {
+        end(); // the button was let go somewhere the map did not see (over a panel, outside the window)
+        return;
+      }
+      const last = stroke.path[stroke.path.length - 1];
+      if (Math.hypot(e.point.x - last.x, e.point.y - last.y) < TRACE_GAP_PX) return;
+      stroke.path.push({ x: e.point.x, y: e.point.y });
+      const next = reshaped(stroke.base, stroke.path, stroke.keep);
+      if (!next) return; // this far the stroke would leave the tapped spot outside: the last good line stays
+      stroke.now = capped(next, MAX_CORNERS).map((p) => {
+        const { lng, lat } = map.unproject([p.x, p.y]);
+        return [lng, lat] as Corner;
+      });
+      setRing(stroke.now);
     };
     map.on('mousedown', onDown);
     map.on('touchstart', onDown);
     map.on('mousemove', onMove);
     map.on('touchmove', onMove);
-    map.on('mouseup', onUp);
-    map.on('touchend', onUp);
+    map.on('mouseup', end);
+    map.on('touchend', end);
+    // a release anywhere ends the stroke, also over a panel or outside the map
+    window.addEventListener('mouseup', end);
+    window.addEventListener('touchend', end);
+    window.addEventListener('touchcancel', end);
+    window.addEventListener('blur', end);
     return () => {
       map.off('mousedown', onDown);
       map.off('touchstart', onDown);
       map.off('mousemove', onMove);
       map.off('touchmove', onMove);
-      map.off('mouseup', onUp);
-      map.off('touchend', onUp);
+      map.off('mouseup', end);
+      map.off('touchend', end);
+      window.removeEventListener('mouseup', end);
+      window.removeEventListener('touchend', end);
+      window.removeEventListener('touchcancel', end);
+      window.removeEventListener('blur', end);
     };
-  }, [map, mode, layerId, firstTap]);
+  }, [map, mode, layerId, firstTap, measure]);
 
   const open = mode !== 'off' && !!layerId && prepared;
   useEffect(() => {
@@ -400,6 +445,7 @@ export function FieldTaps({
       // the hand-moved line goes first: back to the outline as the model drew it
       setRing(null);
       setRingArea(null);
+      setUndo([]);
       setMode('review');
       return;
     }
@@ -512,25 +558,37 @@ export function FieldTaps({
         </div>
       ) : (
         <>
-          <p role="status" aria-live="polite" className="m-0 text-[14px] font-semibold">
-            {busy
-              ? slow
-                ? 'Getting the outline ready. The first tap after a restart can take about 10 seconds.'
-                : 'Working…'
-              : !step
-                ? 'Tap inside the field.'
-                : pick === null
-                  ? 'Which outline is your field?'
-                  : mode === 'add'
-                    ? 'Tap a part of the field the outline missed.'
-                    : mode === 'remove'
-                      ? 'Tap a part the outline should not cover.'
-                      : mode === 'move'
-                        ? 'Pull the line to the true edge of the field.'
-                        : ring
-                          ? `Your field: ${ringArea === null ? 'not an outline' : ha(ringArea)} · line moved by hand`
-                          : `Your field: ${picked ? ha(picked.area_ha) : 'no outline'}`}
-          </p>
+          <div className="flex items-start justify-between gap-2">
+            <p role="status" aria-live="polite" className="m-0 text-[14px] font-semibold">
+              {busy
+                ? slow
+                  ? 'Getting the outline ready. The first tap after a restart can take about 10 seconds.'
+                  : 'Working…'
+                : !step
+                  ? 'Tap inside the field.'
+                  : pick === null
+                    ? 'Which outline is your field?'
+                    : mode === 'add'
+                      ? 'Tap a part of the field the outline missed.'
+                      : mode === 'remove'
+                        ? 'Tap a part the outline should not cover.'
+                        : mode === 'move'
+                          ? 'Draw along the true edge: start on the line and end on the line.'
+                          : ring
+                            ? `Your field: ${ringArea === null ? 'not an outline' : ha(ringArea)} · line moved by hand`
+                            : `Your field: ${picked ? ha(picked.area_ha) : 'no outline'}`}
+            </p>
+            <button
+              type="button"
+              className="-mr-1 -mt-1 inline-flex min-h-11 min-w-11 shrink-0 cursor-pointer items-center justify-center rounded-[10px] text-fg-soft hover:bg-panel-2 sm:min-h-9 sm:min-w-9"
+              aria-label={folded ? 'Show the whole panel' : 'Fold the panel'}
+              aria-expanded={!folded}
+              title={folded ? 'Show the whole panel' : 'Fold the panel, to see more of the photo'}
+              onClick={() => setFolded(!folded)}
+            >
+              {folded ? <ChevronUp className="size-4" /> : <ChevronDown className="size-4" />}
+            </button>
+          </div>
           {step && pick === null && (
             <div className="flex flex-wrap gap-2">
               {step.outlines.map((o, i) => (
@@ -550,7 +608,7 @@ export function FieldTaps({
               <button type="button" className={plain} onClick={() => giveUp('none_of_these', 'first')}>
                 None of these
               </button>
-              {step.leftOut > 0 && (
+              {step.leftOut > 0 && !folded && (
                 <p className="m-0 w-full text-[12px] text-fg-muted">
                   {step.leftOut === 1 ? 'A larger outline was' : `${step.leftOut} larger outlines were`} left out for running past the edge
                   of what was read here. On the test photo such outlines were almost never a single field.
@@ -563,8 +621,21 @@ export function FieldTaps({
               <button type="button" className={strong} onClick={() => setMode('review')}>
                 Done
               </button>
+              <button
+                type="button"
+                className={plain}
+                disabled={undo.length === 0}
+                onClick={() => {
+                  const earlier = undo[undo.length - 1];
+                  setUndo(undo.slice(0, -1));
+                  setRing(earlier);
+                  measure(earlier);
+                }}
+              >
+                Undo last
+              </button>
               <button type="button" className={plain} onClick={back}>
-                Undo my changes
+                Undo all
               </button>
               {ringArea !== null && <span className="text-[13px] text-fg-soft">{ha(ringArea)}</span>}
             </div>
@@ -609,7 +680,7 @@ export function FieldTaps({
               </button>
             </div>
           )}
-          {step && pick !== null && !canCorrect && !ring && mode !== 'move' && (
+          {step && pick !== null && !canCorrect && !ring && mode !== 'move' && !folded && (
             <p className="m-0 text-[12px] text-fg-muted">No corrections left for this field. Keep it, go back, or start again.</p>
           )}
           {problem && (
@@ -617,7 +688,7 @@ export function FieldTaps({
               {problem}
             </p>
           )}
-          <div className="flex items-center justify-between gap-3">
+          <div className={folded ? 'hidden' : 'flex items-center justify-between gap-3'}>
             <button type="button" className={link} onClick={() => giveUp('started_again', 'first')}>
               Start again
             </button>
@@ -650,7 +721,7 @@ export function FieldTaps({
           ))}
         </ul>
       )}
-      {open && (
+      {open && !folded && (
         <details className="text-[12.5px] leading-snug text-fg-soft">
           <summary className="flex min-h-11 sm:min-h-9 cursor-pointer items-center">What was measured, and what was not</summary>
           <p className="m-0 mt-1">{state.data?.measured}</p>
