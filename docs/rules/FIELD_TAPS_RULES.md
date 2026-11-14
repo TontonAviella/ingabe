@@ -39,8 +39,12 @@ with up to six more taps ("this part too" / "not this part"), and keep it with i
    dropped and the outline is as it was. A press away from the line, or with two fingers, moves the map as usual. Freehand drawing of the
    edge was removed on 2026-11-14: Roger found it hard on the live site (start on the line, trace, end on the
    line). The
-   server checks the moved line
-   is one shape that does not cross itself and still covers the first tap, and measures its area. Kept, it is
+   server measures the moved line. A pull can slip the line a hair past its neighbour at a tight bend and make a
+   loop too small to see; that is the tool's doing, so the server cuts such loops away, keeps the piece around the
+   first tap as the field, and sends the tidied line back for the screen to draw (`moved_line`, `tidied`). The
+   reader is never told a line "crosses itself" or asked to repair one (Roger hit exactly that on the live site,
+   2026-11-14, with an outline that looked right). The only refusals left are a line that no longer covers the
+   first tap ("Use Undo last"), one over 2 ha, and one further than 500 m from the tap. Kept, it is
    marked `by_hand`, with the model's outline, the model's area and the overlap of the two on the same record.
    A hand-moved outline is the reader's, not the model's: it is never counted in a test of the model.
 10. Every answered tap that ends without a kept outline is recorded with its reason (`none_of_these`,

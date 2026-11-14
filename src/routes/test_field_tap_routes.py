@@ -169,7 +169,10 @@ async def test_a_tap_is_outlined_corrected_kept_and_removed(client, photo, taps_
     assert measured.status_code == 200, measured.text
     crossed = await client.post(f"{base}/moved-line",
                                 json={"first_tap": first, "moved": [square[0], square[2], square[1], square[3]]})
-    assert crossed.status_code == 422 and "crosses itself" in crossed.json()["detail"]
+    # a line that crosses itself is tidied, never handed back to the reader to repair: the piece around the first
+    # tap comes back as the outline to draw, smaller than the square
+    assert crossed.status_code == 200 and crossed.json()["tidied"] is True
+    assert 0 < crossed.json()["area_ha"] < measured.json()["area_ha"] and measured.json()["tidied"] is False
     by_hand = await client.post(f"{base}/kept", json={**_json(_tap(60, 10), pick=0), "moved": square})
     assert by_hand.status_code == 200, by_hand.text
     assert by_hand.json()["by_hand"] is True and by_hand.json()["area_ha"] == measured.json()["area_ha"]
