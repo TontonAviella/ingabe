@@ -110,6 +110,6 @@ before the second repaired it, so the screen keeps a "back" step.
 - An answer slower than about a second says what is happening and how long it can take.
 - Removing a kept field asks once. The list of kept fields only selects; removal is on the selected field.
 - The photo is the object: while a field is being outlined the layer list, the cards, the legends and the Sage box
-  step aside and come back when the panel closes; "Hide panels" on the map does the same at any time and is
+  and Sage's answer step aside and come back when the panel closes; "Hide panels" on the map does the same at any time and is
   remembered on the device. The tap panel folds to its line of buttons (the arrow at its corner), also remembered.
 - Small text actions have a 36 px tap height.

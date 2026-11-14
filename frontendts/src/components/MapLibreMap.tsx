@@ -1963,20 +1963,26 @@ export default function MapLibreMap({
             </CardContent>
           </Card>
         )}
-        <SageReply
-          reply={lastAssistantMsg}
-          replyMessageId={lastMsg && lastMsg.role === 'assistant' ? lastMsg.id : undefined}
-          mapId={mapId}
-          waiting={!!lastMsg && (lastMsg.role === 'user' || lastMsg.role === 'tool' || (lastMsg.role === 'assistant' && !lastMsg.content))}
-          streamingText={streamingText}
-          actions={activeActions}
-          errors={criticalErrors}
-          cancelling={isCancelling}
-          onCancel={() => setIsCancelling(true)}
-          onDismissError={dismissError}
-          actionIcon={getActionIcon}
-          centered={chatsHidden}
-        />
+        {/* Sage's answer steps aside only while a field is being outlined: with "Hide panels" it stays, since a
+            question asked about a field still needs its answer seen */}
+        <div className={tappingField ? 'hidden' : 'contents'}>
+          <SageReply
+            reply={lastAssistantMsg}
+            replyMessageId={lastMsg && lastMsg.role === 'assistant' ? lastMsg.id : undefined}
+            mapId={mapId}
+            waiting={
+              !!lastMsg && (lastMsg.role === 'user' || lastMsg.role === 'tool' || (lastMsg.role === 'assistant' && !lastMsg.content))
+            }
+            streamingText={streamingText}
+            actions={activeActions}
+            errors={criticalErrors}
+            cancelling={isCancelling}
+            onCancel={() => setIsCancelling(true)}
+            onDismissError={dismissError}
+            actionIcon={getActionIcon}
+            centered={chatsHidden}
+          />
+        </div>
         <div
           className={`z-30 absolute bottom-12 left-1/2 ${chatsHidden ? '' : 'xl:left-3/5'} transform -translate-x-1/2 w-[calc(100%-1rem)] sm:w-4/5 max-w-[34rem] ${mapClear ? 'hidden' : 'flex'} items-center min-h-12 rounded-[18px] border border-white/10 bg-panel/95 shadow-[0_12px_32px_rgba(0,0,0,0.45)] backdrop-blur-xl focus-within:border-caramel/60`}
         >
