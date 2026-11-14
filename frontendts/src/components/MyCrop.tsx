@@ -1,5 +1,5 @@
 import type { ExpressionSpecification, GeoJSONSource, MapMouseEvent, Map as MLMap } from 'maplibre-gl';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { countMyCrop, type KeptOutline, type MyCropFound, type Place } from '@/hooks/useFieldTaps';
 import type { ServerError } from '@/lib/serverError';
 import { inside } from '@/lib/traceEdge';
@@ -120,7 +120,9 @@ export function MyCrop({ map, layerId, field, onClose }: { map: MLMap | null; la
     },
     [],
   );
-  useDrawn(map, drawn(crop, other, found));
+  // the same data until a tap or the answer changes: the map is not given every point again on each progress update
+  const data = useMemo(() => drawn(crop, other, found), [crop, other, found]);
+  useDrawn(map, data);
 
   // Taps on the map while taps are being asked for. One outside the field is not taken: the server would refuse it.
   const taps = stage === 'crop' ? crop : other;
@@ -172,6 +174,8 @@ export function MyCrop({ map, layerId, field, onClose }: { map: MLMap | null; la
     };
   }, [stage, layerId, field.id, crop, other]);
 
+  // the server takes no more than MAX_TAPS of a sort: say so, since further taps on the map do nothing
+  const atMost = taps.length >= MAX_TAPS ? ', the most that are used' : '';
   const button = 'min-h-11 px-3 rounded-[12px] text-[13px] font-semibold cursor-pointer disabled:opacity-50 sm:min-h-9';
   const plain = `${button} bg-panel-2 text-fg hover:bg-panel-3`;
   const strong = `${button} bg-caramel text-panel hover:bg-caramel-hi`;
@@ -187,9 +191,9 @@ export function MyCrop({ map, layerId, field, onClose }: { map: MLMap | null; la
   return (
     <div className="flex flex-col gap-2" data-my-crop={stage}>
       <p role="status" aria-live="polite" className="m-0 text-[14px] font-semibold">
-        {stage === 'crop' && `Tap ${MIN_TAPS} plants of your crop in Field ${field.number}. ${crop.length} tapped.`}
+        {stage === 'crop' && `Tap ${MIN_TAPS} plants of your crop in Field ${field.number}. ${crop.length} tapped${atMost}.`}
         {stage === 'other' &&
-          `Now tap ${MIN_TAPS} green things that are not your crop: weeds, grass, other plants. ${other.length} tapped.`}
+          `Now tap ${MIN_TAPS} green things that are not your crop: weeds, grass, other plants. ${other.length} tapped${atMost}.`}
         {stage === 'reading' &&
           (progress
             ? `Reading Field ${field.number}: ${progress.done} of ${progress.total} parts. The first count of a field takes a few minutes; after that it is quick.`

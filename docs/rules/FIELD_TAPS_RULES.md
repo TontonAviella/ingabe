@@ -98,6 +98,11 @@ with up to two more taps ("this part too" / "not this part"), and keep it with i
    whole app, and kept by photo and square; the screen is told how many parts are done and asks again with the
    same taps. New taps on a field already read answer at once. The job lives in the app's memory: a restart loses
    the progress shown, not the squares already kept.
+23. Counting a crop is for people who may edit the layer (`edit_layer`): the first ask of a field starts minutes of
+   work and writes to storage, so a viewer cannot start it. At most 5 fields are read or wait at once
+   (`my_crop.MAX_WAITING`); a sixth is told to come back (503). A reading that fails leaves only its reason in
+   words, says it once, and the next ask starts again. Kept squares are not removed when a photo is deleted, and
+   the queue lives in one process: with more than one app worker each would read on its own.
 
 ## What was measured (plans/PLAN_RWANDA_CROPS.md, 2026-11-12)
 

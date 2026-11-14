@@ -215,6 +215,10 @@ async def test_a_viewer_gets_outlines_but_cannot_keep_or_remove(client, photo, t
     assert kept.status_code == 200, kept.text
     _as(VIEWER)
     assert (await client.delete(f"{base}/kept/{kept.json()['id']}")).status_code in (403, 404)
+    place = {"lon": _tap(60, 10).lon, "lat": _tap(60, 10).lat}
+    counted = await client.post(f"{base}/kept/{kept.json()['id']}/my-crop",
+                                json={"crop": [place] * 3, "other": [place] * 3})
+    assert counted.status_code in (403, 404)  # counting a crop starts minutes of work: not for a viewer
     assert len((await client.get(base)).json()["kept"]) == 1
     _as(str(uuid.uuid4()))  # a stranger learns nothing
     assert (await client.get(base)).status_code in (403, 404)
@@ -276,7 +280,8 @@ async def test_only_my_crop_is_asked_for_a_kept_field_with_the_readers_taps(clie
     kept = (await client.post(f"{base}/kept", json=_json(_tap(60, 10), pick=0))).json()
     asked: list[tuple] = []
     answers = iter([{"working": True, "done": 1, "total": 4}, {"my_crop": 12, "other_plants": 3},
-                    my_crop.TapProblem("A tap lies outside the field."), plant_finder.CannotCount("3 cm pixels only")])
+                    my_crop.TapProblem("A tap lies outside the field."), plant_finder.CannotCount("3 cm pixels only"),
+                    my_crop.Busy("Other fields are being read right now.")])
 
     async def count(url, feature, s3, bucket, key, crop, other):
         asked.append((feature["geometry"], feature["properties"]["area_ha"], key, crop, other))
@@ -297,7 +302,11 @@ async def test_only_my_crop_is_asked_for_a_kept_field_with_the_readers_taps(clie
     for why in ("outside the field", "3 cm pixels only"):
         refused = await client.post(url, json=body)
         assert refused.status_code == 422 and why in refused.json()["detail"]
-    # fewer than three taps of a sort never reach the counter; an unknown field is a 404
-    assert (await client.post(url, json={"crop": [place] * 2, "other": [place] * 3})).status_code == 422
+    busy = await client.post(url, json=body)
+    assert busy.status_code == 503 and "being read" in busy.json()["detail"]
+    # too few or too many taps of a sort, or a tap off the globe, never reach the counter; an unknown field is a 404
+    for bad in ({"crop": [place] * 2, "other": [place] * 3}, {"crop": [place] * 3, "other": [place] * 11},
+                {"crop": [{"lon": 30.0, "lat": 91.0}] * 3, "other": [place] * 3}):
+        assert (await client.post(url, json=bad)).status_code == 422
     assert (await client.post(f"{base}/kept/nope/my-crop", json=body)).status_code == 404
-    assert len(asked) == 4
+    assert len(asked) == 5

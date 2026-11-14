@@ -11,6 +11,7 @@ import asyncio
 import numpy as np
 import pytest
 import rasterio
+from botocore.exceptions import ClientError
 from PIL import Image
 from pyproj import Transformer
 from rasterio.transform import from_origin
@@ -67,6 +68,11 @@ class Store:
 
     def put_object(self, Bucket, Key, Body, **_):  # noqa: N803
         self.kept[Key] = Body
+
+    def head_object(self, Bucket, Key):  # noqa: N803
+        if Key not in self.kept:
+            raise ClientError({"Error": {"Code": "404"}}, "HeadObject")
+        return {}
 
 
 @pytest.fixture
@@ -173,3 +179,41 @@ async def test_the_first_ask_starts_the_reading_and_the_next_ask_after_it_answer
     big = {**plot, "properties": {**plot["properties"], "area_ha": 3.0}}
     with pytest.raises(plant_finder.CannotCount, match="up to 0.5 ha"):
         await my_crop.count(path, big, store, "b", "photo", CROP_TAPS, OTHER_TAPS)
+
+
+@pytest.mark.anyio
+async def test_a_reading_that_fails_says_so_once_keeps_no_error_object_and_can_be_asked_again(tmp_path, stand_ins,
+                                                                                               monkeypatch):
+    path, store, plot = _photo(tmp_path), Store(), _plot(0, 0, 2 * N, N)
+    real = my_crop.prepare
+
+    def broken(*args):
+        raise RuntimeError("storage is down")
+
+    monkeypatch.setattr(my_crop, "prepare", broken)
+    assert (await my_crop.count(path, plot, store, "b", "photo", CROP_TAPS, OTHER_TAPS))["working"] is True
+    job = next(iter(my_crop._jobs.values()))
+    await asyncio.wait_for(job["task"], 20)  # the job itself ends without raising: nothing holds the model
+    assert job["task"].exception() is None and isinstance(job["error"], str)
+    with pytest.raises(plant_finder.CannotCount, match="could not be read"):
+        await my_crop.count(path, plot, store, "b", "photo", CROP_TAPS, OTHER_TAPS)
+    assert my_crop._jobs == {}
+    monkeypatch.setattr(my_crop, "prepare", real)  # storage is back: the next ask starts again and answers
+    assert (await my_crop.count(path, plot, store, "b", "photo", CROP_TAPS, OTHER_TAPS))["working"] is True
+    await asyncio.wait_for(next(iter(my_crop._jobs.values()))["task"], 20)
+    assert (await my_crop.count(path, plot, store, "b", "photo", CROP_TAPS, OTHER_TAPS))["my_crop"] > 0
+
+
+@pytest.mark.anyio
+async def test_only_so_many_fields_wait_to_be_read_and_a_square_without_plants_counts_none(tmp_path, stand_ins,
+                                                                                         monkeypatch):
+    path, store, plot = _photo(tmp_path), Store(), _plot(0, 0, 2 * N, N)
+    monkeypatch.setattr(my_crop, "_jobs", {f"other{n}": {"done": 0, "total": 0} for n in range(my_crop.MAX_WAITING)})
+    with pytest.raises(my_crop.Busy, match="Try this one again"):
+        await my_crop.count(path, plot, store, "b", "photo", CROP_TAPS, OTHER_TAPS)
+    # a countable square in which the finder boxes nothing: no plant of any kind, and no error
+    monkeypatch.setattr(plant_finder, "plant_boxes", lambda models, rgb: [])
+    my_crop.prepare(path, plot, store, "b", "bare", lambda done, total: None)
+    found = my_crop.answer(path, plot, store, "b", "bare", CROP_TAPS, OTHER_TAPS)
+    assert (found["my_crop"], found["other_plants"], found["per_ha"]) == (0, 0, 0)
+    assert found["other_green"] > 0  # the green is still flagged

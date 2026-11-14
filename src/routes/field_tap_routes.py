@@ -158,10 +158,11 @@ async def remove_field_outline(outline_id: str, layer: MapLayer = Depends(edit_l
 
 
 @router.post("/layer/{layer_id}/field-taps/kept/{outline_id}/my-crop", operation_id="count_my_crop_in_field")
-async def count_my_crop_in_field(outline_id: str, body: MyCropIn, layer: MapLayer = Depends(get_layer),
+async def count_my_crop_in_field(outline_id: str, body: MyCropIn, layer: MapLayer = Depends(edit_layer),
                                  session: UserContext = Depends(verify_session_required)) -> dict[str, Any]:
     """The plants of the reader's crop in one kept field, sorted by their taps; {"working": true, "done", "total"}
-    while the field's squares are being read in the background (ask again with the same taps)."""
+    while the field's squares are being read in the background (ask again with the same taps). For people who may
+    edit the layer: the first ask of a field starts minutes of work and writes to storage."""
     key = await _photo_key(layer)
     s3, bucket = await get_async_s3_client(), get_bucket_name()
     row = next((r for r in await field_taps.kept(s3, bucket, key, layer.layer_id) if r["id"] == outline_id), None)
@@ -174,3 +175,5 @@ async def count_my_crop_in_field(outline_id: str, body: MyCropIn, layer: MapLaye
                                    [(p.lon, p.lat) for p in body.crop], [(p.lon, p.lat) for p in body.other])
     except (my_crop.TapProblem, plant_finder.CannotCount) as e:
         raise HTTPException(422, str(e)) from None
+    except my_crop.Busy as e:
+        raise HTTPException(503, str(e)) from None

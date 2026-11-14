@@ -6,8 +6,9 @@ boxed plant is "their crop" when it looks more like the first taps than the seco
 
 What a plant looks like: a square of the photo's grid is read at twice its size (SIDE pixels), DINOv2-small gives
 one vector for each 14-pixel patch (GRID x GRID patches, one about 0.22 m), and a plant's look is the mean of the
-3 x 3 patches around its centre, at unit length. A box is the reader's crop when its look lies nearer (cosine) the
-mean look of the crop taps than the mean look of the other taps.
+3 x 3 patches around its centre, at unit length. A box is the reader's crop when its look has the larger dot product
+with the mean look of the crop taps than with the mean look of the other taps (the means are not brought back to
+unit length, and a tie goes to the crop: exactly the rule Test 81 scored, `t82/chain.py`).
 
 Measured on Cyampirita (3.25 cm pixels), on 16 squares two blind markers fully counted, with three taps of each
 sort drawn from the markers' own dots: over all 44 cases 80% of highlighted plants were the tapped crop and 88% of
@@ -32,6 +33,7 @@ from typing import Any, Callable, Optional, Sequence
 
 import numpy as np
 import rasterio
+from botocore.exceptions import ClientError
 from PIL import Image
 from pyproj import Transformer
 from shapely.geometry import Point
@@ -103,6 +105,17 @@ def _load_square(s3: Any, bucket: str, photo_key: str, j: int, i: int) -> Option
         return {name: parts[name] for name in parts.files}
 
 
+def _has_square(s3: Any, bucket: str, photo_key: str, j: int, i: int) -> bool:
+    """Whether a square's parts are kept, without fetching them."""
+    try:
+        s3.head_object(Bucket=bucket, Key=_square_key(photo_key, j, i))
+    except ClientError as error:
+        if error.response.get("Error", {}).get("Code") in ("404", "NoSuchKey", "NotFound"):
+            return False
+        raise
+    return True
+
+
 def square_parts(rgb: Optional[np.ndarray], metres_per_px: float, models: plant_finder.Models,
                  look: Any) -> dict[str, np.ndarray]:
     """What is kept of one square: its state, and where counted its plant boxes, the look of every patch and the
@@ -138,7 +151,7 @@ def prepare(cog_url: str, feature: dict[str, Any], s3: Any, bucket: str, photo_k
     it runs)."""
     with rasterio.open(cog_url) as ds:
         placed = plant_finder.layout(ds, feature)
-        todo = [key for key in placed.squares if _load_square(s3, bucket, photo_key, *key) is None]
+        todo = [key for key in placed.squares if not _has_square(s3, bucket, photo_key, *key)]
         done = len(placed.squares) - len(todo)
         tick(done, len(placed.squares))
         if not todo:
@@ -184,6 +197,8 @@ def answer(cog_url: str, feature: dict[str, Any], s3: Any, bucket: str, photo_ke
         key = (int(x // n), int(y // n))
         if not inside.contains(Point(x, y)):
             raise TapProblem("A tap lies outside the field. Tap plants inside its line.")
+        if key not in squares:
+            raise TapProblem("A tap lies at the very edge of the field. Tap a little further inside.")
         if key not in counted:
             raise TapProblem("A tap lies on ground where single plants cannot be told apart. Tap where each plant "
                              "shows on its own.")
@@ -229,8 +244,13 @@ def answer(cog_url: str, feature: dict[str, Any], s3: Any, bucket: str, photo_ke
     }
 
 
-_jobs: dict[str, dict[str, Any]] = {}  # field -> {"task", "done", "total"}; in this process only
+_jobs: dict[str, dict[str, Any]] = {}  # field -> {"task", "done", "total", "error"}; in this process only
 _work = asyncio.Lock()  # one field is prepared at a time in the whole app: the look model is heavy
+MAX_WAITING = 5  # fields being read or waiting their turn; past it a new field is told to come back
+
+
+class Busy(Exception):
+    """Too many fields are being read; the message says so in plain words."""
 
 
 def _job_key(photo_key: str, feature: dict[str, Any]) -> str:
@@ -238,36 +258,54 @@ def _job_key(photo_key: str, feature: dict[str, Any]) -> str:
 
 
 async def _prepare(key: str, cog_url: str, feature: dict[str, Any], s3: Any, bucket: str, photo_key: str) -> None:
-    def tick(done: int, total: int) -> None:
-        _jobs[key].update(done=done, total=total)
+    """Read one field's squares. A job that ends well takes its entry away; one that fails leaves only its reason
+    in words, never the error itself (an error would hold the look model in memory until someone asked again)."""
+    job = _jobs[key]
 
-    async with _work:
-        await asyncio.to_thread(prepare, cog_url, feature, s3, bucket, photo_key, tick)
+    def tick(done: int, total: int) -> None:
+        job.update(done=done, total=total)
+
+    try:
+        async with _work:
+            await asyncio.to_thread(prepare, cog_url, feature, s3, bucket, photo_key, tick)
+    except plant_finder.CannotCount as why:
+        job["error"] = str(why)
+    except Exception:
+        logger.exception("only my crop: the field could not be read")
+        job["error"] = "The photo could not be read for this field. Try again in a moment."
+    else:
+        if _jobs.get(key) is job:
+            del _jobs[key]
 
 
 async def count(cog_url: str, feature: dict[str, Any], s3: Any, bucket: str, photo_key: str,
                 crop_taps: Sequence[tuple[float, float]], other_taps: Sequence[tuple[float, float]]) -> dict[str, Any]:
     """The reader's crop in one field, or {"working": True, "done", "total"} while its squares are being read in
     the background: ask again with the same taps. `s3` is a synchronous boto3 client. TapProblem and
-    plant_finder.CannotCount say why there is no answer."""
+    plant_finder.CannotCount say why there is no answer; Busy that too many fields are being read."""
     if not MIN_TAPS <= len(crop_taps) <= MAX_TAPS or not MIN_TAPS <= len(other_taps) <= MAX_TAPS:
         raise TapProblem(f"Tap {MIN_TAPS} to {MAX_TAPS} plants of your crop and {MIN_TAPS} to {MAX_TAPS} green "
                          "things that are not.")
     key = _job_key(photo_key, feature)
-    job = _jobs.get(key)
-    if job is not None and not job["task"].done():
+
+    def running() -> Optional[dict[str, Any]]:
+        job = _jobs.get(key)
+        if job is None:
+            return None
+        if "error" in job:  # said once, then the next ask may try again
+            del _jobs[key]
+            raise plant_finder.CannotCount(job["error"])
         return {"working": True, "done": job["done"], "total": job["total"]}
-    if job is not None:
-        del _jobs[key]
-        failed = job["task"].exception()
-        if isinstance(failed, plant_finder.CannotCount):
-            raise failed
-        if failed is not None:
-            logger.error("only my crop: the field could not be read", exc_info=failed)
-            raise plant_finder.CannotCount("The photo could not be read for this field. Try again in a moment.")
+
+    if (working := running()) is not None:
+        return working
     try:
         return await asyncio.to_thread(answer, cog_url, feature, s3, bucket, photo_key, crop_taps, other_taps)
     except NotReady:
+        if (working := running()) is not None:  # another ask started the reading while this one looked
+            return working
+        if sum("error" not in job for job in _jobs.values()) >= MAX_WAITING:
+            raise Busy("Other fields are being read right now. Try this one again in a few minutes.") from None
         _jobs[key] = {"done": 0, "total": 0}
         _jobs[key]["task"] = asyncio.create_task(_prepare(key, cog_url, feature, s3, bucket, photo_key))
         return {"working": True, "done": 0, "total": 0}
