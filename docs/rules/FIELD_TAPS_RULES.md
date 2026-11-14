@@ -18,7 +18,8 @@ with up to six more taps ("this part too" / "not this part"), and keep it with i
    pixel, as measured), with holes filled.
 5. A correction needs a picked outline. At most six corrections: the most that were tested (Test 83; four did all
    the work there). A correction can make the outline worse before the next repairs it, so Back is always there and
-   the screen says so after a correcting tap.
+   the screen says so after a correcting tap. Each correction runs the tap model once more per tap so far (seven
+   runs at the limit, about 0.2 s each on the server as measured for one run; the seven together are not measured).
 4a. Of the three outlines, one that covers nearly the same ground as an earlier one (overlap 0.9 or more) is
    dropped. None is dropped for being small: fields drawn by hand on Cyampirita go down to 0.008 ha.
 6. A kept outline is computed again on the server from the taps. The one shape a browser may send is a line the
@@ -32,7 +33,10 @@ with up to six more taps ("this part too" / "not this part"), and keep it with i
    smoothly to nothing along the line both ways, over a stretch that grows with the length of the pull (twice the
    pull, at least 40 px, never most of the outline), so a pull bends the line and never tears it. A pull that
    would leave the first tap outside the outline changes nothing. "Undo last" takes back one pull, "Undo all"
-   every one. A press away from the line, or with two fingers, moves the map as usual. Freehand drawing of the
+   every one. Only the pulled stretch gets new corners: every corner out of reach stays exactly where it was,
+   however many pulls are made. A pull longer than the line can follow is shortened so the line bends and does
+   not fold over itself. If the view changes under a pull (a wheel or pinch zoom, a rotated phone) the pull is
+   dropped and the outline is as it was. A press away from the line, or with two fingers, moves the map as usual. Freehand drawing of the
    edge was removed on 2026-11-14: Roger found it hard on the live site (start on the line, trace, end on the
    line). The
    server checks the moved line
@@ -123,6 +127,8 @@ with up to six more taps ("this part too" / "not this part"), and keep it with i
 | 81 | Only my crop: plant-finder boxes sorted by 3 + 3 taps drawn from two markers' dots, 16 fully counted exam squares, 44 cases | all: 80% of highlights right, 88% of the crop found (56% right with no taps): good enough to build on. One crop in the square: 89% and 91%: passes the client bar. Two or more: 74% and 86%: fails, narrowly. The app's ONNX look model gives the tested looks (lowest patch cosine 1.000 on 12 squares) |
 | 82 | More than two correcting taps, limit chosen on the 31 tuning fields by a rule fixed beforehand | the rule said keep two (at exactly three taps two fields were briefly spoiled) and the exam was not run. The rule was wrong for a limit that is a maximum; tuning showed good outlines 21 -> 27 and usable 29 -> 30 by six taps, none lost at five or six |
 | 83 | Up to six correcting taps, 26 exam fields, the app's own code, scripted reader, outline as it stands after the last tap | usable 26 (26 at two), close outlines (IoU 0.8) 25 (18 at two), none lost, none worse than its first outline, median area error 4.9% (7.0% at two): raise the limit. One field dipped under usable on the way. No field gained from a fifth or sixth tap |
+
+Rows 70, 75 and 83 give different figures for the same 26 fields at two corrections (25 / 25 / 26 usable; area error 4.7% / 5.9% / 7.0%). They are different runs: Test 70 used the test script's own outline code, Test 75 the app's, and Test 83 the app's after rule 16 stopped offering first choices that run along the window border, which changes which outline is picked on some fields. The text shown to readers (`field_taps.MEASURED`) quotes Test 83's run for both two and six corrections, so its figures compare like with like.
 
 Not measured: green cover on any photo but Cyampirita, or against the ground itself (the readers read the same photo); taps by a real person (the test placed them with a script from hand-drawn outlines), corners, ground
 that is not a field, any photo other than Cyampirita. The first correction made the outline worse on 6 of 26 fields

@@ -233,6 +233,7 @@ export function FieldTaps({
   };
   // Each start-again makes earlier answers stale: one that arrives late is dropped, not shown.
   const round = useRef(0);
+  const measuring = useRef(0); // the latest request to measure a pulled line
 
   const prepared = !!state.data?.prepared;
   const kept = state.data?.kept ?? [];
@@ -245,6 +246,7 @@ export function FieldTaps({
 
   const startAgain = useCallback((next: Mode) => {
     round.current += 1;
+    measuring.current += 1;
     setSteps([]);
     setPick(null);
     setProblem(null);
@@ -336,12 +338,15 @@ export function FieldTaps({
     (corners: Corner[]) => {
       if (!layerId || !firstTap) return;
       setRingArea(null); // not measured yet: Keep waits for the server's answer on this line
+      const asked = ++measuring.current; // an answer for an earlier line, arriving late, is not this line's
       measureMovedLine(layerId, firstTap, corners)
         .then((answer) => {
+          if (asked !== measuring.current) return;
           setRingArea(answer.area_ha);
           setProblem(null);
         })
         .catch((error: ServerError) => {
+          if (asked !== measuring.current) return;
           setRingArea(null);
           setProblem(error.message);
         });
@@ -392,6 +397,14 @@ export function FieldTaps({
       });
       setRing(pull.now);
     };
+    // the view changed under a pull (a wheel or pinch zoom, a rotated phone): its screen places are stale, so the
+    // pull is dropped and the outline is as it was
+    const onView = () => {
+      if (!pull) return;
+      setRing(pull.before);
+      pull = null;
+    };
+    map.on('movestart', onView);
     map.on('mousedown', onDown);
     map.on('touchstart', onDown);
     map.on('mousemove', onMove);
@@ -404,6 +417,7 @@ export function FieldTaps({
     window.addEventListener('touchcancel', end);
     window.addEventListener('blur', end);
     return () => {
+      map.off('movestart', onView);
       map.off('mousedown', onDown);
       map.off('touchstart', onDown);
       map.off('mousemove', onMove);
@@ -437,6 +451,7 @@ export function FieldTaps({
   const back = () => {
     setProblem(null);
     if (ring) {
+      measuring.current += 1; // an area still on its way belongs to the line being dropped
       // the hand-moved line goes first: back to the outline as the model drew it
       setRing(null);
       setRingArea(null);

@@ -31,9 +31,10 @@ describe('moving an outline by pulling its line', () => {
     // the far side did not move, and the corners furthest from the pull are where they were
     expect(near(out, 0, 0) && near(out, 0, 100)).toBe(true);
     expect(out.every((p) => p.x >= -0.001 && p.x <= 130.001)).toBe(true);
-    // smooth: no corner of the pulled line jumps more than the pull's own slope allows
-    const steps = out.map((p, i) => Math.hypot(p.x - out[(i + 1) % out.length].x, p.y - out[(i + 1) % out.length].y));
-    expect(Math.max(...steps)).toBeLessThan(12);
+    // smooth: along the stretch that moved, no corner jumps
+    const bent = out.filter((p) => p.x > 100.001).sort((a, b) => a.y - b.y); // down the side, whichever end the ring starts at
+    expect(bent.length).toBeGreaterThan(8);
+    expect(Math.max(...bent.slice(1).map((p, i) => Math.hypot(p.x - bent[i].x, p.y - bent[i].y)))).toBeLessThan(12);
     // pulled inwards the field gets smaller, by the same press
     const inwards = pulled(SQUARE, { x: 100, y: 50 }, { x: 80, y: 50 }, MIDDLE) as { x: number; y: number }[];
     expect(area(inwards)).toBeLessThan(10_000);
@@ -46,7 +47,42 @@ describe('moving an outline by pulling its line', () => {
     const large = pulled(SQUARE, { x: 100, y: 50 }, { x: 140, y: 50 }, MIDDLE) as { x: number; y: number }[];
     expect(moved(large)).toBeGreaterThan(moved(small));
     const huge = pulled(SQUARE, { x: 100, y: 50 }, { x: 900, y: 50 }, MIDDLE) as { x: number; y: number }[];
-    expect(near(huge, 0, 50, 3)).toBe(true); // the middle of the far side stayed
+    const west = Math.min(...huge.map((p) => p.x));
+    expect(west).toBeGreaterThanOrEqual(-0.001); // the far side did not come along
+    expect(west).toBeLessThan(3);
+  });
+
+  it('leaves every corner out of reach exactly where it was, pull after pull, and never folds the line', () => {
+    // a field 3000 px a side with a notch: far more line than a pull reaches
+    const big = [
+      { x: 0, y: 0 },
+      { x: 3000, y: 0 },
+      { x: 3000, y: 3000 },
+      { x: 1500, y: 3000 },
+      { x: 1500, y: 2900 },
+      { x: 1400, y: 2900 },
+      { x: 1400, y: 3000 },
+      { x: 0, y: 3000 },
+    ];
+    let ring = big;
+    for (const y of [400, 900, 1400])
+      ring = pulled(ring, { x: 3000, y }, { x: 3030, y }, { x: 1500, y: 1500 }) as { x: number; y: number }[];
+    for (const corner of big.filter((c) => c.x !== 3000)) expect(ring).toContainEqual(corner); // not a pixel moved
+    expect(ring.length).toBeLessThan(200); // new corners only where the line bent
+    // a pull far longer than the line can follow is shortened, so the line bends and does not cross itself
+    const along = pulled(SQUARE, { x: 100, y: 50 }, { x: 100, y: 5000 }, MIDDLE) as { x: number; y: number }[];
+    const crosses = (r: { x: number; y: number }[]) => {
+      const turn = (a: { x: number; y: number }, b: { x: number; y: number }, c: { x: number; y: number }) =>
+        Math.sign((b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x));
+      for (let i = 0; i < r.length; i++)
+        for (let j = i + 2; j < r.length; j++) {
+          if (i === 0 && j === r.length - 1) continue;
+          const [a, b, c, d] = [r[i], r[(i + 1) % r.length], r[j], r[(j + 1) % r.length]];
+          if (turn(a, b, c) * turn(a, b, d) < 0 && turn(c, d, a) * turn(c, d, b) < 0) return true;
+        }
+      return false;
+    };
+    expect(crosses(along)).toBe(false);
   });
 
   it('refuses a pull that would leave the first tapped spot outside the field', () => {

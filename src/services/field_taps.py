@@ -1,5 +1,5 @@
 """Field outlines from taps on a drone photo: tap a field, get up to three outlines, pick one, correct it with up
-to two more taps ("this part too" / "not this part"), keep it. Switch FIELD_TAPS (off by default).
+to six more taps ("this part too" / "not this part"), keep it. Switch FIELD_TAPS (off by default).
 
 How it works. Segment Anything (ViT-H) has a heavy half that reads a picture once and a light half that answers a
 tap. The heavy half never runs in the app: `scripts/prepare_field_taps.py` runs it on our own machine when we upload
