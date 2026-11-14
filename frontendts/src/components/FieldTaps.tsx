@@ -342,6 +342,9 @@ export function FieldTaps({
       measureMovedLine(layerId, firstTap, corners)
         .then((answer) => {
           if (asked !== measuring.current) return;
+          // a pull can slip the line a hair past itself at a tight bend; the server cuts such loops away and the
+          // tidied line is the one shown and kept. The reader is never asked to repair a crossing.
+          if (answer.tidied) setRing(answer.geometry.coordinates[0].slice(0, -1) as Corner[]);
           setRingArea(answer.area_ha);
           setProblem(null);
         })

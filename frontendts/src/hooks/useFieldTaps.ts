@@ -81,8 +81,16 @@ export function turnDown(layerId: string, taps: Tap[], pick: number | null, reas
   return sendJson(`${url(layerId)}/turned-down`, 'POST', { taps, pick, reason });
 }
 
+/** A hand-moved line as the server holds it. `tidied`: the line crossed itself and the server cut the loops away;
+ * `geometry` is then the line to draw in place of the one sent. */
+export interface MovedLine {
+  area_ha: number;
+  geometry: GeoJSON.Polygon;
+  tidied?: boolean;
+}
+
 /** The area of an outline whose line the reader moved by hand; rejects with the server's reason when it is no outline. */
-export function measureMovedLine(layerId: string, firstTap: Tap, moved: Corner[]): Promise<{ area_ha: number }> {
+export function measureMovedLine(layerId: string, firstTap: Tap, moved: Corner[]): Promise<MovedLine> {
   return sendJson(`${url(layerId)}/moved-line`, 'POST', { first_tap: firstTap, moved });
 }
 

@@ -47,6 +47,7 @@ from rasterio.windows import from_bounds
 from scipy import ndimage
 from shapely.errors import ShapelyError
 from shapely.geometry import Point, Polygon, mapping, shape
+from shapely.validation import make_valid
 from shapely.ops import transform as reproject
 
 from src.services import ground_area, stored_files
@@ -517,8 +518,9 @@ async def outlines(s3: Any, bucket: str, photo_key: str, taps: Sequence[Tap],
 
 
 def moved_line(ring: Sequence[Sequence[float]], first_tap: Tap) -> dict[str, Any]:
-    """An outline whose line the reader moved by hand, as {"geometry", "area_ha"}: `ring` is its corners as
-    (longitude, latitude), closed or not. TapError when it is not one simple shape around the first tap."""
+    """An outline whose line the reader moved by hand, as {"geometry", "area_ha", "tidied"}: `ring` is its corners
+    as (longitude, latitude), closed or not. A line that crosses itself is tidied here (`tidied` true, and the
+    geometry is the tidied one, which the screen then draws). TapError when nothing around the first tap is left."""
     points = [(float(p[0]), float(p[1])) for p in ring]
     # A corner must be a real place, near the tapped field: a hand-moved line adjusts an outline, it does not
     # draw a new one somewhere else.
@@ -534,14 +536,22 @@ def moved_line(ring: Sequence[Sequence[float]], first_tap: Tap) -> dict[str, Any
     if not 3 <= len(points) <= MAX_LINE_POINTS:
         raise TapError(f"An outline needs between 3 and {MAX_LINE_POINTS} corners.")
     polygon = Polygon(points)
-    if not polygon.is_valid or polygon.area == 0:
-        raise TapError("The line crosses itself. Move that corner back.")
-    if not polygon.contains(Point(first_tap.lon, first_tap.lat)):
-        raise TapError("The outline no longer covers the spot you tapped. Move that corner back.")
+    tap = Point(first_tap.lon, first_tap.lat)
+    tidied = not polygon.is_valid
+    if tidied:
+        # A pulled line can slip a hair past its neighbour at a tight bend and make a loop too small to see. That
+        # is the tool's doing, not the reader's: the loops are cut away and the piece around the first tap is the
+        # field. The reader is never asked to repair a crossing.
+        pieces = [g for g in getattr(make_valid(polygon), "geoms", [make_valid(polygon)]) if isinstance(g, Polygon)]
+        polygon = next((Polygon(g.exterior) for g in pieces if g.contains(tap)), Polygon())
+    if polygon.is_empty or polygon.area == 0 or not polygon.contains(tap):
+        raise TapError("The outline no longer covers the spot you first tapped. Use Undo last.")
+    if len(polygon.exterior.coords) - 1 > MAX_LINE_POINTS:
+        raise TapError(f"An outline needs between 3 and {MAX_LINE_POINTS} corners.")
     area_ha = round(ground_area.area_ha(polygon), 3)
     if area_ha > MAX_MOVED_HA:
         raise TapError(f"A hand-moved outline can be at most {MAX_MOVED_HA:g} ha; this one is {area_ha:g} ha.")
-    return {"geometry": mapping(polygon), "area_ha": area_ha}
+    return {"geometry": mapping(polygon), "area_ha": area_ha, "tidied": tidied}
 
 
 def _overlap(a: dict[str, Any], b: dict[str, Any]) -> float:

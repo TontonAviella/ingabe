@@ -57,10 +57,12 @@ function fakeServer(prepared: boolean) {
       });
     if (url.endsWith('/moved-line')) {
       measured.push(body);
-      // the fake's rule: a line pulled east of longitude 31.5 is refused, as the server refuses a crossed line
+      // the fake's rules: a line pulled east of longitude 31.5 is refused, as the server refuses one that leaves the
+      // first tap outside; a line with a corner north of latitude -0.75 comes back tidied, as a crossed one does
       if (body.moved.some((c: [number, number]) => c[0] > 31.5))
-        return json({ detail: 'The line crosses itself. Move that corner back.' }, 422);
-      return json({ area_ha: 0.42 });
+        return json({ detail: 'The outline no longer covers the spot you first tapped. Use Undo last.' }, 422);
+      if (body.moved.some((c: [number, number]) => c[1] > -0.75)) return json({ area_ha: 0.33, geometry: square(3), tidied: true });
+      return json({ area_ha: 0.42, geometry: { type: 'Polygon', coordinates: [[...body.moved, body.moved[0]]] }, tidied: false });
     }
     if (url.endsWith('/my-crop')) {
       cropAsked.push({ url, ...body });
@@ -276,7 +278,7 @@ describe('outlining a field by tapping it', () => {
 
     // a line the server refuses cannot be kept, and its reason is shown word for word
     m.draw([31.1, -1.5], [31.7, -1.5]);
-    await vi.waitFor(() => expect(byText('The line crosses itself. Move that corner back.')).not.toBeNull());
+    await vi.waitFor(() => expect(byText('The outline no longer covers the spot you first tapped. Use Undo last.')).not.toBeNull());
     click(byButton('Done') as HTMLButtonElement);
     await vi.waitFor(() => expect((byButton('Keep') as HTMLButtonElement).disabled).toBe(true));
     // corrections by tap are for the model's outline, not for a hand-moved one
@@ -312,12 +314,13 @@ describe('outlining a field by tapping it', () => {
     await vi.waitFor(() => expect(byButton('Move the line')).not.toBeNull());
     click(byButton('Move the line') as HTMLButtonElement);
     await vi.waitFor(() => expect(byText('Press on the line and pull it to the true edge. Let go anywhere.')).not.toBeNull());
-    const square = () => m.drawn().features.find((f) => f.geometry.type === 'Polygon')?.geometry as GeoJSON.Polygon;
-    const before = JSON.stringify(square());
+    const sq = square; // the fake server's square of a given size
+    const drawnNow = () => m.drawn().features.find((f) => f.geometry.type === 'Polygon')?.geometry as GeoJSON.Polygon;
+    const before = JSON.stringify(drawnNow());
 
     // a press on the line that does not move is not a pull: nothing changes and nothing is measured
     m.draw([31, -1.7], [31.001, -1.7]);
-    expect(JSON.stringify(square())).toBe(before);
+    expect(JSON.stringify(drawnNow())).toBe(before);
     expect(server.measured).toEqual([]);
     expect((byButton('Undo last') as HTMLButtonElement).disabled).toBe(true);
 
@@ -335,11 +338,20 @@ describe('outlining a field by tapping it', () => {
     expect(server.measured[1].moved.some((c) => c[0] > 34)).toBe(false);
     m.fire('mousemove', [36, -6], 0);
     expect(server.measured).toHaveLength(2);
+    // a pull that made the line cross itself comes back tidied: the tidied line is drawn, its area shown, Keep is
+    // on, and the reader is told of no problem
+    m.draw([30.5, -0.9], [30.5, -0.6]); // the north side sits at -0.9 here since the pull before
+    await vi.waitFor(() => expect(byText('0.33 ha')).not.toBeNull());
+    // the drawn line is the server's tidied one (drawn closed, as every outline is)
+    await vi.waitFor(() => expect(JSON.stringify(drawnNow().coordinates[0])).toBe(JSON.stringify(sq(3).coordinates[0])));
+    expect(document.querySelector('[role="alert"]')).toBeNull();
+    click(byButton('Undo last') as HTMLButtonElement); // and the pull can still be taken back
+    await vi.waitFor(() => expect(server.measured).toHaveLength(4));
     // and a release on the window itself ends a pull too
     m.fire('mousedown', [30, -1.5]);
     m.fire('mousemove', [29.9, -1.5]);
     window.dispatchEvent(new Event('mouseup'));
-    await vi.waitFor(() => expect(server.measured).toHaveLength(3));
+    await vi.waitFor(() => expect(server.measured).toHaveLength(5));
   });
 
   it('sits at the bottom left while idle, clear of where Sage answers, and takes the centre once a field is outlined or picked', async () => {

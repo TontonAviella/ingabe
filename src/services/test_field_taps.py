@@ -279,9 +279,24 @@ def test_a_line_moved_by_hand_is_measured_here_and_must_stay_one_shape_around_th
     own = field_taps.moved_line(square, _tap(60, 10))
     assert own["area_ha"] == pytest.approx(0.04, rel=0.02)  # 20 m by 20 m
     assert field_taps.moved_line(square + [square[0]], _tap(60, 10)) == own  # closed or not, the same outline
-    with pytest.raises(field_taps.TapError, match="crosses itself"):
-        field_taps.moved_line([square[0], square[2], square[1], square[3]], _tap(60, 10))
-    with pytest.raises(field_taps.TapError, match="spot you tapped"):
+    assert own["tidied"] is False
+    # a pulled line that slipped past itself at a bend (a loop 1 m across on the east side): the loop is cut away,
+    # the field is the piece around the first tap, and nobody is asked to repair anything
+    looped = [_corner(50, 0), _corner(70, 0), _corner(70, 9), _corner(71, 11), _corner(71, 9), _corner(70, 11),
+              _corner(70, 20), _corner(50, 20)]
+    tidy = field_taps.moved_line(looped, _tap(60, 10))
+    assert tidy["tidied"] is True and tidy["area_ha"] == pytest.approx(0.04, rel=0.03)
+    from shapely.geometry import shape as as_shape
+    assert as_shape(tidy["geometry"]).is_valid and len(tidy["geometry"]["coordinates"]) == 1  # one simple ring
+    # the tidied line, sent back, is the same outline and needs no tidying
+    again = field_taps.moved_line(tidy["geometry"]["coordinates"][0], _tap(60, 10))
+    assert again["tidied"] is False and again["area_ha"] == tidy["area_ha"]
+    # a line folded right across the field: the piece around the first tap is kept, the rest is cut away
+    folded = field_taps.moved_line([square[0], square[2], square[1], square[3]], _tap(53, 10))
+    assert folded["tidied"] is True and folded["area_ha"] == pytest.approx(0.01, rel=0.05)  # the triangle the tap is in
+    with pytest.raises(field_taps.TapError, match="Use Undo last"):  # the tap is in none of the pieces
+        field_taps.moved_line([square[0], square[2], square[1], square[3]], _tap(60, 4))
+    with pytest.raises(field_taps.TapError, match="spot you first tapped"):
         field_taps.moved_line(square, _tap(90, 10))
     with pytest.raises(field_taps.TapError, match="corners"):
         field_taps.moved_line(square[:2], _tap(60, 10))
@@ -298,7 +313,8 @@ def test_a_kept_hand_moved_line_is_marked_and_keeps_the_models_outline_beside_it
     # the model's own outline and area stay on the record, with how much the two overlap
     assert row["model_geometry"] == plain["geometry"] and row["model_area_ha"] == plain["area_ha"]
     assert 0 < row["model_overlap"] < 1
-    with pytest.raises(field_taps.TapError, match="spot you tapped"):
+    assert row["tidied"] is False  # the record says whether the server had to tidy the line
+    with pytest.raises(field_taps.TapError, match="spot you first tapped"):
         asyncio.run(field_taps.keep(s3, "b", "photo.tif", "layer-1", [_tap(60, 10)], 0, "user-1",
                                     moved=[_corner(80, 0), _corner(100, 0), _corner(100, 20)]))
     assert len(asyncio.run(field_taps.kept(s3, "b", "photo.tif", "layer-1"))) == 2
