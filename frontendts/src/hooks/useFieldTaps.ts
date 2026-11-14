@@ -86,6 +86,36 @@ export function measureMovedLine(layerId: string, firstTap: Tap, moved: Corner[]
   return sendJson(`${url(layerId)}/moved-line`, 'POST', { first_tap: firstTap, moved });
 }
 
+/** A tap on a plant or on something that is not one, as longitude and latitude. */
+export interface Place {
+  lon: number;
+  lat: number;
+}
+
+/** The reader's crop in one kept field (src/services/my_crop.py). */
+export interface MyCropFound {
+  my_crop: number;
+  other_plants: number;
+  other_green: number;
+  /** The share of the field in ground where single plants can be told apart (0..1). */
+  counted_share: number;
+  per_ha: number | null;
+  /** How it was measured and what was not, written by the server. */
+  measured: string;
+  /** Points with kind_code 0 my crop, 1 other plant, 2 other green. */
+  points: GeoJSON.FeatureCollection;
+}
+
+/** The plants of the reader's crop in a kept field, or `working` while the server reads the field: ask again. */
+export function countMyCrop(
+  layerId: string,
+  fieldId: string,
+  crop: Place[],
+  other: Place[],
+): Promise<MyCropFound | { working: true; done: number; total: number }> {
+  return sendJson(`${url(layerId)}/kept/${fieldId}/my-crop`, 'POST', { crop, other });
+}
+
 /** The kept fields changed: they are also the plots the question cards read, so those are asked again too. */
 function fieldsChanged(client: QueryClient, layerId: string | null) {
   client.invalidateQueries({ queryKey: ['field-taps', layerId] });

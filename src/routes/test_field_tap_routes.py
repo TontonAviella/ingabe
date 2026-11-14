@@ -16,7 +16,7 @@ import pytest
 
 from src.database.pool import _build_postgres_url
 from src.dependencies.session import ServiceUserContext, verify_session_required
-from src.services import field_taps, photo_plots
+from src.services import field_taps, my_crop, photo_plots, plant_finder
 from src.services.test_field_taps import CRS, GRID, NORTH, WEST, WINDOW_ARRAY, RecordedShapeModel, _tap
 from src.utils import get_bucket_name, get_s3_client
 from src.wsgi import app
@@ -121,10 +121,11 @@ async def test_with_the_switch_off_no_route_exists(client, photo, monkeypatch):
                    await client.post(f"{base}/turned-down", json={**_json(_tap(60, 10)), "reason": "closed"}),
                    await client.post(f"{base}/moved-line", json={"first_tap": {"lon": 30, "lat": -2},
                                                                  "moved": [[30, -2], [30.1, -2], [30.1, -1.9]]}),
-                   await client.delete(f"{base}/kept/abc")]
+                   await client.delete(f"{base}/kept/abc"),
+                   await client.post(f"{base}/kept/abc/my-crop", json={"crop": [], "other": []})]
     finally:
         app.dependency_overrides.pop(verify_session_required, None)
-    assert [a.status_code for a in answers] == [404] * 6
+    assert [a.status_code for a in answers] == [404] * 7
     # Checked before the body is read: bad JSON, signed out, still 404 (not a 422 showing the route exists).
     malformed = await client.post(f"{base}/outline", content=b"{", headers={"Content-Type": "application/json"})
     assert malformed.status_code == 404
@@ -214,6 +215,10 @@ async def test_a_viewer_gets_outlines_but_cannot_keep_or_remove(client, photo, t
     assert kept.status_code == 200, kept.text
     _as(VIEWER)
     assert (await client.delete(f"{base}/kept/{kept.json()['id']}")).status_code in (403, 404)
+    place = {"lon": _tap(60, 10).lon, "lat": _tap(60, 10).lat}
+    counted = await client.post(f"{base}/kept/{kept.json()['id']}/my-crop",
+                                json={"crop": [place] * 3, "other": [place] * 3})
+    assert counted.status_code in (403, 404)  # counting a crop starts minutes of work: not for a viewer
     assert len((await client.get(base)).json()["kept"]) == 1
     _as(str(uuid.uuid4()))  # a stranger learns nothing
     assert (await client.get(base)).status_code in (403, 404)
@@ -265,3 +270,43 @@ async def test_kept_fields_can_be_chosen_as_the_photos_plots_or_set_aside(client
     assert (await client.delete(f"{taps}/kept/{kept.json()['id']}")).status_code == 200
     assert (await client.put(source, json={"source": photo_plots.FOUND})).status_code == 200
     assert await chosen() is None
+
+
+@pytest.mark.anyio
+async def test_only_my_crop_is_asked_for_a_kept_field_with_the_readers_taps(client, photo, taps_on, monkeypatch):
+    ids = await photo()
+    base = f"/api/layer/{ids['layer']}/field-taps"
+    _as(ids["owner"])
+    kept = (await client.post(f"{base}/kept", json=_json(_tap(60, 10), pick=0))).json()
+    asked: list[tuple] = []
+    answers = iter([{"working": True, "done": 1, "total": 4}, {"my_crop": 12, "other_plants": 3},
+                    my_crop.TapProblem("A tap lies outside the field."), plant_finder.CannotCount("3 cm pixels only"),
+                    my_crop.Busy("Other fields are being read right now.")])
+
+    async def count(url, feature, s3, bucket, key, crop, other):
+        asked.append((feature["geometry"], feature["properties"]["area_ha"], key, crop, other))
+        answer = next(answers)
+        if isinstance(answer, Exception):
+            raise answer
+        return answer
+
+    monkeypatch.setattr(my_crop, "count", count)
+    place = {"lon": _tap(60, 10).lon, "lat": _tap(60, 10).lat}
+    body = {"crop": [place] * 3, "other": [place] * 3}
+    url = f"{base}/kept/{kept['id']}/my-crop"
+    assert (await client.post(url, json=body)).json() == {"working": True, "done": 1, "total": 4}
+    assert (await client.post(url, json=body)).json() == {"my_crop": 12, "other_plants": 3}
+    # the field's own outline and size are what is counted, and the taps go through as (lon, lat)
+    assert asked[0][:3] == (kept["geometry"], kept["area_ha"], ids["key"])
+    assert asked[0][3] == [(place["lon"], place["lat"])] * 3 == asked[0][4]
+    for why in ("outside the field", "3 cm pixels only"):
+        refused = await client.post(url, json=body)
+        assert refused.status_code == 422 and why in refused.json()["detail"]
+    busy = await client.post(url, json=body)
+    assert busy.status_code == 503 and "being read" in busy.json()["detail"]
+    # too few or too many taps of a sort, or a tap off the globe, never reach the counter; an unknown field is a 404
+    for bad in ({"crop": [place] * 2, "other": [place] * 3}, {"crop": [place] * 3, "other": [place] * 11},
+                {"crop": [{"lon": 30.0, "lat": 91.0}] * 3, "other": [place] * 3}):
+        assert (await client.post(url, json=bad)).status_code == 422
+    assert (await client.post(f"{base}/kept/nope/my-crop", json=body)).status_code == 404
+    assert len(asked) == 5
