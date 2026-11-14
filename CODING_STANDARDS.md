@@ -190,6 +190,7 @@ One entry per real mistake: date, what went wrong, the rule that prevents
 it, and the gate if there is one. Newest first. Keep each entry to three
 lines; promote a lesson that recurs into the sections above.
 
+- **2026-11-14** The plant counter gave a 697 m² field 4,987 plants: local peaks were taken as `density == maximum_filter(density)`, and on the flat top of a solid green patch every pixel equals the maximum (`plant_counts.crowns`). Its tests only had round crowns on soil. Rule: a number read from a picture is tested on the case that breaks its method (a peak finder on a flat top, a threshold on a uniform field) and against a physical bound it cannot exceed (here: no denser than its own spacing allows). Gate: review only: the bound belongs to each measure; `test_plant_counts.py` holds this one.
 - **2026-11-08** The "Plots from" list excluded Sage's outline layers by one `source` value, so Sage's hexagon grids were still offered as a reader's plot map and one photo's plots became 4,221 hexagons. Rule: when a list means "the reader's own data", exclude everything Sage made by what it shares (`analysis_kind`, or the platform's own Rwanda connection), not one kind at a time.
 - **2026-11-07** To build a noza-web worktree faster I symlinked its `node_modules` to the main checkout's; `next build`
   (`output: "standalone"`) then rewrote the shared folder and left the main checkout's noza-web with one package. Rule: each

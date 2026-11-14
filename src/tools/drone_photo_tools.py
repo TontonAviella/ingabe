@@ -20,17 +20,18 @@ from src.services import (
     drone_vision,
     photo_context,
     photo_plots,
-    plant_counts,
+    plant_finder,
 )
 from src.structures import async_read_conn
 from src.tools.geojson_transport import geojson_layer_update
 from src.tools.pyd import IngabeToolCallMetaArgs
-from src.utils import get_async_s3_client, get_bucket_name
+from src.utils import get_async_s3_client, get_bucket_name, get_s3_client
 
 # The cards Sage reads for an overview, in this order: plots, crops, problems, stage, weeds, bare ground.
 FINDING_CARDS = ("field_outlines", "crop_types", "plot_problems", "plot_stage", "weeds", "bare_ground", "plots_green")
 RECORD_CARDS = ("soil", "history")  # added when the project has a lab report or harvest records
 SPOT_COLOUR = "#FF4D1A"  # the cards' colour for things found inside plots
+OTHER_GREEN_COLOUR = "#2F80ED"  # green that is not a crop plant: weed, grass or bush
 
 _LAYER_ON_MAP_SQL = """
 SELECT l.layer_id, l.name, l.bounds, l.metadata
@@ -107,16 +108,20 @@ async def get_drone_photo_findings(args: DronePhotoArgs, meta: IngabeToolCallMet
 
 
 async def count_plants_in_plot(args: CountPlantsArgs, meta: IngabeToolCallMetaArgs) -> dict[str, Any]:
-    """Estimate the plants in one plot of a drone photo and draw each one found as a dot on the map. Gives the
-    estimate with a rough range (±15%), plants per m² and per hectare, the share of the plot with no plant
-    within 1 m (gaps), and the share that is solid green (bush, weeds, plants grown together), where single
-    plants cannot be told apart and each patch is one dot. Needs a photo of 5 cm per pixel or finer and a plot
-    of up to 2 ha; a plot that is mostly solid green is refused. Only for young crops whose leaves do not yet
-    touch (maize 2-6 weeks after emergence). It is an estimate that was checked by eye on three small squares
-    of young maize and on nothing else: say so, and never give it as an exact count. A count is kept, so asking
-    again is free.
+    """Estimate the crop plants in one plot of a drone photo and draw them on the map, with the other green
+    (weeds, grass, bush) drawn apart. Plants are found by their shape, not their colour, so green that is not
+    a crop plant is not counted; it is flagged as "other green" where it lies. Parts of the plot where single
+    plants cannot be told apart (closed canopy, pasture, bush) are refused and left out, and the answer says
+    how much of the plot was counted. Needs a photo of about 3 cm per pixel and a plot of up to 0.5 ha.
 
-    WHEN TO USE: "how many plants are in plot 175", "count the maize in this plot", stand counts, gaps in a plot.
+    It is an estimate, measured on one photo: on ground two careful markers could fully count, the total came
+    within 18%, about 4 plant dots in 5 sat on a crop plant, and 9 plants in 10 were found. Always give it as
+    "about N", with the share of the plot counted and these limits; never as an exact count. What each piece
+    of other green is (weed, grass or bush) is not known: do not name it. An answer is kept, so asking again
+    is free.
+
+    WHEN TO USE: "how many plants are in plot 175", "count the maize in this plot", "where are the weeds in
+    this plot", stand counts.
     WHEN NOT TO USE: whole fields or the whole photo (pick a plot), or satellite imagery (cannot see plants)."""
     row, why_not = await _photo(args.layer_id, meta)
     if row is None:
@@ -132,47 +137,60 @@ async def count_plants_in_plot(args: CountPlantsArgs, meta: IngabeToolCallMetaAr
     if feature is None:
         return {"status": "error", "error": f"No plot {args.plot_number} on this photo (plots 1-{plots.count})."}
     key = photo_plots.photo_key(metadata)
-    count = await plant_counts.load_count(s3, bucket, key, feature)
-    if count is None:
+    found = await plant_finder.load_found(s3, bucket, key, feature)
+    if found is None:
         try:
-            count = await asyncio.to_thread(plant_counts.count_plants, url, feature)
-        except plant_counts.CannotCount as why:
+            models = await asyncio.to_thread(plant_finder.load_models, get_s3_client(), bucket)
+            found = await asyncio.to_thread(plant_finder.find_plants, url, feature, models)
+        except plant_finder.CannotCount as why:
             return {"status": "error", "error": str(why)}
-        await plant_counts.save_count(s3, bucket, key, feature, count)
+        await plant_finder.save_found(s3, bucket, key, feature, found)
+    name = feature["properties"].get("name") or f"Plot {args.plot_number}"
+    if found.squares_counted == 0:
+        return {"status": "error",
+                "error": (f"Plants cannot be counted in {name}: in every part of it the picture check found ground "
+                          "where single plants cannot be told apart from above (closed canopy, pasture, bush or "
+                          "buildings)."),
+                "plot": name, "counted_share_of_plot": 0.0}
     org_id = meta.session.get_org_id() if meta.session is not None else None
     look = await _crop_seen(s3, bucket, metadata, plots, args.plot_number, meta.project_id,
                             drone_vision.reference_scope(org_id, meta.user_uuid), row["layer_id"])
-    name = feature["properties"].get("name") or f"Plot {args.plot_number}"
     # The map opens close enough to see each plant under its dot; zooming out shows the whole plot.
-    async with kue_ephemeral_action(meta.conversation_id, f"Drawing the {count.plants:,} plants found in {name}",
+    async with kue_ephemeral_action(meta.conversation_id, f"Drawing about {found.plants:,} plants found in {name}",
                                     bounds=_close_view(feature)) as payload:
         payload.updates["add_geojson_layer"] = geojson_layer_update(
             source_id=f"plants-{args.plot_number}-{uuid.uuid4().hex[:6]}",
-            geojson=count.points, name=f"Plants counted in {name}", bounds=_bounds(feature),
-            style={"geometry": "point", "stops": [{"max": 1, "color": SPOT_COLOUR}], "stroke_color": "#FFF1E6",
-                   "legend": {"title": f"Plants in {name}", "items": [{"label": f"about {count.plants:,} found, one dot each",
-                                                                       "color": SPOT_COLOUR}]}})
+            geojson=found.points, name=f"Plants and other green in {name}", bounds=_bounds(feature),
+            # plants (kind_code 0) in one colour, other green (1) in another: orange against blue also reads
+            # for someone who cannot tell red from green
+            style={"geometry": "point", "color_property": "kind_code",
+                   "stops": [{"max": 0.5, "color": SPOT_COLOUR}, {"max": 9, "color": OTHER_GREEN_COLOUR}],
+                   "stroke_color": "#FFF1E6",
+                   "legend": {"title": f"{name}: {found.counted_share:.0%} of it counted", "items": [
+                       {"label": f"about {found.plants:,} plants, found by their shape", "color": SPOT_COLOUR},
+                       {"label": f"{found.other_green:,} other green (weed, grass or bush)", "color": OTHER_GREEN_COLOUR}]}})
     return {
         "status": "success",
         "plot": name,
         "crop_seen": look,
-        "plants": count.plants,
-        "likely_range": [count.low, count.high],
-        "plot_area_m2": count.area_m2,
-        "plants_per_m2": count.per_m2,
-        "plants_per_ha": count.per_ha,
-        "gap_share": count.gap_share,
-        "solid_green_patches": count.solid_patches,
-        "solid_green_share": count.solid_share,
-        "photo_cm_per_pixel": count.cm_per_px,
-        "drawn_on_map": "one dot per plant found",
-        "how_sure": ("An estimate, not a tested count. Each dot is a peak of green about a crown wide. It was "
-                     "checked by eye in three 5 m squares of young maize (within about 10% there) and on no other "
-                     "crop; it has not passed a test. Weeds and bushes are counted like plants. Where plants touch "
-                     "they cannot be split: a patch of solid green is one dot, so on the solid_green_share of the "
-                     "plot the true number is unknown. Give the estimate with its range and these limits. A count "
-                     "of a few rows on the ground is the way to an exact figure."),
-        "source": "Ingabe plant count on the drone photo",
+        "plants_about": found.plants,
+        "other_green_spots": found.other_green,
+        "counted_share_of_plot": found.counted_share,
+        "plot_area_m2": found.plot_area_m2,
+        "counted_area_m2": found.counted_area_m2,
+        "plants_per_ha_in_counted_part": found.per_ha,
+        "parts_refused": found.squares_refused,
+        "parts_counted": found.squares_counted,
+        "photo_cm_per_pixel": found.cm_per_px,
+        "drawn_on_map": "plants in one colour, other green in another",
+        "how_sure": ("An estimate. Plants are found by their shape. Measured on one photo (Cyampirita), on ground two "
+                     "careful markers could fully count: the total came within 18%; about 4 plant dots in 5 sat on a "
+                     "crop plant; 9 plants in 10 were found. Of the spots flagged as other green, 19 in 20 were not "
+                     "crop plants, and about 7 in 10 of such spots were flagged. Only the counted share of the plot is "
+                     "in the number: the rest is ground where single plants cannot be told apart, or thin edges. Other "
+                     "green is not named: weed, grass and bush cannot be told apart by this. Not measured on other "
+                     "photos or crops. A count of a few rows on the ground is the way to an exact figure."),
+        "source": "Ingabe plant finder on the drone photo",
     }
 
 
