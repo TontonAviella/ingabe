@@ -413,3 +413,93 @@ def test_the_real_export_answers_in_the_recorded_shapes():
     assert three and all(mask[512, 512] for _, mask in three)
     corrected = field_taps.outline_masks(model, array, [(512.0, 512.0, 1), (700.0, 512.0, 0)], three[0][0])
     assert len(corrected) <= 1
+
+
+# Green cover (Tests 77 and 78): the rule as measured, its limits, and where it is kept.
+
+GREEN, SOIL, PALE_GREEN, PALE_SOIL = (60, 140, 40), (180, 120, 90), (150, 160, 120), (170, 170, 140)
+
+
+def test_green_cover_counts_the_pixels_green_by_the_measured_rule():
+    rgb = np.zeros((3, 40, 40), np.uint8)
+    rgb[:, :, :20] = np.array(GREEN, np.uint8)[:, None, None]
+    rgb[:, :, 20:] = np.array(SOIL, np.uint8)[:, None, None]
+    everywhere = np.ones((40, 40), bool)
+    # 21 of 40 columns: at the border the 3 x 3 mean of one green and two soil columns still reads green (excess
+    # green 0.158), the spread from leaf into soil that makes the rule read high on sparse ground (Test 77)
+    assert field_taps._cover_from_pixels(rgb, everywhere) == pytest.approx(21 / 40)
+    # only pixels of the photo inside the field count
+    left = np.zeros((40, 40), bool)
+    left[:, :10] = True
+    assert field_taps._cover_from_pixels(rgb, left) == 1.0
+    assert field_taps._cover_from_pixels(rgb, np.zeros((40, 40), bool)) is None
+    # either side of the measured threshold 0.15: excess green 0.196 counts, 0.118 does not
+    for colour, share in ((PALE_GREEN, 1.0), (PALE_SOIL, 0.0)):
+        flat = np.broadcast_to(np.array(colour, np.uint8)[:, None, None], (3, 10, 10)).copy()
+        assert field_taps._cover_from_pixels(flat, np.ones((10, 10), bool)) == share
+
+
+def _photo_file(tmp_path, pixel_m: float = 0.0325, side_px: int = 400) -> str:
+    """A small photo in the test grid's projection: left half green, right half soil, at WEST + 100 m."""
+    import rasterio
+    from rasterio.transform import from_origin
+
+    rgb = np.zeros((3, side_px, side_px), np.uint8)
+    rgb[:, :, :side_px // 2] = np.array(GREEN, np.uint8)[:, None, None]
+    rgb[:, :, side_px // 2:] = np.array(SOIL, np.uint8)[:, None, None]
+    path = str(tmp_path / "photo.tif")
+    with rasterio.open(path, "w", driver="GTiff", width=side_px, height=side_px, count=3, dtype="uint8", crs=CRS,
+                       transform=from_origin(WEST + 100, NORTH - 100, pixel_m, pixel_m)) as out:
+        out.write(rgb)
+    return path
+
+
+def _field_on_photo(pixel_m: float = 0.0325, side_px: int = 400) -> tuple[dict, float]:
+    """The whole photo of _photo_file as a field outline in longitude and latitude, with its area."""
+    from shapely.geometry import box, mapping
+    from shapely.ops import transform as reproject
+
+    from src.services import ground_area
+
+    side = pixel_m * side_px
+    lonlat = reproject(_TO_LONLAT, box(WEST + 100, NORTH - 100 - side, WEST + 100 + side, NORTH - 100))
+    return mapping(lonlat), ground_area.area_ha(lonlat)
+
+
+def test_green_cover_is_read_inside_the_field_and_only_where_it_was_measured(tmp_path):
+    path = _photo_file(tmp_path)
+    geometry, area = _field_on_photo()
+    cover = field_taps.green_cover(path, geometry, area)
+    assert cover["why_not"] is None and cover["share"] == pytest.approx(0.5, abs=0.02)
+    assert field_taps.green_cover(path, geometry, 0.9)["why_not"].startswith("Not measured for fields over 0.7 ha")
+    assert field_taps.green_cover(path, geometry, 0.001)["why_not"] == "Not measured for a field this small."
+    coarse = _photo_file(tmp_path, pixel_m=0.10, side_px=200)
+    assert "3 cm pixels" in field_taps.green_cover(coarse, *_field_on_photo(0.10, 200))["why_not"]
+
+
+def test_a_kept_field_gets_its_green_cover_and_older_fields_get_it_later(monkeypatch, tmp_path):
+    s3, _ = _prepared_store(monkeypatch)
+    path = _photo_file(tmp_path)
+    measured = []
+
+    def fake_cover(cog_url, geometry, area_ha):
+        measured.append(cog_url)
+        return {"share": 0.42, "why_not": None}
+
+    monkeypatch.setattr(field_taps, "green_cover", fake_cover)
+    row = asyncio.run(field_taps.keep(s3, "b", "photo.tif", [_tap(60, 10)], 0, "user-1", cog_url=path))
+    assert row["green_cover"] == {"share": 0.42, "why_not": None} and measured == [path]
+    # a field kept before green cover existed has none until the screen next asks for the photo's state
+    old = asyncio.run(field_taps.keep(s3, "b", "photo.tif", [_tap(60, 10)], 1, "user-1"))
+    assert "green_cover" not in old
+    state = asyncio.run(field_taps.state(s3, "b", "photo.tif", path))
+    assert [k.get("green_cover") for k in state["kept"]] == [{"share": 0.42, "why_not": None}] * 2
+    assert len(measured) == 2  # the first field was not measured again
+    assert state["cover_measured"] == field_taps.COVER_MEASURED
+
+    def broken(cog_url, geometry, area_ha):
+        raise OSError("photo unreachable")
+
+    monkeypatch.setattr(field_taps, "green_cover", broken)
+    later = asyncio.run(field_taps.keep(s3, "b", "photo.tif", [_tap(60, 10)], 2, "user-1", cog_url=path))
+    assert "green_cover" not in later  # kept all the same; measured on a later visit

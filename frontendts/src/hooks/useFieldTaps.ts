@@ -32,6 +32,8 @@ export interface KeptOutline {
   /** true: the reader moved the line by hand; the area is of their line, not the model's. */
   by_hand?: boolean;
   kept_at: string;
+  /** Share of the field under living green plants (0..1), or why it was not measured. Missing until measured. */
+  green_cover?: { share: number | null; why_not: string | null };
 }
 
 /** A corner of an outline as [longitude, latitude]. */
@@ -42,6 +44,8 @@ export interface FieldTapState {
   windows: number;
   max_corrections: number;
   measured: string;
+  /** What the green cover figure is and how it was measured, written by the server. */
+  cover_measured: string;
   kept: KeptOutline[];
   /** How many taps on this photo ended without a kept outline. */
   turned_down: number;

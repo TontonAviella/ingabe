@@ -75,7 +75,9 @@ async def get_field_taps(layer: MapLayer = Depends(get_layer),
                          session: UserContext = Depends(verify_session_required)) -> dict[str, Any]:
     """Whether this photo is prepared for outlines, what was measured, and the outlines kept on it."""
     key = await _photo_key(layer)
-    return await field_taps.state(await get_async_s3_client(), get_bucket_name(), key)
+    s3, bucket = await get_async_s3_client(), get_bucket_name()
+    cog_url = await photo_context.cog_url(s3, bucket, layer.metadata_dict or {})
+    return await field_taps.state(s3, bucket, key, cog_url)
 
 
 @router.post("/layer/{layer_id}/field-taps/outline", operation_id="outline_field_from_taps")
@@ -100,8 +102,9 @@ async def keep_field_outline(body: KeepIn, layer: MapLayer = Depends(edit_layer)
     if body.pick is None:
         raise HTTPException(422, "Pick one of the outlines before keeping it.")
     try:
-        return await field_taps.keep(await get_async_s3_client(), get_bucket_name(), key, _taps(body), body.pick,
-                                     session.get_user_id(), body.moved)
+        s3, bucket = await get_async_s3_client(), get_bucket_name()
+        return await field_taps.keep(s3, bucket, key, _taps(body), body.pick, session.get_user_id(), body.moved,
+                                     await photo_context.cog_url(s3, bucket, layer.metadata_dict or {}))
     except field_taps.TapError as e:
         raise HTTPException(422, str(e)) from None
 

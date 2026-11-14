@@ -55,6 +55,10 @@ const ha = (value: number) => {
   if (m2 < 10) return 'under 10 m²';
   return `${m2 >= 100 ? Math.round(m2 / 10) * 10 : Math.round(m2)} m²`;
 };
+// Green cover in whole per cent: the test put a typical field within about 3 points, so a decimal would claim more.
+// Empty when it was not measured (yet): the reason, if any, is shown on its own line.
+const coverText = (field: KeptOutline) =>
+  typeof field.green_cover?.share === 'number' ? `green cover ${Math.round(field.green_cover.share * 100)}%` : '';
 // 44 px tall under a finger, 36 px with a mouse
 const link = 'inline-flex min-h-11 cursor-pointer items-center px-2 text-[12.5px] text-fg-soft underline sm:min-h-9';
 
@@ -422,6 +426,7 @@ export function FieldTaps({
             <span className="text-[14px] font-semibold">
               Field {selected.number} · {ha(selected.area_ha)}
               {selected.by_hand ? ' · by hand' : ''}
+              {coverText(selected) ? ` · ${coverText(selected)}` : ''}
             </span>
             {!removing && (
               <button type="button" className={link} onClick={() => setRemoving(true)}>
@@ -429,6 +434,7 @@ export function FieldTaps({
               </button>
             )}
           </div>
+          {selected.green_cover?.why_not && <p className="m-0 text-[12px] opacity-80">Green cover: {selected.green_cover.why_not}</p>}
           {removing && (
             <div className="flex flex-wrap items-center gap-2">
               <span className="text-[13px]">Remove Field {selected.number}? Its number will not be used again.</span>
@@ -468,7 +474,7 @@ export function FieldTaps({
                 if (!asked) return;
                 const [lon, lat] = selected.centre;
                 onAskSage(
-                  `About Field ${selected.number} on the drone photo "${photo?.name ?? ''}" (plot ${selected.number} of my outlined fields: ${ha(selected.area_ha)}, centred at latitude ${lat}, longitude ${lon}): ${asked}`,
+                  `About Field ${selected.number} on the drone photo "${photo?.name ?? ''}" (plot ${selected.number} of my outlined fields: ${ha(selected.area_ha)}${coverText(selected) ? `, ${coverText(selected)}` : ''}, centred at latitude ${lat}, longitude ${lon}): ${asked}`,
                 );
                 setQuestion('');
               }}
@@ -637,6 +643,7 @@ export function FieldTaps({
                 }}
               >
                 Field {k.number} · {ha(k.area_ha)}
+                {coverText(k) ? ` · ${coverText(k)}` : ''}
                 {k.by_hand ? ' · by hand' : ''}
               </button>
             </li>
@@ -647,6 +654,7 @@ export function FieldTaps({
         <details className="text-[12.5px] leading-snug text-fg-soft">
           <summary className="flex min-h-11 sm:min-h-9 cursor-pointer items-center">What was measured, and what was not</summary>
           <p className="m-0 mt-1">{state.data?.measured}</p>
+          <p className="m-0 mt-1">{state.data?.cover_measured}</p>
         </details>
       )}
     </div>

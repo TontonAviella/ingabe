@@ -40,7 +40,9 @@ from typing import Any, Optional, Sequence
 import numpy as np
 from affine import Affine
 from pyproj import Transformer
-from rasterio.features import shapes
+import rasterio
+from rasterio.features import geometry_mask, shapes
+from rasterio.windows import from_bounds
 from scipy import ndimage
 from shapely.geometry import Point, Polygon, mapping, shape
 from shapely.ops import transform as reproject
@@ -264,6 +266,59 @@ def outline_shape(grid: Grid, window: tuple[int, int], mask: np.ndarray) -> Opti
     return {"geometry": mapping(lonlat), "area_ha": round(ground_area.area_ha(lonlat), 3)}
 
 
+# Green cover: the share of a kept field's ground covered by living green plants of any kind, crop and weeds alike
+# (colour cannot tell them apart). The rule is the one Tests 77 and 78 measured, unchanged: excess green 2g - r - b
+# (each 0..1) of the 3 x 3 pixel mean above GREEN_THRESHOLD, counted 0.5 m in from the field's line. It is only
+# given where it was measured: fields of COVER_MIN_HA to COVER_MAX_HA on photos with pixels of COVER_PIXEL_M.
+GREEN_THRESHOLD = 0.15
+COVER_INSET_M = 0.5
+COVER_MIN_HA, COVER_MAX_HA = 0.007, 0.7  # the drawn fields it was measured on: 0.0077 to 0.68 ha
+COVER_PIXEL_M = (0.025, 0.045)  # the test photo's pixels are 3.25 cm
+COVER_FILL_PER_CALL = 20  # fields kept before green cover existed get it here, a few at a time
+COVER_MEASURED = (
+    "Green cover is the share of the field's ground under living green plants of any kind, crop and weeds alike: "
+    "the colour of a photo cannot tell them apart. Measured on one photo (Cyampirita, 26 fields) against careful "
+    "readers of 40 points per field: within about 3 points for a typical field, and within 10 points on 20 of 24 "
+    "fields. Least sure on sparse, pale or blurred ground, where even careful readers could not tell plant from "
+    "soil. It is a reading of the day the photo was taken, not a yield."
+)
+
+
+def _cover_from_pixels(rgb: np.ndarray, valid: np.ndarray) -> Optional[float]:
+    """The share of `valid` pixels whose 3 x 3 mean colour is green by the measured rule; None when none is valid.
+    `rgb` is (3, rows, cols) of 0..255."""
+    if not valid.any():
+        return None
+    mean = ndimage.uniform_filter(rgb.astype(np.float32) / 255.0, size=(1, 3, 3), mode="nearest")
+    green = (2 * mean[1] - mean[0] - mean[2]) > GREEN_THRESHOLD
+    return float(green[valid].mean())
+
+
+def green_cover(cog_url: str, geometry: dict[str, Any], area_ha: float) -> dict[str, Any]:
+    """{"share": 0..1, "why_not": None} for a kept field, or {"share": None, "why_not": plain words} where green
+    cover was not measured. `geometry` is the field's outline in longitude and latitude. Reads the photo."""
+    if area_ha > COVER_MAX_HA:
+        return {"share": None, "why_not": f"Not measured for fields over {COVER_MAX_HA} ha: it was tested on smaller fields."}
+    if area_ha < COVER_MIN_HA:
+        return {"share": None, "why_not": "Not measured for a field this small."}
+    with rasterio.open(cog_url) as ds:
+        pixel = abs(ds.transform.a)
+        if ds.count < 3 or not COVER_PIXEL_M[0] <= pixel <= COVER_PIXEL_M[1]:
+            return {"share": None, "why_not": "Not measured at this photo's detail: it was tested on 3 cm pixels."}
+        outline = reproject(Transformer.from_crs("EPSG:4326", ds.crs, always_xy=True).transform, shape(geometry))
+        inner = outline.buffer(-COVER_INSET_M)
+        if inner.is_empty:
+            return {"share": None, "why_not": "Not measured for a field this narrow."}
+        window = from_bounds(*inner.bounds, ds.transform).round_offsets().round_lengths()
+        rgb = ds.read([1, 2, 3], window=window, boundless=True, fill_value=0)
+        photo = ds.read_masks(1, window=window, boundless=True) > 0
+        inside = ~geometry_mask([mapping(inner)], out_shape=rgb.shape[1:], transform=ds.window_transform(window))
+    share = _cover_from_pixels(rgb, inside & photo)
+    if share is None:
+        return {"share": None, "why_not": "The photo has no picture inside this field."}
+    return {"share": round(share, 2), "why_not": None}
+
+
 def _prefix(photo_key: str) -> str:
     return f"{_STORE_PREFIX}/{hashlib.sha256(photo_key.encode()).hexdigest()[:32]}"
 
@@ -456,11 +511,42 @@ async def _store_kept(s3: Any, bucket: str, photo_key: str, rows: list[dict[str,
                         ContentType="application/json")
 
 
+async def _with_green_cover(cog_url: Optional[str], row: dict[str, Any]) -> dict[str, Any]:
+    """The row with its green cover measured; a photo that cannot be read leaves it unmeasured, to try again."""
+    if cog_url is None:
+        return row
+    try:
+        row["green_cover"] = await asyncio.to_thread(green_cover, cog_url, row["geometry"], row["area_ha"])
+    except Exception:  # the field is kept either way; its cover is filled in on a later visit
+        logger.exception("field taps: green cover of field %s could not be read", row.get("number", row.get("id")))
+    return row
+
+
+async def fill_green_cover(s3: Any, bucket: str, photo_key: str, cog_url: str) -> None:
+    """Measure green cover for up to COVER_FILL_PER_CALL kept fields that have none yet (kept before it existed,
+    or the photo could not be read then)."""
+    missing = [row for row in await kept(s3, bucket, photo_key) if "green_cover" not in row][:COVER_FILL_PER_CALL]
+    if not missing:
+        return
+    measured = {row["id"]: row["green_cover"] for row in
+                [await _with_green_cover(cog_url, dict(row)) for row in missing] if "green_cover" in row}
+    if not measured:
+        return
+    async with _record_locks.setdefault(photo_key, asyncio.Lock()):  # a keep or remove meanwhile is not lost
+        rows, following = await _kept_record(s3, bucket, photo_key)
+        for row in rows:
+            if row["id"] in measured and "green_cover" not in row:
+                row["green_cover"] = measured[row["id"]]
+        await _store_kept(s3, bucket, photo_key, rows, following)
+
+
 async def keep(s3: Any, bucket: str, photo_key: str, taps: Sequence[Tap], pick: int,
-               user_id: str, moved: Optional[Sequence[Sequence[float]]] = None) -> dict[str, Any]:
+               user_id: str, moved: Optional[Sequence[Sequence[float]]] = None,
+               cog_url: Optional[str] = None) -> dict[str, Any]:
     """Keep the outline these taps and this pick give (computed again here). TapError when they give none.
     With `moved`, the reader's hand-moved line is kept instead, marked "by_hand", next to the model's own outline
-    and how much the two overlap, so hand-moved outlines are never counted as the model's."""
+    and how much the two overlap, so hand-moved outlines are never counted as the model's. With `cog_url`, the
+    field's green cover is measured on the photo and kept with it."""
     if pick not in (0, 1, 2):
         raise TapError("Pick one of the outlines before keeping it.")
     found = [o for o in await outlines(s3, bucket, photo_key, taps, pick if len(taps) > 1 else None)
@@ -475,6 +561,7 @@ async def keep(s3: Any, bucket: str, photo_key: str, taps: Sequence[Tap], pick: 
         own = await asyncio.to_thread(moved_line, moved, taps[0])
         row.update(by_hand=True, model_geometry=row["geometry"], model_area_ha=row["area_ha"],
                    model_overlap=_overlap(row["geometry"], own["geometry"]), **own)
+    row = await _with_green_cover(cog_url, row)
     async with _record_locks.setdefault(photo_key, asyncio.Lock()):  # two keeps at once: neither is lost
         rows, number = await _kept_record(s3, bucket, photo_key)
         if len(rows) >= MAX_KEPT_FIELDS:
@@ -531,11 +618,13 @@ async def turn_down(s3: Any, bucket: str, photo_key: str, taps: Sequence[Tap], p
     return row
 
 
-async def state(s3: Any, bucket: str, photo_key: str) -> dict[str, Any]:
-    """What the screen needs before the first tap."""
+async def state(s3: Any, bucket: str, photo_key: str, cog_url: Optional[str] = None) -> dict[str, Any]:
+    """What the screen needs before the first tap. With `cog_url`, kept fields still without green cover get it."""
     prepared = await grid(s3, bucket, photo_key)
+    if prepared is not None and cog_url is not None:
+        await fill_green_cover(s3, bucket, photo_key, cog_url)
     return {"prepared": prepared is not None, "windows": len(prepared.windows) if prepared else 0,
-            "max_corrections": MAX_CORRECTIONS, "measured": MEASURED,
+            "max_corrections": MAX_CORRECTIONS, "measured": MEASURED, "cover_measured": COVER_MEASURED,
             # who kept a field stays in the record; the screen does not need it and a viewer is not shown it
             "kept": [{k: v for k, v in row.items() if k != "kept_by"}
                      for row in await kept(s3, bucket, photo_key)] if prepared else [],

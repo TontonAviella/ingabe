@@ -47,6 +47,7 @@ function fakeServer(prepared: boolean) {
         windows: prepared ? 4 : 0,
         max_corrections: 2,
         measured: MEASURED,
+        cover_measured: 'Green cover is the share of the field under living green plants of any kind.',
         kept,
         turned_down: turnedDown.length,
       });
@@ -308,6 +309,58 @@ describe('outlining a field by tapping it', () => {
     // a click on bare ground lets the field go
     m.clickOn(null);
     await vi.waitFor(() => expect(byText('Field 7 · 200 m² · by hand')).toBeNull());
+  });
+
+  it("shows a field's green cover as the server measured it, or why it was not measured", async () => {
+    const server = fakeServer(true);
+    server.kept.push(
+      {
+        id: 'a',
+        number: 3,
+        centre: [30.5, -1.5],
+        geometry: square(1),
+        area_ha: 0.18,
+        corrections: 0,
+        kept_at: 'then',
+        green_cover: { share: 0.624, why_not: null },
+      },
+      {
+        id: 'b',
+        number: 4,
+        centre: [30.25, -1.75],
+        geometry: square(2),
+        area_ha: 0.9,
+        corrections: 0,
+        kept_at: 'then',
+        green_cover: { share: null, why_not: 'Not measured for fields over 0.7 ha: it was tested on smaller fields.' },
+      },
+    );
+    const m = fakeMap();
+    const asked: string[] = [];
+    mount(
+      <FieldTaps
+        map={m.map}
+        layers={[{ ...photo, name: 'Cyampirita' } as MapLayer]}
+        hiddenLayerIDs={[]}
+        onAskSage={(prompt) => asked.push(prompt)}
+      />,
+    );
+    await vi.waitFor(() => expect(byButton(/^2 fields outlined · show$/)).not.toBeNull());
+    m.clickOn('a');
+    // whole per cent: the test put a typical field within about 3 points
+    await vi.waitFor(() => expect(byText('Field 3 · 0.18 ha · green cover 62%')).not.toBeNull());
+    const box = document.querySelector('input[aria-label="Ask Sage about Field 3"]') as HTMLInputElement;
+    const setValue = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set as (v: string) => void;
+    setValue.call(box, 'is it weedy?');
+    box.dispatchEvent(new Event('input', { bubbles: true }));
+    await vi.waitFor(() => expect((byButton('Ask') as HTMLButtonElement).disabled).toBe(false));
+    click(byButton('Ask') as HTMLButtonElement);
+    await vi.waitFor(() => expect(asked).toHaveLength(1));
+    expect(asked[0]).toContain('(plot 3 of my outlined fields: 0.18 ha, green cover 62%, centred');
+    // a field it was not measured on shows no figure, and says why
+    m.clickOn('b');
+    await vi.waitFor(() => expect(byText('Field 4 · 0.90 ha')).not.toBeNull());
+    expect(byText('Green cover: Not measured for fields over 0.7 ha: it was tested on smaller fields.')).not.toBeNull();
   });
 
   it('shows a small field in square metres and marks added and removed parts by sign, not colour alone', async () => {

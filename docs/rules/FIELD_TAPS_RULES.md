@@ -56,6 +56,13 @@ with up to two more taps ("this part too" / "not this part"), and keep it with i
    there the window cut it, not the ground. The answer says how many were left out (`left_out`) and the screen says
    so. Nothing is left out when no other choice remains, so a field larger than a window can still be outlined.
    A rule for plots smaller than a window; a choice that was left out can be neither corrected nor kept.
+17. Each kept field carries its green cover: the share of its ground under living green plants of any kind, crop
+   and weeds alike, from the photo's colour by the rule Tests 77 and 78 measured, unchanged (excess green 2g - r - b
+   of the 3 x 3 pixel mean above 0.15, counted 0.5 m in from the line; `green_cover`). It is measured when the
+   field is kept; fields kept before it existed get it when the screen next opens the photo, 20 at a time. It is
+   only given where it was measured: fields of 0.007 to 0.7 ha on photos with 2.5 to 4.5 cm pixels; elsewhere the
+   field says why not and shows no figure. Shown in whole per cent. If the photo cannot be read the field is kept
+   anyway and its cover is measured on a later visit. What it means is said by the server (`COVER_MEASURED`).
 
 ## What was measured (plans/PLAN_RWANDA_CROPS.md, 2026-11-12)
 
@@ -67,8 +74,10 @@ with up to two more taps ("this part too" / "not this part"), and keep it with i
 | 74 | Area of a first-tap outline (best of three, no correction) against a hand drawing, 20 exam fields | median area error 7.6%; within 5% on 9 of 20. A band of 2.17 m x perimeter / area holds 18 of 20 but is too wide to print (a third of the area at the median) |
 | 75 | Area of an outline after up to two correcting taps, through the app's own code, 26 exam fields | median area error 5.9%; within 5% on 11 of 26. A band of 1.44 m x perimeter / area holds 23 of 26 but is a fifth of the area at the median: still too wide to print |
 | 76 | Rule 16 on the three choices of a first tap, 26 exam fields (70 choices) | 12 choices left out; all 12 were unusable (IoU < 0.5) and 2 to 35 times the drawn field; no field lost its best choice. It catches 12 of 21 over-large choices; the rest took in a neighbour away from the border. On the 31 tuning fields: 15 left out, 14 unusable, one 0.6 ha field lost its best choice |
+| 77 | Green cover from colour, threshold set on 31 tuning fields, against two blind readers of 40 random points in each of 26 exam fields | threshold 0.15; point accuracy 88%, median field error 0.06, 16 of 26 within 0.10: good enough to build on, not for clients. Colour read high on sparse ground (median error 0.16 on 9 fields under half cover; 0.03 on 16 fields of 0.7 or more) |
+| 78 | Tiebreak on the 103 points where readers and colour disagreed, by two readers of another model with an 8 m view, and Test 77 scored again | the tiebreak sided with colour on 42% (split); 25 points stayed undecidable. Scored again: point accuracy 94.5%, median field error 0.03, 20 of 24 within 0.10: passes the client bar, narrowly (counting the 25 undecidable points against colour gives 18 of 26) |
 
-Not measured: taps by a real person (the test placed them with a script from hand-drawn outlines), corners, ground
+Not measured: green cover on any photo but Cyampirita, or against the ground itself (the readers read the same photo); taps by a real person (the test placed them with a script from hand-drawn outlines), corners, ground
 that is not a field, any photo other than Cyampirita. The first correction made the outline worse on 6 of 26 fields
 before the second repaired it, so the screen keeps a "back" step.
 
