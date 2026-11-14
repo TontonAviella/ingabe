@@ -12,7 +12,7 @@ function colourOf(style: NonNullable<GeoJsonLayerUpdate['style']>): string | Exp
 
 /**
  * Draw a layer Sage sent as inline GeoJSON (display_geojson_layer, counted plants, object masks), the same way
- * when it first arrives and when it is replayed after the map's style is reloaded. Points are dots that grow
+ * when it first arrives and when it is replayed after the map's style is reloaded. Points are rings that grow
  * with the zoom; polygons are a fill (or a 3D extrusion) with an outline.
  */
 export function addSageGeoJsonLayer(map: MLMap, gl: GeoJsonLayerUpdate, data: unknown) {
@@ -27,14 +27,14 @@ export function addSageGeoJsonLayer(map: MLMap, gl: GeoJsonLayerUpdate, data: un
       type: 'circle',
       source: gl.source_id,
       metadata,
+      // Rings, not dots: the thing each ring marks (a plant) shows inside it, so a reader can check the count
+      // against the photo by eye. Far out the rings are specks that show where the plants are.
       paint: {
         'circle-color': colour,
-        'circle-opacity': 0.9,
-        // Plants stand about half a metre apart: far out the dots are pinpricks (a field of them shows where
-        // the plants are); from zoom 20 each dot sits on its plant, small enough to see the plant around it.
-        'circle-radius': ['interpolate', ['exponential', 2], ['zoom'], 16, 0.6, 18, 1, 20, 2.6, 22, 7],
-        'circle-stroke-color': strokeColour,
-        'circle-stroke-width': ['interpolate', ['linear'], ['zoom'], 19, 0, 20.5, 1, 22, 1.5],
+        'circle-opacity': 0.1,
+        'circle-radius': ['interpolate', ['exponential', 2], ['zoom'], 16, 0.8, 18, 1.6, 20, 6, 22, 20],
+        'circle-stroke-color': colour,
+        'circle-stroke-width': ['interpolate', ['linear'], ['zoom'], 16, 0.8, 19, 1.5, 21, 2.5],
       },
     });
     return;

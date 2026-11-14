@@ -155,4 +155,10 @@ before the second repaired it, so the screen keeps a "back" step.
   the field is read it says how many parts are done and that the first count takes minutes. The answer leads with
   "About N plants of your crop", then other plants, other green, the share of the field counted when not all of it
   was, and "How sure is this" in the server's words. Plants are drawn as rings so each shows inside its ring; your crop is the largest ring.
+- A plant count, wherever it is drawn (Sage's count of a plot, "Count my crop"), is a ring around each plant
+  counted, with the plant showing inside its ring, so the count can be checked against the photo by eye. Solid
+  dots are not used: they hide what they mark. Sage's count draws the plants alone; other green is drawn only
+  when the person asks where the weeds or grass are (`show_other_green`), since unasked it buries the plants.
+  The number is said to two figures ("about 700", never "702"): the test put the total within 18%. Roger,
+  2026-11-14, on the live site: "nobody would know what that is by looking at it".
 - Small text actions have a 36 px tap height.
