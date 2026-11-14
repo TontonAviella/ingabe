@@ -48,6 +48,10 @@ class DronePhotoArgs(BaseModel):
 class CountPlantsArgs(BaseModel):
     layer_id: str = Field(..., description="The layer_id of the drone photo (a raster layer on the map).")
     plot_number: int = Field(..., description="The plot's number as shown on the photo and in the question cards.")
+    show_other_green: bool = Field(
+        default=False,
+        description=("true ONLY when the person asks where the weeds, grass or other green are. Otherwise false: the "
+                     "map then shows the crop plants alone, which is what a count is read from."))
 
 
 async def _photo(layer_id: str, meta: IngabeToolCallMetaArgs) -> tuple[Optional[dict[str, Any]], Optional[str]]:
@@ -118,7 +122,10 @@ async def count_plants_in_plot(args: CountPlantsArgs, meta: IngabeToolCallMetaAr
     within 18%, about 4 plant dots in 5 sat on a crop plant, and 9 plants in 10 were found. Always give it as
     "about N", with the share of the plot counted and these limits; never as an exact count. What each piece
     of other green is (weed, grass or bush) is not known: do not name it. An answer is kept, so asking again
-    is free.
+    is free. Give the number exactly as `say_it_as` gives it (two figures, "about 700"), never a longer one. The
+    map shows a ring around each plant counted; other green is drawn only with show_other_green, so set that
+    when, and only when, the person asks where the weeds, grass or other green are; "remove the grass" or "show
+    only the plants" means call again without it.
 
     WHEN TO USE: "how many plants are in plot 175", "count the maize in this plot", "where are the weeds in
     this plot", stand counts.
@@ -155,25 +162,33 @@ async def count_plants_in_plot(args: CountPlantsArgs, meta: IngabeToolCallMetaAr
     org_id = meta.session.get_org_id() if meta.session is not None else None
     look = await _crop_seen(s3, bucket, metadata, plots, args.plot_number, meta.project_id,
                             drone_vision.reference_scope(org_id, meta.user_uuid), row["layer_id"])
-    # The map opens close enough to see each plant under its dot; zooming out shows the whole plot.
-    async with kue_ephemeral_action(meta.conversation_id, f"Drawing about {found.plants:,} plants found in {name}",
+    # What a reader must get at a glance: one number, and a ring around each plant it counts, with the plant visible
+    # inside its ring. Other green is drawn only when asked for: unasked, it buries the plants. The number is said
+    # to two figures ("about 700"): the total was within 18% in the test, so "702" would claim what was not measured.
+    about = plants_about(found.plants)
+    points = points_drawn(found.points, args.show_other_green)
+    part = "" if found.counted_share >= 0.995 else f" in the {found.counted_share:.0%} of it that can be counted"
+    items = [{"label": "each ring is one plant, found by its shape", "color": SPOT_COLOUR}]
+    if args.show_other_green:
+        items.append({"label": f"{found.other_green:,} other green (weed, grass or bush; which is not known)",
+                      "color": OTHER_GREEN_COLOUR})
+    # The map opens close enough to see each plant in its ring; zooming out shows the whole plot.
+    async with kue_ephemeral_action(meta.conversation_id, f"Drawing about {about:,} plants found in {name}",
                                     bounds=_close_view(feature)) as payload:
         payload.updates["add_geojson_layer"] = geojson_layer_update(
             source_id=f"plants-{args.plot_number}-{uuid.uuid4().hex[:6]}",
-            geojson=found.points, name=f"Plants and other green in {name}", bounds=_bounds(feature),
+            geojson=points, name=f"Plants in {name}", bounds=_bounds(feature),
             # plants (kind_code 0) in one colour, other green (1) in another: orange against blue also reads
             # for someone who cannot tell red from green
             style={"geometry": "point", "color_property": "kind_code",
                    "stops": [{"max": 0.5, "color": SPOT_COLOUR}, {"max": 9, "color": OTHER_GREEN_COLOUR}],
-                   "stroke_color": "#FFF1E6",
-                   "legend": {"title": f"{name}: {found.counted_share:.0%} of it counted", "items": [
-                       {"label": f"about {found.plants:,} plants, found by their shape", "color": SPOT_COLOUR},
-                       {"label": f"{found.other_green:,} other green (weed, grass or bush)", "color": OTHER_GREEN_COLOUR}]}})
+                   "legend": {"title": f"{name}: about {about:,} plants{part}", "items": items}})
     return {
         "status": "success",
         "plot": name,
         "crop_seen": look,
-        "plants_about": found.plants,
+        "plants_about": about,
+        "say_it_as": f"about {about:,} plants",
         "other_green_spots": found.other_green,
         "counted_share_of_plot": found.counted_share,
         "plot_area_m2": found.plot_area_m2,
@@ -182,7 +197,8 @@ async def count_plants_in_plot(args: CountPlantsArgs, meta: IngabeToolCallMetaAr
         "parts_refused": found.squares_refused,
         "parts_counted": found.squares_counted,
         "photo_cm_per_pixel": found.cm_per_px,
-        "drawn_on_map": "plants in one colour, other green in another",
+        "drawn_on_map": ("a ring around each plant counted, and the other green in another colour" if args.show_other_green
+                         else "a ring around each plant counted; other green is not drawn unless the person asks for it"),
         "how_sure": ("An estimate. Plants are found by their shape. Measured on one photo (Cyampirita), on ground two "
                      "careful markers could fully count: the total came within 18%; about 4 plant dots in 5 sat on a "
                      "crop plant; 9 plants in 10 were found. Of the spots flagged as other green, 19 in 20 were not "
@@ -204,6 +220,23 @@ async def _crop_seen(s3: Any, bucket: str, metadata: dict[str, Any], plots: Any,
     if look is None or look.main_crop == "unsure":
         return None
     return drone_vision.CROP_LABELS[look.main_crop]
+
+
+def points_drawn(points: dict[str, Any], show_other_green: bool) -> dict[str, Any]:
+    """The points the map is given: the plants alone, or with the other green when the person asked for it."""
+    if show_other_green:
+        return points
+    return {"type": "FeatureCollection",
+            "features": [f for f in points["features"] if f["properties"]["kind_code"] == 0]}
+
+
+def plants_about(count: int) -> int:
+    """A plant count as it is said: two figures (702 -> 700, 163 -> 160, 95 -> 95, 4,987 -> 5,000). The test put
+    the total within 18%, so the third figure means nothing."""
+    if count < 100:
+        return count
+    step = 10 ** (len(str(count)) - 2)
+    return int(round(count / step) * step)
 
 
 CLOSE_VIEW_M = 30.0  # the square the map opens on, inside the plot
