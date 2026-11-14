@@ -208,3 +208,17 @@ def test_bare_spots_are_found_inside_a_plot_only(plots, photo):
     bare = drone_plots.bare_spots(str(photo), [features[BARE_PLOT + 1], features[1]])
     assert {f["properties"]["number"] for f in bare["features"]} == {BARE_PLOT + 1}  # plot 1 is green
     assert sum(f["properties"]["area_m2"] for f in bare["features"]) == pytest.approx(PLOT_M * PLOT_M, rel=0.1)
+
+
+def test_plots_that_bring_their_own_numbers_keep_them(photo):
+    """The fields a reader outlined: field 7 stays plot 7 wherever it lies, and gaps left by removed fields stay."""
+    south_east, north_west = _outlines_wgs84()[5], _outlines_wgs84()[0]
+    own = [drone_plots.MapPlot(south_east, number=2), drone_plots.MapPlot(north_west, number=7)]
+    result = drone_plots.measure_own_plots(str(photo), own, drone_plots.OUTLINED_FIELDS_NAME)
+    props = result.plots()
+    assert [(p["number"], p["tag"]) for p in props] == [(2, "2"), (7, "7")]
+    assert props[1]["lat"] > props[0]["lat"]  # plot 7 is the north-west one: not renumbered from the north-west
+    # one plot without a number of its own: the whole set is numbered from the north-west, as before
+    mixed = drone_plots.measure_own_plots(
+        str(photo), [drone_plots.MapPlot(south_east, number=2), drone_plots.MapPlot(north_west)], "Test plots")
+    assert [p["number"] for p in mixed.plots()] == [1, 2] and mixed.plots()[0]["lat"] > mixed.plots()[1]["lat"]

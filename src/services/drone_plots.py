@@ -44,7 +44,7 @@ from shapely import STRtree
 from shapely.geometry import MultiPolygon, Polygon, box, mapping, shape
 from shapely.ops import transform as reproject, unary_union
 
-from src.services import background_jobs, stored_files
+from src.services import background_jobs, ground_area, stored_files
 from src.services.grvi import BARE_PIXEL, grvi
 
 logger = logging.getLogger(__name__)
@@ -95,6 +95,10 @@ MIN_SPOT_M2 = 1.0
 # Columns that name a plot in a map, most specific first (UPI: Rwanda's land parcel number).
 PLOT_NAME_COLUMNS = ("upi", "plot_id", "plotid", "plot_no", "plot_name", "plot", "parcel_id", "parcel", "field_id",
                      "field", "block", "name", "label", "code", "id")
+# The fields a reader outlined on the photo by tapping, as a source of plots: its id where a source is chosen, and
+# the name its plot set carries (PlotSet.source).
+OUTLINED_FIELDS = "outlined-fields"
+OUTLINED_FIELDS_NAME = "Your outlined fields"
 TAG_CHARS = 10  # a plot's own name shows on the photo when it is this short; otherwise its number does
 # Fields KML files (Google Earth) add to every placemark; they say nothing about the plot.
 KML_SYSTEM_COLUMNS = {"timestamp", "begin", "end", "altitudemode", "tessellate", "extrude", "visibility",
@@ -112,6 +116,7 @@ class MapPlot:
     geometry: Any
     name: Optional[str] = None
     attributes: dict[str, str] = field(default_factory=dict)
+    number: Optional[int] = None  # the plot's own fixed number (a field the reader outlined); None: numbered here
 
 
 @dataclass(frozen=True)
@@ -128,11 +133,13 @@ class _Outline(NamedTuple):
     confidence: Optional[float] = None
     name: Optional[str] = None
     attributes: Optional[dict[str, str]] = None
+    number: Optional[int] = None
 
 
 @dataclass(frozen=True)
 class PlotSet:
-    """The plots of one photo, numbered from the north-west, with their measurements."""
+    """The plots of one photo with their measurements, numbered from the north-west, or by their own fixed numbers
+    when every plot brings one (the fields a reader outlined)."""
 
     geojson: dict[str, Any]  # WGS84 polygons; properties: number, area_ha, greenness, bare_share, group, confidence
     found_at: str
@@ -240,10 +247,6 @@ def _keep_distinct(candidates: list[tuple[float, Polygon]]) -> list[tuple[float,
     return kept
 
 
-def _area_ha(geom_wgs84: Any) -> float:
-    return abs(_GEOD.geometry_area_perimeter(geom_wgs84)[0]) / 10_000
-
-
 def _north_west_order(outlines: list[Any]) -> list[int]:
     """Indexes in plot-number order: rows from north to south, west to east inside a row (rows about one plot tall)."""
     if not outlines:
@@ -327,7 +330,10 @@ def _plot_set(ds: Any, found: list[_Outline], source: str, seconds: float) -> Pl
     measures = _measure(ds, outlines)
     groups = plot_groups(measures)
     features = []
-    for number, i in enumerate(_north_west_order(outlines), start=1):
+    own_numbers = bool(found) and all(o.number is not None for o in found)
+    numbered = (sorted((o.number, i) for i, o in enumerate(found)) if own_numbers
+                else list(enumerate(_north_west_order(outlines), start=1)))
+    for number, i in numbered:
         outline = found[i]
         wgs84 = reproject(to_wgs84, outline.polygon)
         greenness, bare = measures[i]
@@ -336,7 +342,7 @@ def _plot_set(ds: Any, found: list[_Outline], source: str, seconds: float) -> Pl
             "number": number,
             "name": outline.name,
             "tag": outline.name if outline.name and len(outline.name) <= TAG_CHARS else str(number),
-            "area_ha": round(_area_ha(wgs84), 3),
+            "area_ha": round(ground_area.area_ha(wgs84), 3),
             "greenness": None if greenness is None else round(greenness, 4),
             "bare_share": None if bare is None else round(bare, 3),
             "group": groups[i],
@@ -450,7 +456,7 @@ def bare_spots(cog_url: str, plots: list[dict[str, Any]],
             bare &= inside
             for geom, _ in shapes(bare, mask=bare.astype(bool), transform=transform):
                 spot = reproject(to_wgs84, shape(geom).simplify(abs(transform.a)))
-                area = _area_ha(spot) * 10_000
+                area = ground_area.area_ha(spot) * 10_000
                 if area >= MIN_SPOT_M2:
                     features.append({"type": "Feature", "geometry": mapping(spot),
                                      "properties": {"number": plot["properties"]["number"], "area_m2": round(area, 1),
@@ -491,7 +497,7 @@ def measure_own_plots(cog_url: str, plots: list[MapPlot], source: str) -> PlotSe
             outline = reproject(to_photo, plot.geometry)
             if outline.is_empty or outline.area == 0 or not outline.intersects(footprint):
                 continue
-            found.append(_Outline(outline, None, plot.name, plot.attributes))
+            found.append(_Outline(outline, None, plot.name, plot.attributes, plot.number))
         return _plot_set(ds, found, source, time.perf_counter() - started)
 
 
@@ -583,6 +589,17 @@ async def load_map_plots(s3: Any, bucket: str, photo_key: str, map_key: str, cog
         return plots
 
 
+async def forget_map_plots(s3: Any, bucket: str, photo_key: str, map_key: str) -> None:
+    """Drop the measured plots of a version of the reader's own plots that is no longer in use."""
+    key = f"{photo_key}|map:{map_key}"
+    _results.pop(key, None)
+    _map_locks.pop(key, None)
+    try:
+        await s3.delete_object(Bucket=bucket, Key=_store_key(key))
+    except Exception:  # an old measurement left in storage costs a few kilobytes; say so and carry on
+        logger.warning("could not delete the old plot measurement %s", key, exc_info=True)
+
+
 def _job_key(photo_key: str) -> str:
     return f"plots:{photo_key}"
 
@@ -652,8 +669,10 @@ def to_xlsx(plots: PlotSet, photo_name: str) -> bytes:
     about = book.add_worksheet("How it was made")
     lines = [
         ("Photo", photo_name),
-        ("Plots", "found in the photo by Ingabe" if plots.source == "found" else f"from your map: {plots.source}. "
-                  "Columns after 'Longitude' are your map's own."),
+        ("Plots", "found in the photo by Ingabe" if plots.source == "found"
+                  else "the fields you outlined on the photo, each under its field number"
+                  if plots.source == OUTLINED_FIELDS_NAME
+                  else f"from your map: {plots.source}. Columns after 'Longitude' are your map's own."),
         ("Found on", plots.found_at),
         ("Outlines", f"{FIELD_MODEL_NAME}, a field-outlining model, reading the photo at {plots.read_m_per_px} m "
                      "per pixel. Checked by eye, not against surveyed edges: some plots are missed or joined."

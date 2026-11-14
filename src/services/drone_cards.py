@@ -46,6 +46,7 @@ from src.services import (
     drone_vision,
     farm_records,
     field_checks,
+    ground_area,
     isdasoil_service,
     reader_roles,
     wapor_service,
@@ -207,10 +208,6 @@ def _to_wgs84(crs: Any) -> Callable[..., Any]:
     return Transformer.from_crs(crs, "EPSG:4326", always_xy=True).transform
 
 
-def _area_ha(geom_wgs84: Any) -> float:
-    return abs(_GEOD.geometry_area_perimeter(geom_wgs84)[0]) / 10_000
-
-
 def _ground_metres_per_pixel(ds: Any, sample_width: int) -> float:
     west, south, east, north = transform_bounds(ds.crs, "EPSG:4326", *ds.bounds)
     lat = (south + north) / 2
@@ -243,7 +240,7 @@ def measure_bare_ground(ds: Any) -> BareGround:
     patches = []
     for geom, _ in shapes(bare_area.astype("uint8"), mask=bare_area, transform=transform):
         outline = reproject(to_wgs84, shape(geom).simplify(abs(transform.a)))
-        area = _area_ha(outline)
+        area = ground_area.area_ha(outline)
         if area >= MIN_PATCH_HA:
             patches.append((area, outline))
     patches.sort(key=lambda p: p[0], reverse=True)
@@ -704,6 +701,8 @@ def _preview(card_id: str, analysis: PhotoAnalysis, here: Here) -> str:
     if card_id == "pests":
         return "Spots that look different, ranked; a leaf close-up names the cause."
     if card_id == "field_outlines" and plots is not None:
+        if plots.source == drone_plots.OUTLINED_FIELDS_NAME:
+            return f"{plots.count} fields you outlined, measured, {_ha(plots.total_ha)} in all."
         if plots.source != "found":
             return f"{plots.count} plots from your map {plots.source}, measured, {_ha(plots.total_ha)} in all."
         return f"{plots.count} plots, numbered and measured, {_ha(plots.total_ha)} in all."
@@ -1013,7 +1012,10 @@ def _plot_choices(analysis: PhotoAnalysis, here: Here) -> Optional[dict[str, Any
                     else "Outlined from the photo")
     options = [{"id": "found", "label": "Found by Ingabe", "detail": found_detail, "selected": here.plot_map is None}]
     options += [{"id": m.layer_id, "label": m.name,
-                 "detail": (f"Your map · {m.shapes} shape{'s' if m.shapes != 1 else ''}" if m.shapes else "Your map"),
+                 "detail": (f"Outlined by you on this photo · {m.shapes} field{'s' if m.shapes != 1 else ''}"
+                            if m.layer_id == drone_plots.OUTLINED_FIELDS
+                            else f"Your map · {m.shapes} shape{'s' if m.shapes != 1 else ''}" if m.shapes
+                            else "Your map"),
                  "selected": here.plot_map == m.layer_id} for m in here.plot_maps]
     return {"label": "Plots from", "options": options, "href": f"/api/layer/{analysis.layer_id}/plots/source"}
 
@@ -1044,7 +1046,9 @@ def _plot_downloads(analysis: PhotoAnalysis) -> list[dict[str, str]]:
 
 def _plot_source(plots: drone_plots.PlotSet) -> str:
     return (f"Outlined by {drone_plots.FIELD_MODEL_NAME}, a field-outlining model, at {plots.read_m_per_px:g} m "
-            "per pixel" if plots.source == "found" else f"Your own plot map: {plots.source}")
+            "per pixel" if plots.source == "found"
+            else "Fields you outlined on this photo by tapping; a line moved by hand is yours, not the model's"
+            if plots.source == drone_plots.OUTLINED_FIELDS_NAME else f"Your own plot map: {plots.source}")
 
 
 def _field_outlines(analysis: PhotoAnalysis, audience: str, here: Here) -> dict[str, Any]:
@@ -1054,8 +1058,12 @@ def _field_outlines(analysis: PhotoAnalysis, audience: str, here: Here) -> dict[
     areas = sorted(p["area_ha"] for p in plots.plots())
     found = plots.source == "found"
     what = (f"Ingabe found {plots.count} plots in this photo, {_ha(plots.total_ha)} in all, numbered from the "
-            "north-west." if found else f"Your map {plots.source} has {plots.count} plots on this photo, "
-            f"{_ha(plots.total_ha)} in all, each with the name your map gives it.")
+            "north-west." if found
+            else f"You outlined {plots.count} field{'s' if plots.count != 1 else ''} on this photo, "
+                 f"{_ha(plots.total_ha)} in all. Each plot here is one of your fields, under its field number."
+            if plots.source == drone_plots.OUTLINED_FIELDS_NAME
+            else f"Your map {plots.source} has {plots.count} plots on this photo, "
+                 f"{_ha(plots.total_ha)} in all, each with the name your map gives it.")
     if here.plot_map_error:
         what = f"Your map {here.plot_map_error}, so these are the plots Ingabe found. " + what
     facts = [{"label": "Plots", "value": str(plots.count)}, {"label": "All plots together", "value": _ha(plots.total_ha)}]

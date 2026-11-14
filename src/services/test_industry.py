@@ -610,9 +610,11 @@ def test_the_routing_eval_skips_tower_cases_while_towers_is_off(monkeypatch):
         "get_tower_inspection_findings", "tower_photos_needing_review"}}
     assert len(towers) >= 8
     monkeypatch.setenv("TOWERS", "0")
+    monkeypatch.setenv("FIELD_TAPS", "0")
     assert harness.check_industry_cases(cases) == towers
     assert not any(harness.feature_switches().values())
     monkeypatch.setenv("TOWERS", "1")
+    monkeypatch.setenv("FIELD_TAPS", "1")  # every switch is recorded with a run, the ones without Sage tools too
     assert harness.check_industry_cases(cases) == set()
     assert all(harness.feature_switches().values())
 

@@ -120,7 +120,16 @@ class AdminOutlinesControl implements IControl {
   }
 }
 
-export function AdminLevelsOverlay({ map, projectId }: { map: MLMap | null; projectId?: string }) {
+export function AdminLevelsOverlay({
+  map,
+  projectId,
+  quiet = false,
+}: {
+  map: MLMap | null;
+  projectId?: string;
+  /** No hover card: another tool is using the pointer (tapping a field), and the card would cover it. */
+  quiet?: boolean;
+}) {
   const [enabled, setEnabled] = useState(readEnabled);
   const [view, setView] = useState<{ level: AdminLevel; bbox: string | null }>({ level: 'district', bbox: null });
   const [hover, setHover] = useState<{ district: MapGeoJSONFeature; unit?: MapGeoJSONFeature; x: number; y: number } | null>(null);
@@ -231,7 +240,7 @@ export function AdminLevelsOverlay({ map, projectId }: { map: MLMap | null; proj
           </div>
         )}
       </div>
-      {hover && (
+      {hover && !quiet && (
         <AdminUnitTooltip
           district={hover.district.properties}
           unit={hover.unit?.properties}

@@ -26,7 +26,7 @@ from src.services.remote_cog_layer import validate_remote_cog_bounds
 from src.services.shown_maps import SHOWN_MAPS_SQL
 from src.structures import async_read_conn
 
-_LONG_URL_SECONDS = 4 * 3600  # the plot search and the survey read the photo for many minutes
+LONG_URL_SECONDS = 4 * 3600  # the plot search and the survey read the photo for many minutes
 
 # Distinct photos (by uploaded file) in the layer's project whose outline overlaps this layer's.
 _PHOTOS_HERE_SQL = """
@@ -100,7 +100,7 @@ async def _found_plots(s3: Any, bucket: str, metadata: dict[str, Any], *, start:
     plots = await drone_plots.load_plots(s3, bucket, key)
     job = drone_plots.job(key)
     if start and plots is None and (job is None or (retry_failed and job.state == "failed")):
-        job = drone_plots.start_finding(s3, bucket, key, await cog_url(s3, bucket, metadata, _LONG_URL_SECONDS))
+        job = drone_plots.start_finding(s3, bucket, key, await cog_url(s3, bucket, metadata, LONG_URL_SECONDS))
     return plots, (None if plots is not None else job)
 
 
@@ -111,7 +111,7 @@ async def _survey(s3: Any, bucket: str, metadata: dict[str, Any], plots: drone_p
     survey = await drone_vision.load_survey(s3, bucket, key)
     job = drone_vision.job(key)
     if start and survey is None and (job is None or (retry_failed and job.state == "failed")):
-        job = drone_vision.start_survey(s3, bucket, key, await cog_url(s3, bucket, metadata, _LONG_URL_SECONDS),
+        job = drone_vision.start_survey(s3, bucket, key, await cog_url(s3, bucket, metadata, LONG_URL_SECONDS),
                                         plots, place, scope)
     return survey, (None if survey is not None else job)
 
@@ -154,7 +154,7 @@ class PlotLooks:
 
 async def plot_looks(s3: Any, bucket: str, metadata: dict[str, Any], plots: drone_plots.PlotSet,
                      project_id: Optional[str], *, place: Optional[str], scope: str, start: bool,
-                     retry_failed: bool) -> PlotLooks:
+                     retry_failed: bool, layer_id: Optional[str] = None) -> PlotLooks:
     """The looks at a plot set, the one way the cards and Sage take a plot's crop. With `start`, the vision survey
     and the fingerprints are started in the background when they have not run yet. With the survey switched off
     (drone_vision.survey_enabled), no plot is looked at: the crops come from the fingerprint calls and the checks,
@@ -164,7 +164,7 @@ async def plot_looks(s3: Any, bucket: str, metadata: dict[str, Any], plots: dron
                                            retry_failed=retry_failed)
     else:
         survey, survey_job = drone_vision.no_looks(plots), None
-    plot_set = field_checks.plot_set_id(photo_plots.photo_key(metadata), plots)
+    plot_set = field_checks.checks_set_id(photo_plots.photo_key(metadata), plots, layer_id)
     checks = await field_checks.load_checks(s3, bucket, project_id, plot_set)
     # The crop of each plot comes from its fingerprint and the checked plots when there are any; the looks
     # keep stage, weeds and problems. Checks then override both, and the record compares the calls (each made
@@ -191,7 +191,7 @@ async def load(s3: Any, bucket: str, *, layer_id: str, name: str, bounds: Any, m
         west, south, east, north = analysis.bounds
         photos_here = await conn.fetchval(_PHOTOS_HERE_SQL, layer_id, west, south, east, north)
         reader = await reader_roles.role_in(conn, "agriculture", audience, user_id, org_id)
-        maps = await photo_plots.plot_maps(conn, layer_id, analysis.bounds)
+        maps = await photo_plots.plot_sources(conn, s3, bucket, layer_id, analysis.bounds, metadata)
         project_id = await project_of(conn, layer_id)
     records = await farm_records.load_records(s3, bucket, project_id) if project_id else []
     plots, plot_map, map_error = await photo_plots.plots_from_chosen_map(
@@ -201,7 +201,7 @@ async def load(s3: Any, bucket: str, *, layer_id: str, name: str, bounds: Any, m
         plots, plot_job = await _found_plots(s3, bucket, metadata, start=start_jobs, retry_failed=retry_failed)
     looks = (await plot_looks(s3, bucket, metadata, plots, project_id, place=analysis.look.place,
                               scope=drone_vision.reference_scope(org_id, user_id), start=start_jobs,
-                              retry_failed=retry_failed)
+                              retry_failed=retry_failed, layer_id=layer_id)
              if plots is not None else PlotLooks())
     here = drone_cards.Here(photos=max(1, int(photos_here or 0)), plots=plots, plot_job=plot_job,
                             plot_maps=tuple(m for m, _ in maps), plot_map=plot_map, plot_map_error=map_error,

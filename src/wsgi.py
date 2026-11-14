@@ -26,6 +26,7 @@ from src.routes.basemap_routes import basemap_router
 from src.routes.layer_router import layer_router
 from src.routes import answer_rating_routes, client_health_routes, drone_card_routes
 from src.routes import example_finder_routes
+from src.routes import field_tap_routes
 from src.routes import tower_routes
 from src.routes.attribute_table import attribute_table_router
 from src.routes.rwanda_routes import rwanda_router
@@ -810,6 +811,11 @@ app.include_router(
     example_finder_routes.router,
     prefix="/api",
     tags=["Example finder"],
+)
+app.include_router(
+    field_tap_routes.router,
+    prefix="/api",
+    tags=["Field outlines from taps"],
 )
 app.include_router(
     tower_routes.router,

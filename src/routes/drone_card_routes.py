@@ -183,15 +183,20 @@ async def choose_drone_plot_source(
     session: UserContext = Depends(verify_session_required),
 ) -> dict[str, str]:
     """Use the reader's own plot map for this photo's plots, or go back to the plots Ingabe found."""
-    _photo_ready(layer)
-    if choice.source == "found":
+    metadata = _photo_ready(layer)
+    s3 = await get_async_s3_client()
+    fields = await photo_plots.outlined_fields(s3, get_bucket_name(), layer.layer_id, metadata)
+    if choice.source == photo_plots.FOUND and fields is None:
         sql, args = "UPDATE map_layers SET metadata = metadata - $2::text WHERE layer_id = $1", (layer.layer_id, photo_plots.PLOT_MAP_KEY)
     else:
-        if not layer.bounds:
-            raise HTTPException(409, "The photo's outline is not known yet")
-        async with async_read_conn("drone_plot_maps", user_id=session.get_user_id()) as conn:
-            maps = await photo_plots.plot_maps(conn, layer.layer_id, list(layer.bounds))
-        if choice.source not in {m.layer_id for m, _ in maps}:
+        # With outlined fields on the photo, "found" is kept as a choice: with nothing chosen the fields are used.
+        maps = [fields] if fields else []
+        if choice.source not in (photo_plots.FOUND, photo_plots.FIELDS):
+            if not layer.bounds:
+                raise HTTPException(409, "The photo's outline is not known yet")
+            async with async_read_conn("drone_plot_maps", user_id=session.get_user_id()) as conn:
+                maps += await photo_plots.plot_maps(conn, layer.layer_id, list(layer.bounds))
+        if choice.source != photo_plots.FOUND and choice.source not in {m.layer_id for m, _ in maps}:
             raise HTTPException(400, "Choose a map of polygons in this project that covers the photo")
         sql = ("UPDATE map_layers SET metadata = COALESCE(metadata, '{}'::jsonb) || jsonb_build_object($2::text, $3::text) "
                "WHERE layer_id = $1")
@@ -324,7 +329,8 @@ async def check_drone_plot(
         raise HTTPException(404, "This photo is not in a project")
     try:
         checks = await field_checks.add_check(s3, get_bucket_name(), project_id,
-                                              field_checks.plot_set_id(photo_plots.photo_key(metadata), plots),
+                                              field_checks.checks_set_id(photo_plots.photo_key(metadata), plots,
+                                                                         layer.layer_id),
                                               number, check.crop)
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from None

@@ -139,6 +139,7 @@ import { AdminLevelsOverlay } from '@/components/AdminLevelsOverlay';
 import AttributeTable from '@/components/AttributeTable';
 import { CloseLookBubbles } from '@/components/CloseLookBubbles';
 import { DroneCards } from '@/components/DroneCards';
+import { FieldTaps } from '@/components/FieldTaps';
 import { useFollowProjectIndustry } from '@/components/IndustryGate';
 import LayerList from '@/components/LayerList';
 import { MapLegends } from '@/components/MapLegends';
@@ -303,6 +304,7 @@ export default function MapLibreMap({
   // Incremented each time the map is destroyed/recreated so dependent effects
   // (controls, basemap, click handler) re-attach to the new map instance.
   const [mapInstanceId, setMapInstanceId] = useState(0);
+  const [tappingField, setTappingField] = useState(false);
   // hasZoomed is tracked via hasZoomedRef (line ~1087) to avoid triggering setStyle re-runs
   const [layerSymbols, setLayerSymbols] = useState<{
     [layerId: string]: JSX.Element;
@@ -1747,7 +1749,7 @@ export default function MapLibreMap({
       <div className={`relative map-container ${className} grow max-h-screen`} style={{ width, height }}>
         <div ref={mapContainerRef} style={{ width: '100%', height: '100%', minHeight: '100vh' }} className="bg-slate-950" />
         <MapLegends key={mapInstanceId} map={mapRef.current} />
-        <AdminLevelsOverlay key={`admin-${mapInstanceId}`} map={mapRef.current} projectId={project.id} />
+        <AdminLevelsOverlay key={`admin-${mapInstanceId}`} map={mapRef.current} projectId={project.id} quiet={tappingField} />
         <DroneCards
           key={`cards-${mapInstanceId}`}
           map={mapRef.current}
@@ -1772,6 +1774,14 @@ export default function MapLibreMap({
           map={mapRef.current}
           layers={mapData?.layers ?? []}
           hiddenLayerIDs={hiddenLayerIDs}
+        />
+        <FieldTaps
+          key={`field-taps-${mapInstanceId}`}
+          map={mapRef.current}
+          layers={mapData?.layers ?? []}
+          hiddenLayerIDs={hiddenLayerIDs}
+          onTapping={setTappingField}
+          onAskSage={(prompt) => void sendMessage(prompt)}
         />
         <TerrainOverlay key={`terrain-${mapInstanceId}`} map={mapRef.current} />
 

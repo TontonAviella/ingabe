@@ -107,7 +107,7 @@ async def test_sage_names_the_crop_the_cards_show(photo):
     _keep_survey(s3, metadata, plots)
 
     async def crop(number):
-        return await drone_photo_tools._crop_seen(s3, BUCKET, metadata, plots, number, PROJECT, SCOPE)
+        return await drone_photo_tools._crop_seen(s3, BUCKET, metadata, plots, number, PROJECT, SCOPE, "layer-1")
 
     assert [await crop(n) for n in (4, 5, 9, 10)] == ["Maize", "Maize", "Banana", None]
 
@@ -148,7 +148,7 @@ async def test_switched_off_sage_still_names_the_crop(photo, monkeypatch):
     _no_model(monkeypatch)
 
     async def crop(number):
-        return await drone_photo_tools._crop_seen(s3, BUCKET, metadata, plots, number, PROJECT, SCOPE)
+        return await drone_photo_tools._crop_seen(s3, BUCKET, metadata, plots, number, PROJECT, SCOPE, "layer-1")
 
     assert [await crop(n) for n in (4, 5, 9, 10)] == ["Maize", "Maize", "Banana", None]
 
