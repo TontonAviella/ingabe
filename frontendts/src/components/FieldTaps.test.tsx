@@ -139,6 +139,16 @@ function fakeMap() {
       for (const fn of handlers.get('mouseup') ?? []) fn(event(path[path.length - 1]));
       return preventDefault.mock.calls.length > 0;
     },
+    /** One map event of this kind at this place; `buttons` is how many mouse buttons are held down. */
+    fire: (name: string, c: [number, number], buttons = 1) => {
+      const e = {
+        lngLat: { lng: c[0], lat: c[1] },
+        point: { x: c[0] * 1000, y: -c[1] * 1000 },
+        preventDefault: vi.fn(),
+        originalEvent: { buttons },
+      };
+      for (const fn of handlers.get(name) ?? []) fn(e);
+    },
     /** A click on the map, on the kept field with this id or on bare ground (null). */
     clickOn: (id: string | null) => {
       under = id;
@@ -285,6 +295,46 @@ describe('outlining a field by tapping it', () => {
     expect(has((server.kept[0] as KeptOutline & { moved: number[][] }).moved, 30.5, -0.8)).toBe(true);
     click((await vi.waitFor(() => byButton(/^1 field outlined · show$/))) as HTMLButtonElement);
     await vi.waitFor(() => expect(byText(/Field 1 · 0\.42 ha · by hand/)).not.toBeNull());
+  });
+
+  it('drops a stroke that ends away from the line, and ends a stroke when the button is let go off the map', async () => {
+    const server = fakeServer(true);
+    const m = fakeMap();
+    mount(<FieldTaps map={m.map} layers={[photo]} hiddenLayerIDs={[]} />);
+    await vi.waitFor(() => expect(byButton('Outline a field')).not.toBeNull());
+    click(byButton('Outline a field') as HTMLButtonElement);
+    await vi.waitFor(() => expect(m.listening()).toBe(true));
+    m.tap(30.1, -1.9);
+    await vi.waitFor(() => expect(byButton(/^A · /)).not.toBeNull());
+    click(byButton(/^A · /) as HTMLButtonElement); // the square from (30, -2) to (31, -1)
+    await vi.waitFor(() => expect(byButton('Move the line')).not.toBeNull());
+    click(byButton('Move the line') as HTMLButtonElement);
+    await vi.waitFor(() => expect(byText('Draw along the true edge: start on the line and end on the line.')).not.toBeNull());
+    const square = () => m.drawn().features.find((f) => f.geometry.type === 'Polygon')?.geometry as GeoJSON.Polygon;
+    const before = JSON.stringify(square());
+
+    // let go 200 px from the line: joining it from there would make a spike, so nothing changes and the screen says why
+    m.draw([31, -1.7], [31.1, -1.6], [31.2, -1.5]);
+    await vi.waitFor(() => expect(byText('End the stroke on the line. Nothing was changed.')).not.toBeNull());
+    expect(JSON.stringify(square())).toBe(before);
+    expect(server.measured).toEqual([]);
+    expect((byButton('Undo last') as HTMLButtonElement).disabled).toBe(true);
+
+    // the button let go over a panel: the map sees no release, only the next move with no button held
+    m.fire('mousedown', [31, -1.7]);
+    m.fire('mousemove', [31.1, -1.5]);
+    m.fire('mousemove', [31.01, -1.3]);
+    m.fire('mousemove', [35, -5], 0); // the pointer wanders with no button down: the stroke is over, not drawn on
+    await vi.waitFor(() => expect(server.measured).toHaveLength(1));
+    expect(server.measured[0].moved.some((c) => c[0] > 34)).toBe(false);
+    m.fire('mousemove', [36, -6], 0);
+    expect(server.measured).toHaveLength(1);
+    // and a release on the window itself ends a stroke too
+    m.fire('mousedown', [30.4, -1]);
+    m.fire('mousemove', [30.5, -0.8]);
+    m.fire('mousemove', [30.6, -0.99]);
+    window.dispatchEvent(new Event('mouseup'));
+    await vi.waitFor(() => expect(server.measured).toHaveLength(2));
   });
 
   it('folds the panel to its one line of buttons and opens it again', async () => {

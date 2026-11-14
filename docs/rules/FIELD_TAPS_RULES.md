@@ -26,7 +26,9 @@ with up to two more taps ("this part too" / "not this part"), and keep it with i
 8. The text about what was measured comes from `field_taps.MEASURED`; screens do not write their own.
 9. The reader may draw the true edge over the picked outline ("Move the line"): a stroke that starts on the line
    (within 18 px) takes the place of the stretch of outline between its two ends, so a curved edge takes one
-   stroke (`lib/traceEdge.ts`). A stroke that ends off the line is joined to the nearest place on it. Of the two
+   stroke (`lib/traceEdge.ts`). A stroke must end within 30 px of the line; one let go further away is dropped and
+   the screen says so, since joining it from there would draw a spike nobody meant. A stroke ends when the button or
+   finger is let go anywhere, also over a panel or outside the map. Of the two
    stretches a stroke could replace, the one that leaves the first tap inside the outline is replaced, and the
    shorter when both do; a stroke that would leave the tap outside changes nothing. "Undo last" takes back one
    stroke, "Undo all" every one. A press away from the line, or with two fingers, moves the map as usual. The

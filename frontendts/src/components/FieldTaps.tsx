@@ -68,9 +68,10 @@ const link = 'inline-flex min-h-11 cursor-pointer items-center px-2 text-[12.5px
 const closed = (ring: Corner[]): GeoJSON.Polygon => ({ type: 'Polygon', coordinates: [[...ring, ring[0]]] });
 
 // Drawing the true edge: the reader puts a finger on the outline (within GRAB_PX), draws along the edge of the field
-// and comes back to the outline; what was drawn takes the place of that stretch of outline (lib/traceEdge). A curve
-// takes one stroke. Points closer than TRACE_GAP_PX to the one before are not kept.
+// and comes back to the outline (within END_PX); what was drawn takes the place of that stretch of outline
+// (lib/traceEdge). A curve takes one stroke. Points closer than TRACE_GAP_PX to the one before are not kept.
 const GRAB_PX = 18;
+const END_PX = 30; // a stroke must end this close to the outline; one that ends further away is dropped, not joined
 const TRACE_GAP_PX = 3;
 const MAX_CORNERS = 560; // under the server's limit; an outline with more is thinned evenly
 
@@ -359,7 +360,22 @@ export function FieldTaps({
       const base = before.map((c) => map.project(c) as Pixel);
       if (nearestOnRing(base, e.point).far > GRAB_PX) return; // not on the line: the map pans as usual
       e.preventDefault(); // the map stays still while the edge is drawn
+      setProblem(null);
       stroke = { before, base, path: [{ x: e.point.x, y: e.point.y }], keep: map.project([firstTap.lon, firstTap.lat]), now: null };
+    };
+    const end = () => {
+      if (!stroke) return;
+      const { before, base, path, now } = stroke;
+      stroke = null;
+      if (!now) return; // a touch on the line with no stroke changes nothing
+      if (nearestOnRing(base, path[path.length - 1]).far > END_PX) {
+        // let go away from the line: joining it from there would make a spike nobody drew
+        setRing(before);
+        setProblem('End the stroke on the line. Nothing was changed.');
+        return;
+      }
+      setUndo((earlier) => [...earlier, before]);
+      measure(now);
     };
     const onMove = (e: MapMouseEvent | MapTouchEvent) => {
       if (!stroke) return;
@@ -367,6 +383,10 @@ export function FieldTaps({
         // a second finger came down: the stroke is dropped and the outline is as it was
         setRing(stroke.before);
         stroke = null;
+        return;
+      }
+      if (e.originalEvent && 'buttons' in e.originalEvent && e.originalEvent.buttons === 0) {
+        end(); // the button was let go somewhere the map did not see (over a panel, outside the window)
         return;
       }
       const last = stroke.path[stroke.path.length - 1];
@@ -380,27 +400,28 @@ export function FieldTaps({
       });
       setRing(stroke.now);
     };
-    const onUp = () => {
-      if (!stroke) return;
-      const { before, now } = stroke;
-      stroke = null;
-      if (!now) return; // a touch on the line with no stroke changes nothing
-      setUndo((earlier) => [...earlier, before]);
-      measure(now);
-    };
     map.on('mousedown', onDown);
     map.on('touchstart', onDown);
     map.on('mousemove', onMove);
     map.on('touchmove', onMove);
-    map.on('mouseup', onUp);
-    map.on('touchend', onUp);
+    map.on('mouseup', end);
+    map.on('touchend', end);
+    // a release anywhere ends the stroke, also over a panel or outside the map
+    window.addEventListener('mouseup', end);
+    window.addEventListener('touchend', end);
+    window.addEventListener('touchcancel', end);
+    window.addEventListener('blur', end);
     return () => {
       map.off('mousedown', onDown);
       map.off('touchstart', onDown);
       map.off('mousemove', onMove);
       map.off('touchmove', onMove);
-      map.off('mouseup', onUp);
-      map.off('touchend', onUp);
+      map.off('mouseup', end);
+      map.off('touchend', end);
+      window.removeEventListener('mouseup', end);
+      window.removeEventListener('touchend', end);
+      window.removeEventListener('touchcancel', end);
+      window.removeEventListener('blur', end);
     };
   }, [map, mode, layerId, firstTap, measure]);
 
