@@ -5,7 +5,7 @@ Owner: `src/services/field_taps.py`. Switch: `FIELD_TAPS` (off by default). Prep
 ## What it does
 
 On a drone photo of a farm project, a person taps a field. They get up to three outlines, pick one, may correct it
-with up to two more taps ("this part too" / "not this part"), and keep it with its area in hectares.
+with up to six more taps ("this part too" / "not this part"), and keep it with its area in hectares.
 
 ## Rules
 
@@ -16,7 +16,9 @@ with up to two more taps ("this part too" / "not this part"), and keep it with i
 3. The first tap picks the nearest window centre. Later taps must fall inside that window.
 4. One tap gives three outlines; each keeps only the connected part under the first tap (read at the nearest
    pixel, as measured), with holes filled.
-5. A correction needs a picked outline. At most two corrections: that is what was measured.
+5. A correction needs a picked outline. At most six corrections: the most that were tested (Test 83; four did all
+   the work there). A correction can make the outline worse before the next repairs it, so Back is always there and
+   the screen says so after a correcting tap.
 4a. Of the three outlines, one that covers nearly the same ground as an earlier one (overlap 0.9 or more) is
    dropped. None is dropped for being small: fields drawn by hand on Cyampirita go down to 0.008 ha.
 6. A kept outline is computed again on the server from the taps. The one shape a browser may send is a line the
@@ -24,14 +26,15 @@ with up to two more taps ("this part too" / "not this part"), and keep it with i
 7. Areas are hectares on the ellipsoid (`ground_area.area_ha`): map area, as seen from above. On a slope the ground
    surface is larger (6% at 20 degrees); the caveat text says so.
 8. The text about what was measured comes from `field_taps.MEASURED`; screens do not write their own.
-9. The reader may draw the true edge over the picked outline ("Move the line"): a stroke that starts on the line
-   (within 18 px) takes the place of the stretch of outline between its two ends, so a curved edge takes one
-   stroke (`lib/traceEdge.ts`). A stroke must end within 30 px of the line; one let go further away is dropped and
-   the screen says so, since joining it from there would draw a spike nobody meant. A stroke ends when the button or
-   finger is let go anywhere, also over a panel or outside the map. Of the two
-   stretches a stroke could replace, the one that leaves the first tap inside the outline is replaced, and the
-   shorter when both do; a stroke that would leave the tap outside changes nothing. "Undo last" takes back one
-   stroke, "Undo all" every one. A press away from the line, or with two fingers, moves the map as usual. The
+9. The reader may pull the line of the picked outline ("Move the line"): a press on the line (within 28 px, a
+   finger's width) takes hold of it, the drag moves it, and letting go anywhere ends the pull; there is no place a
+   pull must start or end (`lib/traceEdge.ts`). The line around the press follows, fully at the press and falling
+   smoothly to nothing along the line both ways, over a stretch that grows with the length of the pull (twice the
+   pull, at least 40 px, never most of the outline), so a pull bends the line and never tears it. A pull that
+   would leave the first tap outside the outline changes nothing. "Undo last" takes back one pull, "Undo all"
+   every one. A press away from the line, or with two fingers, moves the map as usual. Freehand drawing of the
+   edge was removed on 2026-11-14: Roger found it hard on the live site (start on the line, trace, end on the
+   line). The
    server checks the moved line
    is one shape that does not cross itself and still covers the first tap, and measures its area. Kept, it is
    marked `by_hand`, with the model's outline, the model's area and the overlap of the two on the same record.
@@ -118,6 +121,8 @@ with up to two more taps ("this part too" / "not this part"), and keep it with i
 | 78 | Tiebreak on the 103 points where readers and colour disagreed, by two readers of another model with an 8 m view, and Test 77 scored again | the tiebreak sided with colour on 42% (split); 25 points stayed undecidable. Scored again: point accuracy 94.5%, median field error 0.03, 20 of 24 within 0.10: passes the client bar, narrowly (counting the 25 undecidable points against colour gives 18 of 26) |
 | 79 | The same rule on a second photo (Kabarama, 4.56 cm, muted colour), 24 random 20 m squares; stopped before any reader | the rule called 21 of 24 squares 0 to 1% green although the photo shows plants; a colour threshold does not carry from one camera and day to another, so green cover is given only on photos it was checked on |
 | 81 | Only my crop: plant-finder boxes sorted by 3 + 3 taps drawn from two markers' dots, 16 fully counted exam squares, 44 cases | all: 80% of highlights right, 88% of the crop found (56% right with no taps): good enough to build on. One crop in the square: 89% and 91%: passes the client bar. Two or more: 74% and 86%: fails, narrowly. The app's ONNX look model gives the tested looks (lowest patch cosine 1.000 on 12 squares) |
+| 82 | More than two correcting taps, limit chosen on the 31 tuning fields by a rule fixed beforehand | the rule said keep two (at exactly three taps two fields were briefly spoiled) and the exam was not run. The rule was wrong for a limit that is a maximum; tuning showed good outlines 21 -> 27 and usable 29 -> 30 by six taps, none lost at five or six |
+| 83 | Up to six correcting taps, 26 exam fields, the app's own code, scripted reader, outline as it stands after the last tap | usable 26 (26 at two), close outlines (IoU 0.8) 25 (18 at two), none lost, none worse than its first outline, median area error 4.9% (7.0% at two): raise the limit. One field dipped under usable on the way. No field gained from a fifth or sixth tap |
 
 Not measured: green cover on any photo but Cyampirita, or against the ground itself (the readers read the same photo); taps by a real person (the test placed them with a script from hand-drawn outlines), corners, ground
 that is not a field, any photo other than Cyampirita. The first correction made the outline worse on 6 of 26 fields

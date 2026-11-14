@@ -1,6 +1,6 @@
-// Reshaping an outline by drawing along the true edge: the reader starts on the outline, draws, and ends on it
-// (or near it); the drawn path takes the place of the stretch of outline between its two ends. All in screen
-// pixels: the map does not move while a path is drawn.
+// Moving an outline by pulling it: the reader presses on the line, drags, and lets go anywhere. The stretch of line
+// around the press follows, most at the press and less further along, so the line bends smoothly and stays one line.
+// All in screen pixels: the map does not move while the line is pulled.
 
 export type Pixel = { x: number; y: number };
 
@@ -34,19 +34,6 @@ export function inside(ring: Pixel[], p: Pixel): boolean {
   return within;
 }
 
-type Place = { index: number; along: number };
-
-/** The corners passed going forward along the ring from one place to another, and the length of that way. */
-function forward(ring: Pixel[], from: Place & { point: Pixel }, to: Place & { point: Pixel }): { corners: Pixel[]; length: number } {
-  const n = ring.length;
-  const sameSideAhead = from.index === to.index && to.along >= from.along;
-  const steps = sameSideAhead ? 0 : (to.index - from.index + n) % n || n;
-  const corners: Pixel[] = [];
-  for (let k = 1; k <= steps; k++) corners.push(ring[(from.index + k) % n]);
-  const way = [from.point, ...corners, to.point];
-  return { corners, length: way.slice(1).reduce((sum, p, i) => sum + distance(way[i], p), 0) };
-}
-
 /** `points` without those closer than `gap` to the one kept before them (the first and last always stay). */
 export function thinned(points: Pixel[], gap: number): Pixel[] {
   const out: Pixel[] = [];
@@ -63,24 +50,48 @@ export function capped(ring: Pixel[], most: number): Pixel[] {
   return out;
 }
 
+const STEP = 6; // a pulled line gets a corner at least this often, so it can bend where there was a straight side
+const MIN_REACH = 40; // a small pull still moves this much line each side of the press
+const REACH_PER_PULL = 2; // a longer pull takes more line with it, so the bend stays gentle
+
+/** The ring with a corner every STEP pixels at most, the first of them the place nearest `at` on the ring. */
+function fine(ring: Pixel[], at: Pixel): Pixel[] {
+  const start = nearestOnRing(ring, at);
+  const out: Pixel[] = [start.point];
+  const n = ring.length;
+  // once round the ring from the pressed place: the rest of its side, every other side, then the side's first part
+  const ends = [...Array.from({ length: n }, (_, k) => ring[(start.index + 1 + k) % n]), start.point];
+  for (const end of ends) {
+    const from = out[out.length - 1];
+    const pieces = Math.max(1, Math.ceil(distance(from, end) / STEP));
+    for (let k = 1; k <= pieces; k++)
+      out.push({ x: from.x + ((end.x - from.x) * k) / pieces, y: from.y + ((end.y - from.y) * k) / pieces });
+  }
+  out.pop(); // the pressed place again
+  return out;
+}
+
 /**
- * The ring reshaped by a drawn path. The path's two ends are joined to the nearest places on the ring, and the path
- * takes the place of one of the two stretches of ring between them: the one that leaves `keep` (the spot the reader
- * first tapped) inside the outline, and when both do, the shorter one, since a reader corrects a stretch of the edge,
- * not most of the field. null when the path is too short to say anything or neither way keeps `keep` inside.
+ * The ring after a press at `grab` (on or near the line) was dragged to `to`: the nearest place on the line moves by
+ * as much as the finger did. The line within reach of that place (measured along the
+ * line, both ways) follows: fully at the place itself, falling smoothly to nothing at the end of the reach, which
+ * grows with the length of the pull and never takes more than most of the ring. null when the ring is no outline, or
+ * the pull would leave `keep` (the spot the reader first tapped) outside it.
  */
-export function reshaped(ring: Pixel[], path: Pixel[], keep: Pixel): Pixel[] | null {
-  if (ring.length < 3 || path.length < 2) return null;
-  const start = nearestOnRing(ring, path[0]);
-  const end = nearestOnRing(ring, path[path.length - 1]);
-  const drawn = [start.point, ...path, end.point];
-  const ahead = forward(ring, start, end); // the stretch from the start of the path forward to its end
-  const behind = forward(ring, end, start); // the rest of the ring
-  const choices = [
-    { ring: [...drawn, ...behind.corners], replaced: ahead.length },
-    { ring: [...[...drawn].reverse(), ...ahead.corners], replaced: behind.length },
-  ]
-    .filter((c) => c.ring.length >= 3 && inside(c.ring, keep))
-    .sort((a, b) => a.replaced - b.replaced);
-  return choices.length ? choices[0].ring : null;
+export function pulled(ring: Pixel[], grab: Pixel, to: Pixel, keep: Pixel): Pixel[] | null {
+  if (ring.length < 3) return null;
+  const line = fine(ring, grab);
+  const move = { x: to.x - grab.x, y: to.y - grab.y }; // by how far the finger went: the line does not jump to it
+  const lengths = line.map((p, i) => distance(p, line[(i + 1) % line.length]));
+  const around = lengths.reduce((sum, l) => sum + l, 0);
+  const reach = Math.min(0.45 * around, Math.max(MIN_REACH, REACH_PER_PULL * Math.hypot(move.x, move.y)));
+  let along = 0;
+  const out = line.map((p, i) => {
+    const away = Math.min(along, around - along);
+    along += lengths[i];
+    if (away >= reach) return p;
+    const share = 0.5 * (1 + Math.cos((Math.PI * away) / reach));
+    return { x: p.x + move.x * share, y: p.y + move.y * share };
+  });
+  return inside(out, keep) ? out : null;
 }

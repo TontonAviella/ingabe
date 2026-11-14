@@ -57,8 +57,8 @@ function fakeServer(prepared: boolean) {
       });
     if (url.endsWith('/moved-line')) {
       measured.push(body);
-      // the fake's rule: a line dragged east of longitude 40 is refused, as the server refuses a crossed line
-      if (body.moved.some((c: [number, number]) => c[0] > 40))
+      // the fake's rule: a line pulled east of longitude 31.5 is refused, as the server refuses a crossed line
+      if (body.moved.some((c: [number, number]) => c[0] > 31.5))
         return json({ detail: 'The line crosses itself. Move that corner back.' }, 422);
       return json({ area_ha: 0.42 });
     }
@@ -229,7 +229,7 @@ describe('outlining a field by tapping it', () => {
     expect(server.turnedDown).toEqual([]);
   });
 
-  it('lets the reader draw the true edge over the picked outline, undo a stroke, and keeps it marked as moved by hand', async () => {
+  it('lets the reader pull the line to the true edge, undo a pull, and keeps it marked as moved by hand', async () => {
     const server = fakeServer(true);
     const m = fakeMap();
     mount(<FieldTaps map={m.map} layers={[photo]} hiddenLayerIDs={[]} />);
@@ -241,58 +241,53 @@ describe('outlining a field by tapping it', () => {
     click(byButton(/^A · /) as HTMLButtonElement); // the square from (30, -2) to (31, -1)
     await vi.waitFor(() => expect(byButton('Move the line')).not.toBeNull());
     click(byButton('Move the line') as HTMLButtonElement);
-    await vi.waitFor(() => expect(byText('Draw along the true edge: start on the line and end on the line.')).not.toBeNull());
-    const has = (ring: number[][], lng: number, lat: number) =>
-      ring.some((c) => Math.abs(c[0] - lng) < 1e-9 && Math.abs(c[1] - lat) < 1e-9);
+    await vi.waitFor(() => expect(byText('Press on the line and pull it to the true edge. Let go anywhere.')).not.toBeNull());
+    const has = (ring: number[][], lng: number, lat: number, within = 1e-6) =>
+      ring.some((c) => Math.abs(c[0] - lng) < within && Math.abs(c[1] - lat) < within);
+    const east = (ring: number[][]) => Math.max(...ring.map((c) => c[0]));
     expect((byButton('Undo last') as HTMLButtonElement).disabled).toBe(true);
 
     // a press away from the line moves nothing and leaves the map free to pan
     expect(m.draw([30.5, -1.5], [30.6, -1.5])).toBe(false);
     expect(server.measured).toEqual([]);
 
-    // draw a curve out from the east side and back to it: the map holds still, the curve takes the place of that
-    // stretch of the side, the rest of the outline stays, and the server measures the new line
-    expect(m.draw([31, -1.7], [31.1, -1.65], [31.2, -1.5], [31.1, -1.35], [31, -1.3])).toBe(true);
+    // press the east side and pull it 100 px out, letting go in open ground: the map holds still, that stretch of
+    // the side follows the finger, the far side stays, and the server measures the new line
+    expect(m.draw([31, -1.5], [31.05, -1.5], [31.1, -1.5])).toBe(true);
     await vi.waitFor(() => expect(server.measured).toHaveLength(1));
     const moved = server.measured[0].moved;
-    expect(has(moved, 31.2, -1.5) && has(moved, 31.1, -1.65) && has(moved, 31.1, -1.35)).toBe(true); // the curve as drawn
-    for (const [lng, lat] of [
-      [30, -2],
-      [31, -2],
-      [31, -1],
-      [30, -1],
-    ])
-      expect(has(moved, lng, lat)).toBe(true); // every corner stayed
+    expect(has(moved, 31.1, -1.5)).toBe(true); // the pressed place went where the finger went
+    expect(east(moved)).toBeCloseTo(31.1, 6); // and nothing went further
+    expect(has(moved, 30, -1.5, 0.01)).toBe(true); // the west side did not move
     expect(server.measured[0].first_tap.lon).toBe(30.1);
     await vi.waitFor(() => expect(byText('0.42 ha')).not.toBeNull());
 
-    // a stroke that cuts a corner off keeps the side of it the reader first tapped
-    m.draw([30.3, -2], [30.3, -1.7], [30, -1.7]);
+    // a press a finger's width off the line still takes hold of it (20 px away), and pulls it inwards
+    expect(m.draw([30.5, -2.02], [30.5, -1.95])).toBe(true);
     await vi.waitFor(() => expect(server.measured).toHaveLength(2));
-    const corner = server.measured[1].moved;
-    expect(has(corner, 30, -2) && has(corner, 30.3, -1.7)).toBe(true); // the tapped corner, cut along the stroke
-    expect(has(corner, 31, -1)).toBe(false);
+    expect(Math.min(...server.measured[1].moved.map((c) => c[1]))).toBeCloseTo(-2, 6); // the corners of that side stayed
+    expect(has(server.measured[1].moved, 30.5, -1.93)).toBe(true); // its middle came in by the 70 px of the pull
 
-    // "Undo last" takes back one stroke, and the server measures the line that is back
+    // "Undo last" takes back one pull, and the server measures the line that is back
     click(byButton('Undo last') as HTMLButtonElement);
     await vi.waitFor(() => expect(server.measured).toHaveLength(3));
     expect(server.measured[2].moved).toEqual(moved);
 
     // a line the server refuses cannot be kept, and its reason is shown word for word
-    m.draw([31, -1.9], [41, -1.85], [31, -1.8]);
+    m.draw([31.1, -1.5], [31.7, -1.5]);
     await vi.waitFor(() => expect(byText('The line crosses itself. Move that corner back.')).not.toBeNull());
     click(byButton('Done') as HTMLButtonElement);
     await vi.waitFor(() => expect((byButton('Keep') as HTMLButtonElement).disabled).toBe(true));
     // corrections by tap are for the model's outline, not for a hand-moved one
     expect((byButton('This part too') as HTMLButtonElement).disabled).toBe(true);
 
-    // Back drops the hand-drawn line and returns the outline as the model drew it
+    // Back drops the pulled line and returns the outline as the model drew it
     click(byButton('Back') as HTMLButtonElement);
     await vi.waitFor(() => expect(byText('Your field: 0.10 ha')).not.toBeNull());
 
     click(byButton('Move the line') as HTMLButtonElement);
-    await vi.waitFor(() => expect(byText('Draw along the true edge: start on the line and end on the line.')).not.toBeNull());
-    m.draw([30.4, -1], [30.5, -0.8], [30.6, -1]);
+    await vi.waitFor(() => expect(byText('Press on the line and pull it to the true edge. Let go anywhere.')).not.toBeNull());
+    m.draw([30.5, -1], [30.5, -0.8]);
     await vi.waitFor(() => expect(server.measured).toHaveLength(5));
     click(byButton('Done') as HTMLButtonElement);
     await vi.waitFor(() => expect(byText('Your field: 0.42 ha · line moved by hand')).not.toBeNull());
@@ -303,7 +298,7 @@ describe('outlining a field by tapping it', () => {
     await vi.waitFor(() => expect(byText(/Field 1 · 0\.42 ha · by hand/)).not.toBeNull());
   });
 
-  it('drops a stroke that ends away from the line, and ends a stroke when the button is let go off the map', async () => {
+  it('keeps a pull wherever it is let go, ignores a press with no pull, and ends a pull when the button is let go off the map', async () => {
     const server = fakeServer(true);
     const m = fakeMap();
     mount(<FieldTaps map={m.map} layers={[photo]} hiddenLayerIDs={[]} />);
@@ -315,32 +310,35 @@ describe('outlining a field by tapping it', () => {
     click(byButton(/^A · /) as HTMLButtonElement); // the square from (30, -2) to (31, -1)
     await vi.waitFor(() => expect(byButton('Move the line')).not.toBeNull());
     click(byButton('Move the line') as HTMLButtonElement);
-    await vi.waitFor(() => expect(byText('Draw along the true edge: start on the line and end on the line.')).not.toBeNull());
+    await vi.waitFor(() => expect(byText('Press on the line and pull it to the true edge. Let go anywhere.')).not.toBeNull());
     const square = () => m.drawn().features.find((f) => f.geometry.type === 'Polygon')?.geometry as GeoJSON.Polygon;
     const before = JSON.stringify(square());
 
-    // let go 200 px from the line: joining it from there would make a spike, so nothing changes and the screen says why
-    m.draw([31, -1.7], [31.1, -1.6], [31.2, -1.5]);
-    await vi.waitFor(() => expect(byText('End the stroke on the line. Nothing was changed.')).not.toBeNull());
+    // a press on the line that does not move is not a pull: nothing changes and nothing is measured
+    m.draw([31, -1.7], [31.001, -1.7]);
     expect(JSON.stringify(square())).toBe(before);
     expect(server.measured).toEqual([]);
     expect((byButton('Undo last') as HTMLButtonElement).disabled).toBe(true);
 
-    // the button let go over a panel: the map sees no release, only the next move with no button held
-    m.fire('mousedown', [31, -1.7]);
-    m.fire('mousemove', [31.1, -1.5]);
-    m.fire('mousemove', [31.01, -1.3]);
-    m.fire('mousemove', [35, -5], 0); // the pointer wanders with no button down: the stroke is over, not drawn on
+    // let go 200 px from the line: the pull stands, there is no place it has to end
+    m.draw([31, -1.7], [31.1, -1.6], [31.2, -1.5]);
     await vi.waitFor(() => expect(server.measured).toHaveLength(1));
-    expect(server.measured[0].moved.some((c) => c[0] > 34)).toBe(false);
-    m.fire('mousemove', [36, -6], 0);
-    expect(server.measured).toHaveLength(1);
-    // and a release on the window itself ends a stroke too
-    m.fire('mousedown', [30.4, -1]);
-    m.fire('mousemove', [30.5, -0.8]);
-    m.fire('mousemove', [30.6, -0.99]);
-    window.dispatchEvent(new Event('mouseup'));
+    expect(document.querySelector('[role="alert"]')).toBeNull();
+    expect((byButton('Undo last') as HTMLButtonElement).disabled).toBe(false);
+
+    // the button let go over a panel: the map sees no release, only the next move with no button held
+    m.fire('mousedown', [30.5, -1]);
+    m.fire('mousemove', [30.5, -0.9]);
+    m.fire('mousemove', [35, -5], 0); // the pointer wanders with no button down: the pull is over, not carried on
     await vi.waitFor(() => expect(server.measured).toHaveLength(2));
+    expect(server.measured[1].moved.some((c) => c[0] > 34)).toBe(false);
+    m.fire('mousemove', [36, -6], 0);
+    expect(server.measured).toHaveLength(2);
+    // and a release on the window itself ends a pull too
+    m.fire('mousedown', [30, -1.5]);
+    m.fire('mousemove', [29.9, -1.5]);
+    window.dispatchEvent(new Event('mouseup'));
+    await vi.waitFor(() => expect(server.measured).toHaveLength(3));
   });
 
   it('sits at the bottom left while idle, clear of where Sage answers, and takes the centre once a field is outlined or picked', async () => {
