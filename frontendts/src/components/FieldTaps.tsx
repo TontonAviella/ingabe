@@ -15,7 +15,7 @@ import {
   useRemoveOutline,
 } from '@/hooks/useFieldTaps';
 import type { ServerError } from '@/lib/serverError';
-import { capped, nearestOnRing, type Pixel, reshaped } from '@/lib/traceEdge';
+import { capped, nearestOnRing, type Pixel, pulled } from '@/lib/traceEdge';
 import type { MapLayer } from '@/lib/types';
 import { MyCrop } from './MyCrop';
 
@@ -47,7 +47,7 @@ interface Step {
 }
 
 // off: closed. first: waiting for the first tap, or showing its three outlines. review: one outline picked.
-// add / remove: waiting for a correcting tap. move: the reader draws the true edge over the picked outline.
+// add / remove: waiting for a correcting tap. move: the reader pulls the line of the picked outline.
 type Mode = 'off' | 'first' | 'review' | 'add' | 'remove' | 'move';
 
 // An area in the unit and to the digits the outline supports: square metres for small fields (a hectare figure with
@@ -68,12 +68,10 @@ const link = 'inline-flex min-h-11 cursor-pointer items-center px-2 text-[12.5px
 
 const closed = (ring: Corner[]): GeoJSON.Polygon => ({ type: 'Polygon', coordinates: [[...ring, ring[0]]] });
 
-// Drawing the true edge: the reader puts a finger on the outline (within GRAB_PX), draws along the edge of the field
-// and comes back to the outline (within END_PX); what was drawn takes the place of that stretch of outline
-// (lib/traceEdge). A curve takes one stroke. Points closer than TRACE_GAP_PX to the one before are not kept.
-const GRAB_PX = 18;
-const END_PX = 30; // a stroke must end this close to the outline; one that ends further away is dropped, not joined
-const TRACE_GAP_PX = 3;
+// Pulling the line: the reader presses on the outline (within GRAB_PX), drags it to where the edge of the field is,
+// and lets go anywhere; the line around the press follows smoothly (lib/traceEdge). No start or end to hit.
+const GRAB_PX = 28; // a finger is wide: a press this close to the line takes hold of it
+const PULL_START_PX = 3; // a press that moves less than this is not a pull
 const MAX_CORNERS = 560; // under the server's limit; an outline with more is thinned evenly
 
 function features(
@@ -216,7 +214,7 @@ export function FieldTaps({
   const [ringArea, setRingArea] = useState<number | null>(null);
   const ringRef = useRef<Corner[] | null>(null);
   ringRef.current = ring;
-  const [undo, setUndo] = useState<Corner[][]>([]); // the outline before each stroke, latest last
+  const [undo, setUndo] = useState<Corner[][]>([]); // the outline before each pull, latest last
   // The panel folded to its one line of buttons, so it covers less of the photo; the reader's choice is remembered.
   const [folded, setFoldedState] = useState(() => {
     try {
@@ -235,6 +233,7 @@ export function FieldTaps({
   };
   // Each start-again makes earlier answers stale: one that arrives late is dropped, not shown.
   const round = useRef(0);
+  const measuring = useRef(0); // the latest request to measure a pulled line
 
   const prepared = !!state.data?.prepared;
   const kept = state.data?.kept ?? [];
@@ -247,6 +246,7 @@ export function FieldTaps({
 
   const startAgain = useCallback((next: Mode) => {
     round.current += 1;
+    measuring.current += 1;
     setSteps([]);
     setPick(null);
     setProblem(null);
@@ -338,12 +338,15 @@ export function FieldTaps({
     (corners: Corner[]) => {
       if (!layerId || !firstTap) return;
       setRingArea(null); // not measured yet: Keep waits for the server's answer on this line
+      const asked = ++measuring.current; // an answer for an earlier line, arriving late, is not this line's
       measureMovedLine(layerId, firstTap, corners)
         .then((answer) => {
+          if (asked !== measuring.current) return;
           setRingArea(answer.area_ha);
           setProblem(null);
         })
         .catch((error: ServerError) => {
+          if (asked !== measuring.current) return;
           setRingArea(null);
           setProblem(error.message);
         });
@@ -351,69 +354,73 @@ export function FieldTaps({
     [layerId, firstTap],
   );
 
-  // Drawing the true edge over the picked outline. The corners live here while the reader draws.
+  // Pulling the line of the picked outline. The corners live here while the reader pulls.
   useEffect(() => {
     if (!map || mode !== 'move' || !layerId || !firstTap || !ringRef.current) return;
-    let stroke: { before: Corner[]; base: Pixel[]; path: Pixel[]; keep: Pixel; now: Corner[] | null } | null = null;
+    let pull: { before: Corner[]; base: Pixel[]; grab: Pixel; keep: Pixel; now: Corner[] | null } | null = null;
     const several = (e: MapMouseEvent | MapTouchEvent) => 'points' in e && e.points.length > 1;
     const onDown = (e: MapMouseEvent | MapTouchEvent) => {
       const before = ringRef.current;
       if (!before || several(e)) return; // two fingers zoom the map
       const base = before.map((c) => map.project(c) as Pixel);
       if (nearestOnRing(base, e.point).far > GRAB_PX) return; // not on the line: the map pans as usual
-      e.preventDefault(); // the map stays still while the edge is drawn
+      e.preventDefault(); // the map stays still while the line is pulled
       setProblem(null);
-      stroke = { before, base, path: [{ x: e.point.x, y: e.point.y }], keep: map.project([firstTap.lon, firstTap.lat]), now: null };
+      pull = { before, base, grab: { x: e.point.x, y: e.point.y }, keep: map.project([firstTap.lon, firstTap.lat]), now: null };
     };
     const end = () => {
-      if (!stroke) return;
-      const { before, base, path, now } = stroke;
-      stroke = null;
-      if (!now) return; // a touch on the line with no stroke changes nothing
-      if (nearestOnRing(base, path[path.length - 1]).far > END_PX) {
-        // let go away from the line: joining it from there would make a spike nobody drew
-        setRing(before);
-        setProblem('End the stroke on the line. Nothing was changed.');
-        return;
-      }
+      if (!pull) return;
+      const { before, now } = pull;
+      pull = null;
+      if (!now) return; // a press on the line with no pull changes nothing
       setUndo((earlier) => [...earlier, before]);
       measure(now);
     };
     const onMove = (e: MapMouseEvent | MapTouchEvent) => {
-      if (!stroke) return;
+      if (!pull) return;
       if (several(e)) {
-        // a second finger came down: the stroke is dropped and the outline is as it was
-        setRing(stroke.before);
-        stroke = null;
+        // a second finger came down: the pull is dropped and the outline is as it was
+        setRing(pull.before);
+        pull = null;
         return;
       }
       if (e.originalEvent && 'buttons' in e.originalEvent && e.originalEvent.buttons === 0) {
         end(); // the button was let go somewhere the map did not see (over a panel, outside the window)
         return;
       }
-      const last = stroke.path[stroke.path.length - 1];
-      if (Math.hypot(e.point.x - last.x, e.point.y - last.y) < TRACE_GAP_PX) return;
-      stroke.path.push({ x: e.point.x, y: e.point.y });
-      const next = reshaped(stroke.base, stroke.path, stroke.keep);
-      if (!next) return; // this far the stroke would leave the tapped spot outside: the last good line stays
-      stroke.now = capped(next, MAX_CORNERS).map((p) => {
+      if (Math.hypot(e.point.x - pull.grab.x, e.point.y - pull.grab.y) < PULL_START_PX) return; // a press, not yet a pull
+      const next = pulled(pull.base, pull.grab, e.point, pull.keep);
+      if (!next) return; // this far the pull would leave the tapped spot outside: the last good line stays
+      const { base, before } = pull;
+      pull.now = capped(next, MAX_CORNERS).map((p) => {
+        const kept = base.indexOf(p); // a corner the pull did not reach keeps its own place, to the last digit
+        if (kept >= 0) return before[kept];
         const { lng, lat } = map.unproject([p.x, p.y]);
         return [lng, lat] as Corner;
       });
-      setRing(stroke.now);
+      setRing(pull.now);
     };
+    // the view changed under a pull (a wheel or pinch zoom, a rotated phone): its screen places are stale, so the
+    // pull is dropped and the outline is as it was
+    const onView = () => {
+      if (!pull) return;
+      setRing(pull.before);
+      pull = null;
+    };
+    map.on('movestart', onView);
     map.on('mousedown', onDown);
     map.on('touchstart', onDown);
     map.on('mousemove', onMove);
     map.on('touchmove', onMove);
     map.on('mouseup', end);
     map.on('touchend', end);
-    // a release anywhere ends the stroke, also over a panel or outside the map
+    // a release anywhere ends the pull, also over a panel or outside the map
     window.addEventListener('mouseup', end);
     window.addEventListener('touchend', end);
     window.addEventListener('touchcancel', end);
     window.addEventListener('blur', end);
     return () => {
+      map.off('movestart', onView);
       map.off('mousedown', onDown);
       map.off('touchstart', onDown);
       map.off('mousemove', onMove);
@@ -447,6 +454,7 @@ export function FieldTaps({
   const back = () => {
     setProblem(null);
     if (ring) {
+      measuring.current += 1; // an area still on its way belongs to the line being dropped
       // the hand-moved line goes first: back to the outline as the model drew it
       setRing(null);
       setRingArea(null);
@@ -593,7 +601,7 @@ export function FieldTaps({
                       : mode === 'remove'
                         ? 'Tap a part the outline should not cover.'
                         : mode === 'move'
-                          ? 'Draw along the true edge: start on the line and end on the line.'
+                          ? 'Press on the line and pull it to the true edge. Let go anywhere.'
                           : ring
                             ? `Your field: ${ringArea === null ? 'not an outline' : ha(ringArea)} · line moved by hand`
                             : `Your field: ${picked ? ha(picked.area_ha) : 'no outline'}`}
@@ -699,6 +707,9 @@ export function FieldTaps({
                 Keep
               </button>
             </div>
+          )}
+          {step && pick !== null && corrections > 0 && canCorrect && !ring && mode === 'review' && !folded && (
+            <p className="m-0 text-[12px] text-fg-muted">Worse than before? Back takes the last tap away.</p>
           )}
           {step && pick !== null && !canCorrect && !ring && mode !== 'move' && !folded && (
             <p className="m-0 text-[12px] text-fg-muted">No corrections left for this field. Keep it, go back, or start again.</p>

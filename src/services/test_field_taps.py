@@ -97,7 +97,7 @@ def test_a_correction_outside_the_first_taps_window_is_refused():
 
 def test_only_the_measured_number_of_corrections_is_answered():
     taps = [_tap(60, 10)] + [_tap(62, 10)] * (field_taps.MAX_CORRECTIONS + 1)
-    with pytest.raises(TapError, match="corrections were measured"):
+    with pytest.raises(TapError, match="corrections were tested"):
         field_taps.place(GRID, taps)
     with pytest.raises(TapError, match="first tap"):
         field_taps.place(GRID, [_tap(60, 10, add=False)])

@@ -1,5 +1,5 @@
 """Field outlines from taps on a drone photo: tap a field, get up to three outlines, pick one, correct it with up
-to two more taps ("this part too" / "not this part"), keep it. Switch FIELD_TAPS (off by default).
+to six more taps ("this part too" / "not this part"), keep it. Switch FIELD_TAPS (off by default).
 
 How it works. Segment Anything (ViT-H) has a heavy half that reads a picture once and a light half that answers a
 tap. The heavy half never runs in the app: `scripts/prepare_field_taps.py` runs it on our own machine when we upload
@@ -57,7 +57,7 @@ logger = logging.getLogger(__name__)
 WINDOW_M = 120.0
 WINDOW_PX = 1024
 STEP_M = 60.0
-MAX_CORRECTIONS = 2
+MAX_CORRECTIONS = 6  # the most that were tested (Test 83); four did all the work there
 MAX_KEPT_FIELDS = 500  # kept fields on one photo: each is a plot the cards and Sage measure
 MAX_LINE_REACH_M = 500  # no corner of a hand-moved line may lie further than this from the first tap
 MAX_MOVED_HA = 2.0  # a hand-moved outline larger than this is refused: about three times the largest field measured
@@ -75,11 +75,12 @@ _STORE_PREFIX = "field_taps/v1"
 _KEPT_WINDOWS = 12  # stored windows held in memory (2 MB each)
 
 MEASURED = (
-    "Measured on one photo (Cyampirita, 26 fields): one tap and up to two corrections gave a usable outline on 25 "
-    "fields. Against an outline drawn by hand, the area of a corrected outline was off by about 6% at the median "
-    "and within 5% on 11 of 26 fields; without a correction it was within 5% on 9 of 20. In that test a script "
-    "placed the taps; taps by a person are not measured yet. Corners were not measured. A line you move by hand "
-    "is your own: it was not part of that test. Areas are map areas: on a slope the ground itself is larger."
+    "Measured on one photo (Cyampirita, 26 fields): one tap gave a usable outline on 20 fields, with up to two "
+    "corrections on all 26, and with up to six corrections 25 of them were close outlines (18 with two). A "
+    "correction can make the outline worse before the next one repairs it: Back takes one away. Against an "
+    "outline drawn by hand, the area of a corrected outline was off by about 5% at the median. In that test a "
+    "script placed the taps; taps by a person are not measured yet. Corners were not measured. A line you pull "
+    "by hand is your own: it was not part of that test. Areas are map areas: on a slope the ground itself is larger."
 )
 
 
@@ -155,7 +156,7 @@ def place(grid: Grid, taps: Sequence[Tap]) -> tuple[tuple[int, int], list[tuple[
     if not taps[0].add:
         raise TapError("The first tap says where the field is; it cannot be a 'not this part' tap.")
     if len(taps) > 1 + MAX_CORRECTIONS:
-        raise TapError(f"At most {MAX_CORRECTIONS} corrections were measured. Start again with a new tap.")
+        raise TapError(f"At most {MAX_CORRECTIONS} corrections were tested. Start again with a new tap.")
     to_photo = Transformer.from_crs("EPSG:4326", grid.crs, always_xy=True).transform
     points = [to_photo(t.lon, t.lat) for t in taps]
     x, y = points[0]
