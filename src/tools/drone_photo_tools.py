@@ -107,11 +107,14 @@ async def get_drone_photo_findings(args: DronePhotoArgs, meta: IngabeToolCallMet
 
 
 async def count_plants_in_plot(args: CountPlantsArgs, meta: IngabeToolCallMetaArgs) -> dict[str, Any]:
-    """Count the plants in one plot of a drone photo and draw each plant as a dot on the map. Gives the count
-    with its likely range (±15%), plants per m² and per hectare, and the share of the plot with no plant
-    within 1 m (gaps). Needs a photo of 5 cm per pixel or finer and a plot of up to 2 ha. Works best on young
-    crops whose leaves do not yet touch (maize 2-6 weeks after emergence); a count is kept, so asking again is
-    free.
+    """Estimate the plants in one plot of a drone photo and draw each one found as a dot on the map. Gives the
+    estimate with a rough range (±15%), plants per m² and per hectare, the share of the plot with no plant
+    within 1 m (gaps), and the share that is solid green (bush, weeds, plants grown together), where single
+    plants cannot be told apart and each patch is one dot. Needs a photo of 5 cm per pixel or finer and a plot
+    of up to 2 ha; a plot that is mostly solid green is refused. Only for young crops whose leaves do not yet
+    touch (maize 2-6 weeks after emergence). It is an estimate that was checked by eye on three small squares
+    of young maize and on nothing else: say so, and never give it as an exact count. A count is kept, so asking
+    again is free.
 
     WHEN TO USE: "how many plants are in plot 175", "count the maize in this plot", stand counts, gaps in a plot.
     WHEN NOT TO USE: whole fields or the whole photo (pick a plot), or satellite imagery (cannot see plants)."""
@@ -141,13 +144,13 @@ async def count_plants_in_plot(args: CountPlantsArgs, meta: IngabeToolCallMetaAr
                             drone_vision.reference_scope(org_id, meta.user_uuid), row["layer_id"])
     name = feature["properties"].get("name") or f"Plot {args.plot_number}"
     # The map opens close enough to see each plant under its dot; zooming out shows the whole plot.
-    async with kue_ephemeral_action(meta.conversation_id, f"Drawing the {count.plants:,} plants counted in {name}",
+    async with kue_ephemeral_action(meta.conversation_id, f"Drawing the {count.plants:,} plants found in {name}",
                                     bounds=_close_view(feature)) as payload:
         payload.updates["add_geojson_layer"] = geojson_layer_update(
             source_id=f"plants-{args.plot_number}-{uuid.uuid4().hex[:6]}",
             geojson=count.points, name=f"Plants counted in {name}", bounds=_bounds(feature),
             style={"geometry": "point", "stops": [{"max": 1, "color": SPOT_COLOUR}], "stroke_color": "#FFF1E6",
-                   "legend": {"title": f"Plants in {name}", "items": [{"label": f"{count.plants:,} plants, one dot each",
+                   "legend": {"title": f"Plants in {name}", "items": [{"label": f"about {count.plants:,} found, one dot each",
                                                                        "color": SPOT_COLOUR}]}})
     return {
         "status": "success",
@@ -159,12 +162,16 @@ async def count_plants_in_plot(args: CountPlantsArgs, meta: IngabeToolCallMetaAr
         "plants_per_m2": count.per_m2,
         "plants_per_ha": count.per_ha,
         "gap_share": count.gap_share,
+        "solid_green_patches": count.solid_patches,
+        "solid_green_share": count.solid_share,
         "photo_cm_per_pixel": count.cm_per_px,
-        "drawn_on_map": "one dot per plant counted",
-        "how_sure": ("Each dot is a plant crown found on the photo. Checked against counts by eye in three 5 m "
-                     "squares of young maize: within about 10%. Where leaves of neighbouring plants touch they "
-                     "cannot be split, so give the count with its range. A count of a few rows on the ground "
-                     "makes it exact."),
+        "drawn_on_map": "one dot per plant found",
+        "how_sure": ("An estimate, not a tested count. Each dot is a peak of green about a crown wide. It was "
+                     "checked by eye in three 5 m squares of young maize (within about 10% there) and on no other "
+                     "crop; it has not passed a test. Weeds and bushes are counted like plants. Where plants touch "
+                     "they cannot be split: a patch of solid green is one dot, so on the solid_green_share of the "
+                     "plot the true number is unknown. Give the estimate with its range and these limits. A count "
+                     "of a few rows on the ground is the way to an exact figure."),
         "source": "Ingabe plant count on the drone photo",
     }
 
