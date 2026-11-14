@@ -2,6 +2,7 @@ import { apiFetch } from '@mundi/ee';
 import type { Map as MLMap } from 'maplibre-gl';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { FieldTaps } from '@/components/FieldTaps';
+import { timing } from '@/components/MyCrop';
 import type { KeptOutline, Tap } from '@/hooks/useFieldTaps';
 import type { MapLayer } from '@/lib/types';
 import { byButton, byText, click, mount, unmountAll } from '@/test/dom';
@@ -32,6 +33,9 @@ function fakeServer(prepared: boolean) {
   const asked: { taps: Tap[]; pick: number | null }[] = [];
   const turnedDown: { taps: Tap[]; pick: number | null; reason: string }[] = [];
   const measured: { first_tap: Tap; moved: [number, number][] }[] = [];
+  // only my crop: what was asked, and the answers the server gives in turn (the last one is given again after that)
+  const cropAsked: { url: string; crop: { lon: number; lat: number }[]; other: { lon: number; lat: number }[] }[] = [];
+  const cropAnswers: { status?: number; body: unknown }[] = [];
   const outlines = (taps: Tap[], pick: number | null) =>
     taps.length === 1
       ? [0, 1, 2].map((choice) => ({ choice, geometry: square(choice + 1), area_ha: 0.1 * (choice + 1) }))
@@ -58,6 +62,11 @@ function fakeServer(prepared: boolean) {
         return json({ detail: 'The line crosses itself. Move that corner back.' }, 422);
       return json({ area_ha: 0.42 });
     }
+    if (url.endsWith('/my-crop')) {
+      cropAsked.push({ url, ...body });
+      const answer = cropAnswers.length > 1 ? cropAnswers.shift() : cropAnswers[0];
+      return answer ? json(answer.body, answer.status ?? 200) : json({ detail: 'Not Found' }, 404);
+    }
     if (url.endsWith('/turned-down')) {
       turnedDown.push(body);
       return json({ id: `t${turnedDown.length}`, ...body });
@@ -82,19 +91,15 @@ function fakeServer(prepared: boolean) {
     }
     return json({ detail: 'Not Found' }, 404);
   });
-  return { kept, asked, turnedDown, measured };
+  return { kept, asked, turnedDown, measured, cropAsked, cropAnswers };
 }
 
 /** The few things the component asks of the map; `tap` plays a reader's tap on the photo. */
 function fakeMap() {
   const handlers = new Map<string, ((e: unknown) => void)[]>();
-  let drawn: GeoJSON.FeatureCollection = { type: 'FeatureCollection', features: [] };
-  const source = {
-    setData: (d: GeoJSON.FeatureCollection) => {
-      drawn = d;
-    },
-  };
-  let added = false;
+  // what each source of the map was last given, by the source's name
+  const sources = new Map<string, GeoJSON.FeatureCollection>();
+  const source = (id: string) => ({ setData: (d: GeoJSON.FeatureCollection) => void sources.set(id, d) });
   let under: string | null = null;
   const canvas = { style: { cursor: '' } as CSSStyleDeclaration };
   const map = {
@@ -111,10 +116,8 @@ function fakeMap() {
       ),
     once: vi.fn(),
     isStyleLoaded: () => true,
-    getSource: () => (added ? source : undefined),
-    addSource: () => {
-      added = true;
-    },
+    getSource: (id: string) => (sources.has(id) ? source(id) : undefined),
+    addSource: (id: string) => void sources.set(id, { type: 'FeatureCollection', features: [] }),
     addLayer: vi.fn(),
     getCanvas: () => canvas,
   };
@@ -154,12 +157,15 @@ function fakeMap() {
       under = id;
       for (const fn of handlers.get('click') ?? []) fn({ lngLat: { lng: 30.5, lat: -1.5 }, point: { x: 0, y: 0 } });
     },
-    drawn: () => drawn,
+    drawn: () => sources.get('field-taps') ?? { type: 'FeatureCollection', features: [] },
+    /** What the only-my-crop step has on the map: its taps and the plants it found. */
+    cropDrawn: () => sources.get('my-crop')?.features ?? [],
   };
 }
 
 const photo = { id: LAYER, type: 'raster' } as MapLayer;
 afterEach(() => {
+  timing.askAgainMs = 4000;
   unmountAll();
   fetchMock.mockReset();
 });
@@ -418,6 +424,89 @@ describe('outlining a field by tapping it', () => {
     // a click on bare ground lets the field go
     m.clickOn(null);
     await vi.waitFor(() => expect(byText('Field 7 · 200 m² · by hand')).toBeNull());
+  });
+
+  it('counts only the crop the reader taps in a kept field, waits while the field is read, and shows the rest apart', async () => {
+    timing.askAgainMs = 200; // long enough for each "still reading" answer to be seen
+    const server = fakeServer(true);
+    server.kept.push({ id: 'a', number: 3, centre: [30.5, -1.5], geometry: square(1), area_ha: 0.18, corrections: 0, kept_at: 'then' });
+    const point = (lon: number, kind_code: number) => ({
+      type: 'Feature',
+      geometry: { type: 'Point', coordinates: [lon, -1.5] },
+      properties: { kind_code },
+    });
+    const found = {
+      my_crop: 1240,
+      other_plants: 310,
+      other_green: 95,
+      counted_share: 0.86,
+      per_ha: 8020,
+      measured: 'An estimate, measured on one photo.',
+      points: { type: 'FeatureCollection', features: [point(30.2, 0), point(30.3, 1), point(30.4, 2)] },
+    };
+    server.cropAnswers.push(
+      { body: { working: true, done: 0, total: 0 } },
+      { body: { working: true, done: 2, total: 9 } },
+      { status: 422, body: { detail: 'A tap lies on ground where single plants cannot be told apart.' } },
+      { body: found },
+    );
+    const m = fakeMap();
+    const tapping: boolean[] = [];
+    mount(<FieldTaps map={m.map} layers={[photo]} hiddenLayerIDs={[]} onTapping={(on) => tapping.push(on)} />);
+    await vi.waitFor(() => expect(byButton(/^1 field outlined · show$/)).not.toBeNull());
+    m.clickOn('a');
+    await vi.waitFor(() => expect(byButton('Count my crop')).not.toBeNull());
+    click(byButton('Count my crop') as HTMLButtonElement);
+    await vi.waitFor(() => expect(byText('Tap 3 plants of your crop in Field 3. 0 tapped.')).not.toBeNull());
+    // the other cards step aside while the crop is tapped, as they do while a field is outlined
+    expect(tapping.at(-1)).toBe(true);
+
+    // a tap outside the field is not taken; three inside it let the reader go on
+    m.tap(35, -1.5);
+    await vi.waitFor(() => expect(byText('That tap is outside Field 3. Tap inside its line.')).not.toBeNull());
+    expect((byButton('Next') as HTMLButtonElement).disabled).toBe(true);
+    for (const lon of [30.2, 30.4, 30.6, 30.8]) m.tap(lon, -1.5);
+    await vi.waitFor(() => expect(byText('Tap 3 plants of your crop in Field 3. 4 tapped.')).not.toBeNull());
+    click(byButton('Undo tap') as HTMLButtonElement); // a slip of the finger is taken back
+    await vi.waitFor(() => expect(byText('Tap 3 plants of your crop in Field 3. 3 tapped.')).not.toBeNull());
+    // the field stays picked: a tap on it is a tap on a plant, not a click that lets the field go
+    expect(byText('That tap is outside Field 3. Tap inside its line.')).toBeNull();
+    click(byButton('Next') as HTMLButtonElement);
+    await vi.waitFor(() => expect(byText(/^Now tap 3 green things that are not your crop/)).not.toBeNull());
+    for (const lon of [30.3, 30.5, 30.7]) m.tap(lon, -1.7);
+    // each tap is on the map, crop and not-crop told apart by sign as well as colour
+    const signs = () =>
+      m
+        .cropDrawn()
+        .filter((f) => f.properties?.part === 'label')
+        .map((f) => f.properties?.label);
+    await vi.waitFor(() => expect(signs()).toEqual(['+', '+', '+', '×', '×', '×']));
+
+    click(byButton('Count my crop') as HTMLButtonElement);
+    // while the server reads the field it says how far it is, and the same taps are asked again
+    await vi.waitFor(() => expect(byText(/^Reading Field 3: 2 of 9 parts\./)).not.toBeNull());
+    // the server's reason for refusing a tap is shown word for word, and the taps are still there to correct
+    await vi.waitFor(() => expect(byText('A tap lies on ground where single plants cannot be told apart.')).not.toBeNull());
+    expect(signs()).toHaveLength(6);
+    click(byButton('Count my crop') as HTMLButtonElement);
+    await vi.waitFor(() => expect(byText('About 1,240 plants of your crop in Field 3 (about 8,020 a hectare).')).not.toBeNull());
+    expect(server.cropAsked).toHaveLength(4);
+    expect(server.cropAsked[0].url).toBe(`/api/layer/${LAYER}/field-taps/kept/a/my-crop`);
+    expect(server.cropAsked[3].crop.map((p) => p.lon)).toEqual([30.2, 30.4, 30.6]);
+    expect(server.cropAsked[3].other.map((p) => p.lat)).toEqual([-1.7, -1.7, -1.7]);
+    // an estimate, with what was not counted and how sure it is, in the server's words
+    expect(byText('Your crop: about 1,240')).not.toBeNull();
+    expect(byText('Other plants: about 310')).not.toBeNull();
+    expect(byText('Other green (weeds, grass or bush; which is not known): 95')).not.toBeNull();
+    expect(byText(/^86% of the field was counted\./)).not.toBeNull();
+    expect(byText('An estimate, measured on one photo.')).not.toBeNull();
+    expect(m.cropDrawn().filter((f) => f.properties?.kind_code !== undefined)).toHaveLength(3);
+
+    // Close takes the dots off the map and returns to the field
+    click(byButton('Close') as HTMLButtonElement);
+    await vi.waitFor(() => expect(byText('Field 3 · 0.18 ha')).not.toBeNull());
+    expect(m.cropDrawn()).toHaveLength(0);
+    expect(tapping.at(-1)).toBe(false);
   });
 
   it("shows a field's green cover as the server measured it, or why it was not measured", async () => {

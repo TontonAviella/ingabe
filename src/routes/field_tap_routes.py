@@ -14,9 +14,9 @@ from src.database.models import LAYER_TYPE_RASTER, MapLayer
 from src.dependencies.dag import edit_layer, get_layer
 from src.dependencies.session import UserContext, verify_session_required
 from src.routes.switched_routes import switched_route
-from src.services import field_taps, industry, photo_context, photo_plots
+from src.services import field_taps, industry, my_crop, photo_context, photo_plots, plant_finder
 from src.structures import async_read_conn
-from src.utils import get_async_s3_client, get_bucket_name
+from src.utils import get_async_s3_client, get_bucket_name, get_s3_client
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +46,18 @@ class KeepIn(TapsIn):
 class MovedLineIn(BaseModel):
     first_tap: TapIn
     moved: list[Corner] = Field(min_length=3, max_length=field_taps.MAX_LINE_POINTS + 1)
+
+
+class PlaceIn(BaseModel):
+    lon: float = Field(ge=-180, le=180)
+    lat: float = Field(ge=-90, le=90)
+
+
+class MyCropIn(BaseModel):
+    crop: list[PlaceIn] = Field(min_length=my_crop.MIN_TAPS, max_length=my_crop.MAX_TAPS,
+                                description="taps on plants of the reader's crop")
+    other: list[PlaceIn] = Field(min_length=my_crop.MIN_TAPS, max_length=my_crop.MAX_TAPS,
+                                 description="taps on green things that are not the reader's crop")
 
 
 class TurnDownIn(TapsIn):
@@ -143,3 +155,22 @@ async def remove_field_outline(outline_id: str, layer: MapLayer = Depends(edit_l
     if not await field_taps.remove(await get_async_s3_client(), get_bucket_name(), key, layer.layer_id, outline_id):
         raise HTTPException(404, "No such kept outline on this photo")
     return {"removed": outline_id}
+
+
+@router.post("/layer/{layer_id}/field-taps/kept/{outline_id}/my-crop", operation_id="count_my_crop_in_field")
+async def count_my_crop_in_field(outline_id: str, body: MyCropIn, layer: MapLayer = Depends(get_layer),
+                                 session: UserContext = Depends(verify_session_required)) -> dict[str, Any]:
+    """The plants of the reader's crop in one kept field, sorted by their taps; {"working": true, "done", "total"}
+    while the field's squares are being read in the background (ask again with the same taps)."""
+    key = await _photo_key(layer)
+    s3, bucket = await get_async_s3_client(), get_bucket_name()
+    row = next((r for r in await field_taps.kept(s3, bucket, key, layer.layer_id) if r["id"] == outline_id), None)
+    if row is None:
+        raise HTTPException(404, "No such kept outline on this photo")
+    feature = {"type": "Feature", "geometry": row["geometry"], "properties": {"area_ha": row.get("area_ha", 0.0)}}
+    url = await photo_context.cog_url(s3, bucket, layer.metadata_dict or {}, photo_context.LONG_URL_SECONDS)
+    try:
+        return await my_crop.count(url, feature, get_s3_client(), bucket, key,
+                                   [(p.lon, p.lat) for p in body.crop], [(p.lon, p.lat) for p in body.other])
+    except (my_crop.TapProblem, plant_finder.CannotCount) as e:
+        raise HTTPException(422, str(e)) from None

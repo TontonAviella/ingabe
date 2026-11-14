@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Put the plant finder's three model files into object storage (src/services/plant_finder.py).
+"""Put the plant finder's model files into object storage (src/services/plant_finder.py, my_crop.py).
 
-    python scripts/upload_plant_finder.py --bundle <folder with student.onnx, dino_small.onnx, rule.npz>
+    python scripts/upload_plant_finder.py --bundle <folder with student.onnx, dino_small.onnx, rule.npz, look_small_784.onnx>
 
 Each file is checked against the sha256 the app expects before anything is uploaded, so the app can only ever run
 the models that were tested. Uses the bucket named by the S3_* environment variables.
@@ -14,16 +14,17 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from src.services import plant_finder, stored_files  # noqa: E402
+from src.services import my_crop, plant_finder, stored_files  # noqa: E402
 
 FILES = (("student.onnx", plant_finder.STUDENT_KEY, plant_finder.STUDENT_SHA256),
          ("dino_small.onnx", plant_finder.PICTURE_KEY, plant_finder.PICTURE_SHA256),
-         ("rule.npz", plant_finder.RULE_KEY, plant_finder.RULE_SHA256))
+         ("rule.npz", plant_finder.RULE_KEY, plant_finder.RULE_SHA256),
+         ("look_small_784.onnx", my_crop.LOOK_KEY, my_crop.LOOK_SHA256))
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--bundle", required=True, help="the folder holding the three files")
+    parser.add_argument("--bundle", required=True, help="the folder holding the four files")
     args = parser.parse_args()
     for name, _, sha256 in FILES:
         path = os.path.join(args.bundle, name)

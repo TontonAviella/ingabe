@@ -84,6 +84,20 @@ with up to two more taps ("this part too" / "not this part"), and keep it with i
    checks on outlined fields are kept per layer too (`field_checks.checks_set_id`).
 20. A hand-moved outline may be at most 2 ha. The answers to keeping a field and to turning taps down leave out
    who did it, as the state does.
+21. Only my crop (`src/services/my_crop.py`, route `POST .../kept/{id}/my-crop`): in a kept field the reader taps 3
+   to 10 plants of their crop and 3 to 10 green things that are not; of the plants the plant finder boxed, one is
+   "their crop" when its look (DINOv2-small, the square read at 784 px, the 3 x 3 patches around the plant) lies
+   nearer the crop taps than the other taps. The count is an estimate and every screen says "about": it passed the
+   client bar only where one crop grows (Test 81), and taps on one square sorting the plants of another, a person's
+   own taps and tree crops were not measured. The words about this come from `my_crop.MEASURED`. A tap outside the
+   field, or on ground the picture check refused, is refused in plain words. Other plants and other green are
+   drawn apart, never dropped. Photos with other pixels than about 3 cm and fields over 0.5 ha are refused, as
+   the plant finder refuses them.
+22. The look model is slow (about 6 s a square on an M1 directly, about 32 s in the local amd64 container; the
+   server is not measured). So a field's squares are read once in the background, one field at a time in the
+   whole app, and kept by photo and square; the screen is told how many parts are done and asks again with the
+   same taps. New taps on a field already read answer at once. The job lives in the app's memory: a restart loses
+   the progress shown, not the squares already kept.
 
 ## What was measured (plans/PLAN_RWANDA_CROPS.md, 2026-11-12)
 
@@ -98,6 +112,7 @@ with up to two more taps ("this part too" / "not this part"), and keep it with i
 | 77 | Green cover from colour, threshold set on 31 tuning fields, against two blind readers of 40 random points in each of 26 exam fields | threshold 0.15; point accuracy 88%, median field error 0.06, 16 of 26 within 0.10: good enough to build on, not for clients. Colour read high on sparse ground (median error 0.16 on 9 fields under half cover; 0.03 on 16 fields of 0.7 or more) |
 | 78 | Tiebreak on the 103 points where readers and colour disagreed, by two readers of another model with an 8 m view, and Test 77 scored again | the tiebreak sided with colour on 42% (split); 25 points stayed undecidable. Scored again: point accuracy 94.5%, median field error 0.03, 20 of 24 within 0.10: passes the client bar, narrowly (counting the 25 undecidable points against colour gives 18 of 26) |
 | 79 | The same rule on a second photo (Kabarama, 4.56 cm, muted colour), 24 random 20 m squares; stopped before any reader | the rule called 21 of 24 squares 0 to 1% green although the photo shows plants; a colour threshold does not carry from one camera and day to another, so green cover is given only on photos it was checked on |
+| 81 | Only my crop: plant-finder boxes sorted by 3 + 3 taps drawn from two markers' dots, 16 fully counted exam squares, 44 cases | all: 80% of highlights right, 88% of the crop found (56% right with no taps): good enough to build on. One crop in the square: 89% and 91%: passes the client bar. Two or more: 74% and 86%: fails, narrowly. The app's ONNX look model gives the tested looks (lowest patch cosine 1.000 on 12 squares) |
 
 Not measured: green cover on any photo but Cyampirita, or against the ground itself (the readers read the same photo); taps by a real person (the test placed them with a script from hand-drawn outlines), corners, ground
 that is not a field, any photo other than Cyampirita. The first correction made the outline worse on 6 of 26 fields
@@ -115,4 +130,9 @@ before the second repaired it, so the screen keeps a "back" step.
 - While nothing is being outlined and no field is picked, the tap panel sits at the bottom left, clear of the bottom
   centre where Sage's answer shows: an answer on screen never covers "Outline a field". Once a field is being outlined
   or is picked, the panel takes the bottom centre (Sage's answer has stepped aside by then).
+- "Count my crop" is on a picked field. It asks for the crop taps first, then the not-my-crop taps (marked + and ×,
+  not by colour alone), each can be taken back, and the other cards step aside as they do while outlining. While
+  the field is read it says how many parts are done and that the first count takes minutes. The answer leads with
+  "About N plants of your crop", then other plants, other green, the share of the field counted when not all of it
+  was, and "How sure is this" in the server's words. Plants are drawn as rings so each shows inside its ring; your crop is the largest ring.
 - Small text actions have a 36 px tap height.

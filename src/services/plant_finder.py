@@ -171,41 +171,67 @@ def _ground_metres_per_px(ds: Any, lat: float) -> float:
     return size * math.cos(math.radians(lat)) if ds.crs and ds.crs.to_epsg() == 3857 else size
 
 
-def find_plants(cog_url: str, feature: dict[str, Any], models: Models) -> PlantsFound:
-    """The plants and the other green in one plot feature (WGS84, with `number` and `area_ha`); blocking, run it
-    in a thread. CannotCount when the photo or plot is outside what was measured."""
+@dataclass(frozen=True)
+class Layout:
+    """One plot laid on the photo's grid of squares."""
+
+    outline: Any  # the plot in the photo's pixels (x right, y down)
+    squares: list[tuple[int, int]]  # (column, row) of each square the plot covers at least MIN_PLOT_SHARE of
+    covered: dict[tuple[int, int], float]  # the share of each square that lies in the plot
+    metres_per_px: float
+
+
+def layout(ds: Any, feature: dict[str, Any]) -> Layout:
+    """Where a plot feature (WGS84, with `area_ha`) lies on the grid of an open photo. CannotCount when the photo
+    or plot is outside what was measured."""
     props = feature["properties"]
     if props.get("area_ha", 0) > MAX_PLOT_HA:
         raise CannotCount(f"This plot is {props['area_ha']:.1f} ha; plants are counted live in plots up to "
                           f"{MAX_PLOT_HA} ha. Pick a smaller plot.")
+    outline_wgs84 = shape(feature["geometry"])
+    metres_per_px = _ground_metres_per_px(ds, outline_wgs84.centroid.y)
+    if not PIXEL_M[0] <= metres_per_px <= PIXEL_M[1]:
+        raise CannotCount(f"This photo has {metres_per_px * 100:.1f} cm per pixel; the plant finder was taught and "
+                          "tested on 3 cm pixels only.")
+    to_photo = Transformer.from_crs("EPSG:4326", ds.crs, always_xy=True).transform
+    to_pixel = ~ds.transform
+    outline = reproject(lambda x, y, z=None: to_pixel * (x, y), reproject(to_photo, outline_wgs84)).buffer(0)
+    west, north, east, south = outline.bounds  # pixel units: x right, y down
+    grid = [(j, i) for i in range(int(north // SQUARE_PX), int(south // SQUARE_PX) + 1)
+            for j in range(int(west // SQUARE_PX), int(east // SQUARE_PX) + 1)]
+    covered = {(j, i): outline.intersection(box(j * SQUARE_PX, i * SQUARE_PX, (j + 1) * SQUARE_PX,
+                                                (i + 1) * SQUARE_PX)).area / SQUARE_PX ** 2 for j, i in grid}
+    return Layout(outline=outline, squares=[key for key in grid if covered[key] >= MIN_PLOT_SHARE], covered=covered,
+                  metres_per_px=metres_per_px)
+
+
+def read_square(ds: Any, j: int, i: int) -> Optional[np.ndarray]:
+    """One square of the grid as RGB (SQUARE_PX x SQUARE_PX x 3), or None when it is mostly outside the photo."""
+    window = Window(j * SQUARE_PX, i * SQUARE_PX, SQUARE_PX, SQUARE_PX)
+    if ds.count < 3 or (ds.read_masks(1, window=window, boundless=True) > 0).mean() < MIN_READABLE:
+        return None
+    return np.ascontiguousarray(ds.read([1, 2, 3], window=window, boundless=True, fill_value=0).transpose(1, 2, 0))
+
+
+def find_plants(cog_url: str, feature: dict[str, Any], models: Models) -> PlantsFound:
+    """The plants and the other green in one plot feature (WGS84, with `number` and `area_ha`); blocking, run it
+    in a thread. CannotCount when the photo or plot is outside what was measured."""
+    props = feature["properties"]
     with rasterio.open(cog_url) as ds:
-        outline_wgs84 = shape(feature["geometry"])
-        metres_per_px = _ground_metres_per_px(ds, outline_wgs84.centroid.y)
-        if not PIXEL_M[0] <= metres_per_px <= PIXEL_M[1]:
-            raise CannotCount(f"This photo has {metres_per_px * 100:.1f} cm per pixel; the plant finder was taught and "
-                              "tested on 3 cm pixels only.")
-        to_photo = Transformer.from_crs("EPSG:4326", ds.crs, always_xy=True).transform
+        placed = layout(ds, feature)
+        outline, squares, covered, metres_per_px = placed.outline, placed.squares, placed.covered, placed.metres_per_px
         to_wgs84 = Transformer.from_crs(ds.crs, "EPSG:4326", always_xy=True).transform
-        to_pixel = ~ds.transform
-        outline = reproject(lambda x, y, z=None: to_pixel * (x, y), reproject(to_photo, outline_wgs84)).buffer(0)
         inside = prep(outline)
-        west, north, east, south = outline.bounds  # pixel units: x right, y down
-        grid = [(j, i) for i in range(int(north // SQUARE_PX), int(south // SQUARE_PX) + 1)
-                for j in range(int(west // SQUARE_PX), int(east // SQUARE_PX) + 1)]
-        covered = {(j, i): outline.intersection(box(j * SQUARE_PX, i * SQUARE_PX, (j + 1) * SQUARE_PX,
-                                                    (i + 1) * SQUARE_PX)).area / SQUARE_PX ** 2 for j, i in grid}
-        squares = [key for key in grid if covered[key] >= MIN_PLOT_SHARE]
         plants: list[tuple[float, float]] = []
         boxes: list[tuple[float, float, float, float]] = []
         other: list[tuple[float, float]] = []
         counted = refused = unreadable = 0
         counted_area_px = 0.0
         for j, i in squares:
-            window = Window(j * SQUARE_PX, i * SQUARE_PX, SQUARE_PX, SQUARE_PX)
-            if ds.count < 3 or (ds.read_masks(1, window=window, boundless=True) > 0).mean() < MIN_READABLE:
+            rgb = read_square(ds, j, i)
+            if rgb is None:
                 unreadable += 1
                 continue
-            rgb = np.ascontiguousarray(ds.read([1, 2, 3], window=window, boundless=True, fill_value=0).transpose(1, 2, 0))
             if picture_score(models, rgb) < PICTURE_CUT:
                 refused += 1
                 continue
