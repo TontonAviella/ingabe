@@ -56,7 +56,7 @@ describe('FieldRecords', () => {
   it('shows a linked row with how it was linked, and lets the reader take it off', async () => {
     rows = [row({ field: 7, field_id: 'f7', by: 'document' }), row({ key: 'd:soil:1', field: 8, field_id: 'f8', by: 'person' })];
     mount(<FieldRecords layerId="L1" field={field} />);
-    await findText(/linked by the position printed in the document/);
+    await findText(/Soil sample 7: pH 5.1/);
     expect(byButton(/Link a record/)).toBeNull(); // the other row belongs to another field
     click(byButton('Not this field') as HTMLButtonElement);
     expect(mutate).toHaveBeenCalledWith({ row: 'd:soil:0', field_id: 'f7', linked: false });

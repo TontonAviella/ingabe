@@ -32,7 +32,9 @@ _IMAGE_TYPES = {"image/jpeg", "image/png", "image/webp"}
 _SHEET_EXTENSIONS = (".xlsx", ".xls", ".csv")
 
 _NUMBER = {"type": ["number", "null"]}
-_TEXT = {"type": ["string", "null"]}
+# Text the document does not give comes back as "" (and is kept as None): the model's provider refuses a schema with
+# more than 16 either-or fields (found 2026-11-15: every document read failed with 24), so only numbers may be null.
+_TEXT = {"type": "string"}
 _SCHEMA = {
     "type": "object", "additionalProperties": False,
     "properties": {
@@ -66,10 +68,11 @@ _SCHEMA = {
 _PROMPT = (
     "This is a farm document from Rwanda: a soil laboratory report, harvest records, or something else. "
     "Copy what it says into the fields; do not calculate, convert or guess. Units exactly as printed "
-    "(%, g/kg, mg/kg, ppm, cmol/kg, meq/100g). A value you cannot read is null. For harvest records, one row "
+    "(%, g/kg, mg/kg, ppm, cmol/kg, meq/100g). A number you cannot read is null; a text field the document does not "
+    "give is an empty string. For harvest records, one row "
     "per entry, harvest in kg (if the page uses bags or tonnes, put that in warnings and leave harvest_kg null "
     "unless it gives kg). If the document prints a position for a sample or a plot (GPS latitude and longitude, "
-    "or a grid reference), copy it into coordinates exactly as printed; otherwise null. Put anything unclear, crossed out or unreadable in warnings, in plain words."
+    "or a grid reference), copy it into coordinates exactly as printed; otherwise an empty string. Put anything unclear, crossed out or unreadable in warnings, in plain words."
 )
 
 
@@ -163,7 +166,13 @@ def potassium_cmol_kg(value: Optional[float], unit: Optional[str]) -> Optional[f
     return None
 
 
+def _given(raw: dict[str, Any]) -> dict[str, Any]:
+    """The model's fields with text it left empty as None."""
+    return {k: (v.strip() or None) if isinstance(v, str) else v for k, v in raw.items()}
+
+
 def _sample(raw: dict[str, Any]) -> SoilSample:
+    raw = _given(raw)
     return SoilSample(
         sample=raw.get("sample"), place=raw.get("place"), depth=raw.get("depth"), ph=raw.get("ph"),
         organic_carbon_percent=organic_carbon_percent(raw.get("organic_carbon"), raw.get("organic_carbon_unit")),
@@ -176,6 +185,7 @@ def _sample(raw: dict[str, Any]) -> SoilSample:
 
 
 def _harvest(raw: dict[str, Any]) -> Harvest:
+    raw = _given(raw)
     return Harvest(plot=raw.get("plot"), farmer=raw.get("farmer"), crop=raw.get("crop"), season=raw.get("season"),
                    date=raw.get("date"), harvest_kg=raw.get("harvest_kg"), area_ha=raw.get("area_ha"),
                    coordinates=raw.get("coordinates"))
@@ -188,9 +198,9 @@ def _sheet_text(content: bytes, filename: str) -> str:
     import pandas as pd
 
     if filename.lower().endswith(".csv"):
-        frame = pd.read_csv(io.BytesIO(content), header=None, dtype=str)
-    else:
-        frame = pd.read_excel(io.BytesIO(content), header=None, dtype=str)
+        # as text: a lab's file often opens with title lines of one cell, which a table reader refuses
+        return "\n".join(content.decode("utf-8-sig", errors="replace").splitlines()[:MAX_SHEET_ROWS])
+    frame = pd.read_excel(io.BytesIO(content), header=None, dtype=str)
     lines = [" | ".join("" if pd.isna(v) else str(v) for v in row) for row in frame.head(MAX_SHEET_ROWS).itertuples(index=False)]
     return "\n".join(lines)
 
@@ -231,6 +241,7 @@ async def read_document(content: bytes, filename: str, content_type: str) -> tup
 
 def to_document(raw: dict[str, Any], filename: str, file_key: str, model: str, doc_id: str) -> FarmDocument:
     """A kept document from the model's raw reading; values in units Ingabe does not know become None."""
+    raw = _given(raw)
     kind: str = raw["kind"] if raw.get("kind") in (SOIL_REPORT, HARVEST_RECORDS) else "other"
     return FarmDocument(
         id=doc_id, filename=filename, file_key=file_key, kind=kind, title=raw.get("title"), source=raw.get("source"),

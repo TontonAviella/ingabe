@@ -29,9 +29,7 @@ export function FieldRecords({ layerId, field }: { layerId: string; field: KeptO
         <div key={row.key} className="flex items-start justify-between gap-2">
           <p className="m-0 text-[12.5px] text-fg-soft">
             {row.said}
-            <span className="text-fg-muted">
-              {row.by === 'document' ? ' · linked by the position printed in the document' : ' · linked by a person'}
-            </span>
+            {row.by === 'person' && <span className="text-fg-muted"> · linked by a person</span>}
           </p>
           <button type="button" className={small} disabled={link.isPending} onClick={() => set(row, false)}>
             Not this field
