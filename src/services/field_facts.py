@@ -44,10 +44,18 @@ def outlined(plots: Any) -> bool:
 
 
 def name(number: int, of_outlined: bool, own: Optional[str] = None) -> str:
-    """What a field is called everywhere: the reader's own name from their map with its number ("Maize A · plot 3":
-    the number is what they ask Sage by), else "Field 7" for a field they outlined and "Plot 7" for one Ingabe
-    found."""
-    return f"{own} · plot {number}" if own else f"{'Field' if of_outlined else 'Plot'} {number}"
+    """What a field is called everywhere: the reader's own name with its number ("Maize A · plot 3" from their map,
+    "Block A · field 7" for a field they outlined and named: the number is what they ask Sage by), else "Field 7"
+    for a field they outlined and "Plot 7" for one Ingabe found."""
+    if own:
+        return f"{own} · {'field' if of_outlined else 'plot'} {number}"
+    return f"{'Field' if of_outlined else 'Plot'} {number}"
+
+
+def own_name(props: dict[str, Any]) -> Optional[str]:
+    """The reader's own name for a plot: from their map ("name"), or given to a field they outlined
+    ("field_name", laid over the plots when read: photo_plots)."""
+    return props.get("name") or props.get("field_name")
 
 
 def area_said(area_ha: float) -> str:
@@ -167,7 +175,7 @@ async def of_plots(s3: Any, bucket: str, photo_key: str, layer_id: str, plots: A
         if row is not None and not same_field(row["geometry"], feature["geometry"]):
             row = None
         count = _counted(counts.get(plant_finder.answer_key(photo_key, feature)))
-        out.append(_facts(props["number"], name(props["number"], of_outlined, props.get("name")), props["area_ha"], row,
+        out.append(_facts(props["number"], name(props["number"], of_outlined, own_name(props)), props["area_ha"], row,
                           field_taps.cover_share(row) if row is not None and covered else None, count,
                           await _check(s3, bucket, photo_key, layer_id, row, count), records))
     return out
@@ -184,7 +192,7 @@ async def of_kept(s3: Any, bucket: str, photo_key: str, layer_id: str,
         count = next((_counted(entry) for entry in counts.values()
                       if entry.get("number") == row["number"] and isinstance(entry.get("geometry"), dict)
                       and same_field(entry["geometry"], row["geometry"])), None)
-        out[row["id"]] = _facts(row["number"], name(row["number"], True), row.get("area_ha") or 0.0, row,
+        out[row["id"]] = _facts(row["number"], name(row["number"], True, row.get("name")), row.get("area_ha") or 0.0, row,
                                 field_taps.cover_share(row) if covered else None, count,
                                 await _check(s3, bucket, photo_key, layer_id, row, count), records)
     return out

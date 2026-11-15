@@ -14,6 +14,7 @@ import {
   useCountChecked,
   useFieldTapState,
   useKeepOutline,
+  useNameField,
   useRemoveOutline,
 } from '@/hooks/useFieldTaps';
 import type { ServerError } from '@/lib/serverError';
@@ -68,6 +69,9 @@ const ha = (value: number) => {
 const coverText = (field: KeptOutline) =>
   typeof field.green_cover?.share === 'number' ? `green cover ${Math.round(field.green_cover.share * 100)}%` : '';
 // 44 px tall under a finger, 36 px with a mouse
+/** A kept field's name while the server's wording of it is not at hand: the same words (field_facts.name). */
+const fieldName = (k: KeptOutline) => (k.name ? `${k.name} · field ${k.number}` : `Field ${k.number}`);
+
 const link = 'inline-flex min-h-11 cursor-pointer items-center px-2 text-[12.5px] text-fg-soft underline sm:min-h-9';
 
 const closed = (ring: Corner[]): GeoJSON.Polygon => ({ type: 'Polygon', coordinates: [[...ring, ring[0]]] });
@@ -200,6 +204,7 @@ export function FieldTaps({
   const state = useFieldTapState(layerId);
   const keep = useKeepOutline(layerId);
   const remove = useRemoveOutline(layerId);
+  const rename = useNameField(layerId);
   const [mode, setMode] = useState<Mode>('off');
   const [steps, setSteps] = useState<Step[]>([]);
   const [pick, setPick] = useState<number | null>(null);
@@ -210,6 +215,7 @@ export function FieldTaps({
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [question, setQuestion] = useState('');
   const [removing, setRemoving] = useState(false); // "Remove Field 7?" is showing
+  const [naming, setNaming] = useState<string | null>(null); // the name being typed for the picked field
   const [cropping, setCropping] = useState(false); // the reader is tapping their crop in the picked field
   const [checking, setChecking] = useState(false); // the reader is checking the plant count in the picked field
   const [slow, setSlow] = useState(false); // an answer is taking over a second: say what is happening
@@ -332,6 +338,7 @@ export function FieldTaps({
       setSelectedId(hit ? String(hit.properties.id) : null);
       setQuestion('');
       setRemoving(false);
+      setNaming(null);
     };
     map.on('click', onClick);
     return () => {
@@ -517,17 +524,66 @@ export function FieldTaps({
         <div className="flex flex-col gap-2">
           <div className="flex items-center justify-between gap-3">
             <span className="text-[14px] font-semibold">
-              Field {selected.number} · {selected.facts?.area_said ?? ha(selected.area_ha)}
+              {selected.facts?.name ?? fieldName(selected)} · {selected.facts?.area_said ?? ha(selected.area_ha)}
               {selected.by_hand ? ' · by hand' : ''}
               {coverText(selected) ? ` · ${coverText(selected)}` : ''}
               {selected.facts?.plants_said ? ` · ${selected.facts.plants_said}` : ''}
             </span>
-            {!removing && (
-              <button type="button" className={link} onClick={() => setRemoving(true)}>
-                Remove
-              </button>
+            {!removing && naming === null && (
+              <span className="flex shrink-0">
+                <button type="button" className={link} onClick={() => setNaming(selected.name ?? '')}>
+                  {selected.name ? 'Rename' : 'Name'}
+                </button>
+                <button type="button" className={link} onClick={() => setRemoving(true)}>
+                  Remove
+                </button>
+              </span>
             )}
           </div>
+          {naming !== null && (
+            <form
+              className="flex flex-wrap items-center gap-2"
+              onSubmit={(e) => {
+                e.preventDefault();
+                if (rename.isPending) return;
+                rename.mutate(
+                  { id: selected.id, name: naming },
+                  {
+                    onSuccess: () => {
+                      setNaming(null);
+                      setProblem(null);
+                    },
+                    onError: (err) => setProblem(err.message),
+                  },
+                );
+              }}
+            >
+              <input
+                className="min-h-11 flex-1 rounded-[12px] border border-white/10 bg-panel-2 px-3 text-[13px] text-fg sm:min-h-9"
+                placeholder="Your own name for this field, e.g. Block A"
+                aria-label={`Your own name for Field ${selected.number}`}
+                maxLength={40}
+                value={naming}
+                onChange={(e) => setNaming(e.target.value)}
+              />
+              <button type="submit" className={strong} disabled={rename.isPending}>
+                Save
+              </button>
+              <button
+                type="button"
+                className={plain}
+                onClick={() => {
+                  setNaming(null);
+                  setProblem(null);
+                }}
+              >
+                Cancel
+              </button>
+              <span className="basis-full text-[12px] text-fg-muted">
+                It stays Field {selected.number} too. A document that uses this name is offered for this field, not linked by itself.
+              </span>
+            </form>
+          )}
           {selected.green_cover?.why_not && <p className="m-0 text-[12px] text-fg-muted">Green cover: {selected.green_cover.why_not}</p>}
           {removing && (
             <div className="flex flex-wrap items-center gap-2">
@@ -773,12 +829,13 @@ export function FieldTaps({
                 onClick={() => {
                   setSelectedId(k.id);
                   setRemoving(false);
+                  setNaming(null);
                   setListed(false);
                   // the field lands above this panel, not under it
                   map?.easeTo({ center: k.centre, offset: [0, -140] });
                 }}
               >
-                Field {k.number} · {ha(k.area_ha)}
+                {k.facts?.name ?? fieldName(k)} · {ha(k.area_ha)}
                 {coverText(k) ? ` · ${coverText(k)}` : ''}
                 {k.by_hand ? ' · by hand' : ''}
               </button>

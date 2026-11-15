@@ -148,7 +148,7 @@ async def _with_facts(rows: list[dict[str, Any]], s3: Any, bucket: str, key: str
         known = await field_facts.of_kept(s3, bucket, key, layer_id, record_links.by_field(linked))
     except Exception:
         logger.exception("field taps: the facts of the kept fields could not be read")
-    return [{**row, "facts": {"area_said": known[row["id"]].area_said, "plants_said": known[row["id"]].plants_said,
+    return [{**row, "facts": {"name": known[row["id"]].name, "area_said": known[row["id"]].area_said, "plants_said": known[row["id"]].plants_said,
                               "checked_said": known[row["id"]].checked_said,
                               "records_said": list(known[row["id"]].records_said)}} if row["id"] in known else row
             for row in rows]
@@ -266,6 +266,26 @@ async def remove_field_outline(outline_id: str, layer: MapLayer = Depends(edit_l
     if not await field_taps.remove(await get_async_s3_client(), get_bucket_name(), key, layer.layer_id, outline_id):
         raise HTTPException(404, "No such kept outline on this photo")
     return {"removed": outline_id}
+
+
+class NameIn(BaseModel):
+    name: str = Field(max_length=200)  # empty: take the name off
+
+
+@router.put("/layer/{layer_id}/field-taps/kept/{outline_id}/name", operation_id="name_field_outline")
+async def name_field_outline(outline_id: str, body: NameIn, layer: MapLayer = Depends(edit_layer),
+                             session: UserContext = Depends(verify_session_required)) -> dict[str, Any]:
+    """Give a kept field the farm's own name for it (empty: take it off). It is said with the field's number on the
+    panel, the cards and to Sage, and a document that uses the same name is offered for the field, never linked."""
+    key = await _photo_key(layer)
+    try:
+        row = await field_taps.name_field(await get_async_s3_client(), get_bucket_name(), key, layer.layer_id,
+                                          outline_id, body.name)
+    except field_taps.TapError as e:
+        raise HTTPException(422, str(e)) from None
+    if row is None:
+        raise HTTPException(404, "No such kept outline on this photo")
+    return field_taps.shown(row)
 
 
 @router.post("/layer/{layer_id}/field-taps/kept/{outline_id}/my-crop", operation_id="count_my_crop_in_field")

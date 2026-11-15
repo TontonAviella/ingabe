@@ -7,6 +7,7 @@ One home for this choice, so the question cards and Sage number the same plots t
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import hashlib
 import json
 import logging
@@ -110,6 +111,20 @@ async def _field_plots(s3: Any, bucket: str, layer_id: str, metadata: dict[str, 
     return [drone_plots.MapPlot(shape(row["geometry"]), number=row["number"]) for row in rows]
 
 
+async def _with_field_names(s3: Any, bucket: str, layer_id: str, metadata: dict[str, Any],
+                            plots: drone_plots.PlotSet) -> drone_plots.PlotSet:
+    """The outlined fields' plots carrying the names the reader gave them (properties.field_name). Names are laid
+    over the measured plots when they are read and are no part of them: naming a field must not measure the plots
+    again, which would throw away every fingerprint and look made on them."""
+    names = {row["number"]: row["name"] for row in await field_taps.kept(s3, bucket, photo_key(metadata), layer_id)
+             if row.get("name")}
+    if not names:
+        return plots
+    features = [{**f, "properties": {**f["properties"], "field_name": names[f["properties"]["number"]]}}
+                if f["properties"]["number"] in names else f for f in plots.geojson["features"]]
+    return dataclasses.replace(plots, geojson={**plots.geojson, "features": features})
+
+
 async def plots_from_chosen_map(
     s3: Any, bucket: str, layer_id: str, metadata: dict[str, Any], user_id: str, cog_url: str,
     maps: list[tuple[drone_plots.PlotMap, str]],
@@ -135,6 +150,11 @@ async def plots_from_chosen_map(
     except Exception as exc:  # the cards say the map could not be read and use the plots Ingabe found
         logger.exception("plot map %s could not be read for %s", plot_map.layer_id, layer_id)
         return None, None, f"{plot_map.name} could not be read ({str(exc)[:120]})"
+    if plot_map.layer_id == FIELDS and plots is not None:
+        try:
+            plots = await _with_field_names(s3, bucket, layer_id, metadata, plots)
+        except Exception:  # the fields are then said by their numbers alone
+            logger.exception("the names of the outlined fields could not be read for %s", layer_id)
     return plots, plot_map.layer_id, None
 
 
