@@ -151,12 +151,46 @@ with up to six more taps ("this part too" / "not this part"), and keep it with i
       builds no plot set. A count kept before that record existed joins it the next time Sage is asked for it.
     - One unreadable record loses that fact, not the deck, the findings or the panel.
     - A count or a check made on one surface makes the others ask again (the field's row, the cards).
-    Not joined yet: uploaded soil and harvest records are matched to a field by name on the cards and for Sage but
-    are not shown on the field panel; "only my crop" is not kept, so no other surface can show it; the green of
+    Not joined yet: "only my crop" is not kept, so no other surface can show it; the green of
     the "least green" card (relative) and green cover (absolute) are two measures; sentences inside some card
     answers still say "plots 7 and 9" of fields the reader outlined; the panel's list of fields shows cover but
     not the count (the picked field shows both); a field kept again with the same outline keeps its count but not
     its checks.
+26. A row of an uploaded document (a lab sample, a harvest) is joined to a field by place, never by a matching
+    name or number (`src/services/record_links.py`; Roger 2026-11-15: a field may carry one number here and
+    another in the document). Until this rule a sample the lab labelled "7" was attached to the photo's Field 7,
+    whose "7" only means the seventh field someone outlined. A row is linked in two ways only:
+    - the document prints a position for the row (decimal degrees or degrees-minutes-seconds; the vision model
+      copies it as printed, code reads it) and that position lies inside exactly one field, at least 5 m
+      (`EDGE_M`) from any field's edge and at least as far as the position is good to as printed ("-1.95, 30.06"
+      is good to about 550 m, four decimals to about 6 m, whole seconds of arc to about 15 m). Otherwise it is a
+      suggestion to confirm, with the reason. A position printed for two or more rows of one document is likely
+      the farm's, not each row's, and is a suggestion too. Without N/S/E/W letters both orders are tried; only
+      one can lie on the photo. A grid reference (UTM) is not read: the row says so and stays unlinked;
+    - a person says so on the field panel ("This is Field N"). What is kept is the field's outline, not its
+      number: the link holds for the field that is that land (shared area over joined area 0.5 or more,
+      `SAME_LAND`), so it follows the land when fields are numbered differently or outlined again a little
+      differently. A different field drawn later over part of that ground is offered, not linked. "Not this
+      field" says the row is not that land: it sets aside a position the document prints inside it, there only.
+    A matching name or number is offered on the panel as "may be this field", with the reason, and is never
+    applied. A row not linked stays in the farm's records and is shown as "not linked to a field yet" on the
+    cards, counted for Sage (`records_not_linked_to_a_field`) and offered on the panel; it is never dropped. A
+    row placed on land with no field on this photo (another photo of the farm, a removed field) says so and is
+    not counted as waiting. The cards say a document's own plot name as the document's ("Plot 3" in your lab
+    report), with the photo's field beside it once linked, and the questions they hand Sage do the same.
+    When a harvest record's own area and the field's measured size differ by a factor of two or more, the row
+    says so; tonnes per hectare still use the record's own area and say that. A linked row is one of the field's
+    facts (`FieldFacts.records_said`), worded once (`record_links.row_said`) for the cards, Sage and the panel.
+    The soil and harvest cards join a low harvest to a soil result only when both rows are linked to the same
+    field. Each person's word is its own small object (the server runs several workers; one shared file would
+    lose a link when two people link at once). The cards place rows on the plots they show and the panel on the
+    kept fields; they are the same fields when the cards show the outlined fields.
+    Not tested: how well the vision model copies printed positions (no document with positions has been
+    uploaded yet; the first one must be checked against the page by eye; a wrongly copied digit can put a row
+    on a neighbouring field, which is why a linked row always shows the position it was linked by). Not built:
+    reading a grid reference, a field's own name given by the reader, linking from the cards or by Sage; rows
+    of plots that are not the reader's kept fields can be linked by a printed position only. As before this
+    rule, the farm's records are those of the project whose map with this photo was edited last.
 
 ## What was measured (plans/PLAN_RWANDA_CROPS.md, 2026-11-12)
 

@@ -13,7 +13,7 @@ import io
 import json
 import logging
 import uuid
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, fields
 from datetime import datetime, timezone
 from typing import Any, Optional
 
@@ -32,7 +32,9 @@ _IMAGE_TYPES = {"image/jpeg", "image/png", "image/webp"}
 _SHEET_EXTENSIONS = (".xlsx", ".xls", ".csv")
 
 _NUMBER = {"type": ["number", "null"]}
-_TEXT = {"type": ["string", "null"]}
+# Text the document does not give comes back as "" (and is kept as None): the model's provider refuses a schema with
+# more than 16 either-or fields (found 2026-11-15: every document read failed with 24), so only numbers may be null.
+_TEXT = {"type": "string"}
 _SCHEMA = {
     "type": "object", "additionalProperties": False,
     "properties": {
@@ -46,17 +48,17 @@ _SCHEMA = {
                 "nitrogen": _NUMBER, "nitrogen_unit": _TEXT,
                 "phosphorus": _NUMBER, "phosphorus_unit": _TEXT, "phosphorus_method": _TEXT,
                 "potassium": _NUMBER, "potassium_unit": _TEXT,
-                "texture": _TEXT,
+                "texture": _TEXT, "coordinates": _TEXT,
             },
             "required": ["sample", "place", "depth", "ph", "organic_carbon", "organic_carbon_unit", "nitrogen",
                          "nitrogen_unit", "phosphorus", "phosphorus_unit", "phosphorus_method", "potassium",
-                         "potassium_unit", "texture"],
+                         "potassium_unit", "texture", "coordinates"],
         }},
         "harvests": {"type": "array", "items": {
             "type": "object", "additionalProperties": False,
             "properties": {"plot": _TEXT, "farmer": _TEXT, "crop": _TEXT, "season": _TEXT, "date": _TEXT,
-                           "harvest_kg": _NUMBER, "area_ha": _NUMBER},
-            "required": ["plot", "farmer", "crop", "season", "date", "harvest_kg", "area_ha"],
+                           "harvest_kg": _NUMBER, "area_ha": _NUMBER, "coordinates": _TEXT},
+            "required": ["plot", "farmer", "crop", "season", "date", "harvest_kg", "area_ha", "coordinates"],
         }},
         "warnings": {"type": "array", "items": {"type": "string"}},
     },
@@ -66,9 +68,11 @@ _SCHEMA = {
 _PROMPT = (
     "This is a farm document from Rwanda: a soil laboratory report, harvest records, or something else. "
     "Copy what it says into the fields; do not calculate, convert or guess. Units exactly as printed "
-    "(%, g/kg, mg/kg, ppm, cmol/kg, meq/100g). A value you cannot read is null. For harvest records, one row "
+    "(%, g/kg, mg/kg, ppm, cmol/kg, meq/100g). A number you cannot read is null; a text field the document does not "
+    "give is an empty string. For harvest records, one row "
     "per entry, harvest in kg (if the page uses bags or tonnes, put that in warnings and leave harvest_kg null "
-    "unless it gives kg). Put anything unclear, crossed out or unreadable in warnings, in plain words."
+    "unless it gives kg). If the document prints a position for a sample or a plot (GPS latitude and longitude, "
+    "or a grid reference), copy it into coordinates exactly as printed; otherwise an empty string. Put anything unclear, crossed out or unreadable in warnings, in plain words."
 )
 
 
@@ -84,6 +88,7 @@ class SoilSample:
     phosphorus_method: Optional[str]
     potassium_cmol_kg: Optional[float]
     texture: Optional[str]
+    coordinates: Optional[str] = None  # the sample's position as the document prints it (record_links reads it)
 
 
 @dataclass(frozen=True)
@@ -95,6 +100,7 @@ class Harvest:
     date: Optional[str]
     harvest_kg: Optional[float]
     area_ha: Optional[float]
+    coordinates: Optional[str] = None  # the plot's position as the document prints it
 
     @property
     def tonnes_per_ha(self) -> Optional[float]:
@@ -160,7 +166,13 @@ def potassium_cmol_kg(value: Optional[float], unit: Optional[str]) -> Optional[f
     return None
 
 
+def _given(raw: dict[str, Any]) -> dict[str, Any]:
+    """The model's fields with text it left empty as None."""
+    return {k: (v.strip() or None) if isinstance(v, str) else v for k, v in raw.items()}
+
+
 def _sample(raw: dict[str, Any]) -> SoilSample:
+    raw = _given(raw)
     return SoilSample(
         sample=raw.get("sample"), place=raw.get("place"), depth=raw.get("depth"), ph=raw.get("ph"),
         organic_carbon_percent=organic_carbon_percent(raw.get("organic_carbon"), raw.get("organic_carbon_unit")),
@@ -168,13 +180,15 @@ def _sample(raw: dict[str, Any]) -> SoilSample:
         phosphorus_mg_kg=phosphorus_mg_kg(raw.get("phosphorus"), raw.get("phosphorus_unit")),
         phosphorus_method=raw.get("phosphorus_method"),
         potassium_cmol_kg=potassium_cmol_kg(raw.get("potassium"), raw.get("potassium_unit")),
-        texture=raw.get("texture"),
+        texture=raw.get("texture"), coordinates=raw.get("coordinates"),
     )
 
 
 def _harvest(raw: dict[str, Any]) -> Harvest:
+    raw = _given(raw)
     return Harvest(plot=raw.get("plot"), farmer=raw.get("farmer"), crop=raw.get("crop"), season=raw.get("season"),
-                   date=raw.get("date"), harvest_kg=raw.get("harvest_kg"), area_ha=raw.get("area_ha"))
+                   date=raw.get("date"), harvest_kg=raw.get("harvest_kg"), area_ha=raw.get("area_ha"),
+                   coordinates=raw.get("coordinates"))
 
 
 # --- Reading a document -----------------------------------------------------------------------
@@ -184,9 +198,9 @@ def _sheet_text(content: bytes, filename: str) -> str:
     import pandas as pd
 
     if filename.lower().endswith(".csv"):
-        frame = pd.read_csv(io.BytesIO(content), header=None, dtype=str)
-    else:
-        frame = pd.read_excel(io.BytesIO(content), header=None, dtype=str)
+        # as text: a lab's file often opens with title lines of one cell, which a table reader refuses
+        return "\n".join(content.decode("utf-8-sig", errors="replace").splitlines()[:MAX_SHEET_ROWS])
+    frame = pd.read_excel(io.BytesIO(content), header=None, dtype=str)
     lines = [" | ".join("" if pd.isna(v) else str(v) for v in row) for row in frame.head(MAX_SHEET_ROWS).itertuples(index=False)]
     return "\n".join(lines)
 
@@ -227,6 +241,7 @@ async def read_document(content: bytes, filename: str, content_type: str) -> tup
 
 def to_document(raw: dict[str, Any], filename: str, file_key: str, model: str, doc_id: str) -> FarmDocument:
     """A kept document from the model's raw reading; values in units Ingabe does not know become None."""
+    raw = _given(raw)
     kind: str = raw["kind"] if raw.get("kind") in (SOIL_REPORT, HARVEST_RECORDS) else "other"
     return FarmDocument(
         id=doc_id, filename=filename, file_key=file_key, kind=kind, title=raw.get("title"), source=raw.get("source"),
@@ -243,9 +258,16 @@ def _records_key(project_id: str) -> str:
     return f"{_STORE_PREFIX}/{project_id}/records.json"
 
 
+def _known(cls: Any, data: dict[str, Any]) -> dict[str, Any]:
+    """Only the fields this build knows, so records written by a later build still load after a step back."""
+    names = {f.name for f in fields(cls)}
+    return {k: v for k, v in data.items() if k in names}
+
+
 def _from_dict(data: dict[str, Any]) -> FarmDocument:
-    return FarmDocument(**{**data, "soil_samples": [SoilSample(**s) for s in data.get("soil_samples", [])],
-                           "harvests": [Harvest(**h) for h in data.get("harvests", [])]})
+    return FarmDocument(**{**_known(FarmDocument, data),
+                           "soil_samples": [SoilSample(**_known(SoilSample, s)) for s in data.get("soil_samples", [])],
+                           "harvests": [Harvest(**_known(Harvest, h)) for h in data.get("harvests", [])]})
 
 
 async def load_records(s3: Any, bucket: str, project_id: str) -> list[FarmDocument]:

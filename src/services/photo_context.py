@@ -19,6 +19,7 @@ from src.services import (
     drone_plots,
     drone_vision,
     farm_records,
+    record_links,
     field_checks,
     field_facts,
     photo_plots,
@@ -207,17 +208,27 @@ async def load(s3: Any, bucket: str, *, layer_id: str, name: str, bounds: Any, m
                               scope=drone_vision.reference_scope(org_id, user_id), start=start_jobs,
                               retry_failed=retry_failed, layer_id=layer_id)
              if plots is not None else PlotLooks())
+    # the documents' rows on the fields they belong to, by place: read here once, for the cards, Sage and the fields
+    linked: list[record_links.Linked] = []
+    if project_id and records:
+        try:
+            linked = record_links.resolve(records, await record_links.load(s3, bucket, project_id),
+                                          plots.geojson["features"] if plots is not None else [])
+        except Exception:  # the cards still answer; the records are then shown as not linked to a field
+            logger.exception("photo context: the documents could not be placed on the fields of layer %s", layer_id)
+            linked = record_links.resolve(records, {}, [])
     fields: list[field_facts.FieldFacts] = []
     if plots is not None:
         try:
-            fields = await field_facts.of_plots(s3, bucket, photo_plots.photo_key(metadata), layer_id, plots)
+            fields = await field_facts.of_plots(s3, bucket, photo_plots.photo_key(metadata), layer_id, plots,
+                                                record_links.by_field(linked))
         except Exception:  # the cards still answer, without the per-field facts gathered from the other surfaces
             logger.exception("photo context: the fields' facts could not be read for layer %s", layer_id)
     here = drone_cards.Here(fields=tuple(fields), photos=max(1, int(photos_here or 0)), plots=plots, plot_job=plot_job,
                             plot_maps=tuple(m for m, _ in maps), plot_map=plot_map, plot_map_error=map_error,
                             survey=looks.survey, survey_job=looks.survey_job,
                             vision_looks=drone_vision.survey_enabled(), seed=seed,
-                            records=tuple(records), checked=looks.checked, record=looks.record,
+                            records=tuple(records), linked=tuple(linked), checked=looks.checked, record=looks.record,
                             picture_record=looks.picture_record, fingerprinted=looks.fingerprinted,
                             fingerprint_job=looks.fingerprint_job)
     return PhotoContext(analysis=analysis, here=here, reader=reader)

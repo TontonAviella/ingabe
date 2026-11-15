@@ -25,7 +25,7 @@ import zlib
 from collections import OrderedDict
 from dataclasses import dataclass
 from datetime import date, timedelta
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Optional, Sequence
 
 import numpy as np
 import rasterio
@@ -45,6 +45,7 @@ from src.services import (
     drone_plots,
     drone_vision,
     farm_records,
+    record_links,
     field_checks,
     field_facts,
     ground_area,
@@ -191,6 +192,8 @@ class Here:
     spots: Optional[dict[str, Any]] = None  # bare soil inside plots seen with gaps (GeoJSON), when measured
     spots_job: Optional[background_jobs.Job] = None  # measuring those spots, while it runs
     records: tuple[farm_records.FarmDocument, ...] = ()  # the project's soil reports and harvest records
+    # each row of those documents with the plot it belongs to, joined by place and never by a matching number
+    linked: tuple[record_links.Linked, ...] = ()
     checked: frozenset[int] = frozenset()  # plots whose crop someone checked on the ground (already in `survey`)
     record: Optional[field_checks.Record] = None  # how the model did on those plots
     # How the crop calls agree with the plots people named from the drone pictures (each with its own name hidden):
@@ -1826,21 +1829,40 @@ def _soil_flags(sample: farm_records.SoilSample) -> list[str]:
             if (value := getattr(sample, key)) is not None and value < guide]
 
 
-def _plot_key(name: Optional[str]) -> str:
-    """A plot name reduced so 'Block A-01', 'A01' and 'a-1' match."""
-    import re
-
-    text = re.sub(r"\b(block|plot|field|parcel|umurima)\b", "", (name or "").lower())
-    parts = re.findall(r"[a-z]+|\d+", text)
-    return "".join(p.lstrip("0") or "0" if p.isdigit() else p for p in parts)
-
-
-def _plot_named(here: Here, name: Optional[str]) -> Optional[dict[str, Any]]:
-    """The photo's plot with this name (or number), if the records name one."""
-    if here.plots is None or not name:
+def _plot_of(here: Here, linked: Optional[record_links.Linked]) -> Optional[dict[str, Any]]:
+    """The photo's plot a document row is linked to, if it is linked to one."""
+    if here.plots is None or linked is None or linked.number is None:
         return None
-    key = _plot_key(name)
-    return next((p for p in here.plots.plots() if key and key in (_plot_key(p.get("name")), _plot_key(str(p["number"])))), None)
+    return next((p for p in here.plots.plots() if p["number"] == linked.number), None)
+
+
+def _where(here: Here, linked: Optional[record_links.Linked]) -> str:
+    """Where a document row sits: its field's name, or that it is not linked yet."""
+    plot = _plot_of(here, linked)
+    if plot is not None:
+        return _plot_label(plot, here.plots)
+    return "not on a field of this photo" if linked is not None and linked.elsewhere else record_links.NOT_LINKED
+
+
+def _in_record(here: Here, name: Optional[str], link: Optional[record_links.Linked], document: str) -> str:
+    """A place as a document names it, said as the document's own name (its "Plot 3" is not the photo's Plot 3),
+    with the photo's field beside it once the row is linked."""
+    plot = _plot_of(here, link)
+    quoted = f'"{name}" in your {document}' if name else f"a row of your {document}"
+    return f"{quoted} ({_plot_label(plot, here.plots)} on the photo)" if plot is not None else quoted
+
+
+def _waiting(here: Here, placed: Sequence[tuple[Any, Any, Optional[record_links.Linked]]]) -> int:
+    """Rows a reader can still link on this photo: on no plot here, and not placed on other land."""
+    return sum(1 for _, _, link in placed if _plot_of(here, link) is None and not (link is not None and link.elsewhere))
+
+
+def _not_linked_note(count: int, of: int, what: str) -> str:
+    if not count:
+        return ""
+    return (f" {count} of the {of} {what} {'is' if count == 1 else 'are'} {record_links.NOT_LINKED}: open a field "
+            "on the photo and link them, so each one sits on its own land. A matching number is not used: the "
+            "document's numbers and the photo's are not the same numbering.")
 
 
 def _upload(analysis: PhotoAnalysis, label: str) -> dict[str, str]:
@@ -1870,30 +1892,35 @@ def _soil_card(analysis: PhotoAnalysis, audience: str, here: Here) -> dict[str, 
     what = (f"Your lab report{f' ({source})' if source else ''} has {len(samples)} samples. "
             + (", ".join(f"{n} {word.lower()}" for word, n in sorted(counts.items(), key=lambda kv: -kv[1]))
                + " against common guide values." if counts else "All of them are within common guide values."))
+    placed = record_links.soil(here.records, here.linked)
+    if here.plots is not None:
+        what += _not_linked_note(_waiting(here, placed), len(placed), "samples")
     facts = []
     items = []
     flags_by_plot: dict[int, str] = {}
-    for _, sample, words in [(d, s, _soil_flags(s)) for d, s in samples]:
+    for _, sample, link in placed:
+        words = _soil_flags(sample)
         label = " · ".join(x for x in (sample.sample, sample.place) if x) or "Sample"
-        facts.append({"label": label, "value": f"pH {_num(sample.ph, 1)} · N {_num(sample.nitrogen_percent, 2)} % · "
-                                               f"P {_num(sample.phosphorus_mg_kg, 1)} mg/kg · K {_num(sample.potassium_cmol_kg, 2)} cmol/kg"})
-        plot = _plot_named(here, sample.place or sample.sample)
+        facts.append({"label": f"{label} · {_where(here, link)}", "value": record_links.soil_said(sample)})
+        plot = _plot_of(here, link)
         if plot is not None and words:
             flags_by_plot[plot["number"]] = ", ".join(words)
             items.append(_plot_item(analysis, _named(plot, here.plots), f"{', '.join(words)} · pH {_num(sample.ph, 1)}"))
-    acidic = [s.place or s.sample for _, s, w in flagged if "Acidic" in w]
-    low_p = [s.place or s.sample for _, s, w in flagged if "Low phosphorus" in w]
+    named = [(_in_record(here, s.place or s.sample, link, "lab report"), _soil_flags(s)) for _, s, link in placed]
+    acidic = [where for where, w in named if "Acidic" in w]
+    low_p = [where for where, w in named if "Low phosphorus" in w]
     steps = []
     if acidic:
-        steps.append(f"lime {', '.join(x for x in acidic if x)} before planting (pH below {SOIL_GUIDE['ph']})")
+        steps.append(f"lime {', '.join(acidic)} before planting (pH below {SOIL_GUIDE['ph']})")
     if low_p:
-        steps.append(f"add phosphorus on {', '.join(x for x in low_p if x)}")
+        steps.append(f"add phosphorus on {', '.join(low_p)}")
     todo = ("Next: " + "; ".join(steps) + ". Your agronomist sets the rates." if steps
             else "Keep the same practice and test again in two or three seasons.")
     overlay = (_flag_overlay(analysis, here.plots, flags_by_plot, "Plots whose lab sample is below the guide",
                              {n: w.split(", ")[0] for n, w in flags_by_plot.items()})
                if here.plots is not None and flags_by_plot else None)
-    warnings = [w for d in documents.values() for w in d.warnings]
+    warnings = [link.note for _, _, link in placed if link is not None and link.note and not link.elsewhere]
+    warnings += [w for d in documents.values() for w in d.warnings]
     because = ["Measured in a lab" + (f" ({samples[0][1].phosphorus_method} for phosphorus)" if samples[0][1].phosphorus_method else ""),
                "Read from your report by an AI vision model: check the numbers against the report",
                "Guide values are common ones for East African soils; your lab's own guide may differ"]
@@ -1911,7 +1938,7 @@ def _harvest_summary(rows: list[tuple[farm_records.FarmDocument, farm_records.Ha
     if not yields:
         return f"{len(rows)} harvests recorded" + (f" for {', '.join(seasons)}" if seasons else "") + "."
     return (f"{', '.join(seasons) or 'Recorded'}: {sum(yields) / len(yields):.1f} t/ha on average over "
-            f"{len(yields)} plots.")
+            f"{len(yields)} harvest records.")
 
 
 def _history_card(analysis: PhotoAnalysis, audience: str, here: Here) -> dict[str, Any]:
@@ -1920,38 +1947,50 @@ def _history_card(analysis: PhotoAnalysis, audience: str, here: Here) -> dict[st
         answer = _history(analysis, audience, here)
         answer["upload"] = _upload(analysis, "Add harvest records (PDF, photo or spreadsheet)")
         return answer
-    measured = sorted([(d, h) for d, h in rows if h.tonnes_per_ha is not None], key=lambda t: -(t[1].tonnes_per_ha or 0))
+    placed = record_links.harvests(here.records, here.linked)
+    measured = sorted([t for t in placed if t[1].tonnes_per_ha is not None], key=lambda t: -(t[1].tonnes_per_ha or 0))
     total_kg = sum(h.harvest_kg or 0 for _, h in rows)
-    area = sum(h.area_ha or 0 for _, h in measured)
+    area = sum(h.area_ha or 0 for _, h, _ in measured)
     crops = sorted({h.crop for _, h in rows if h.crop})
     seasons = sorted({h.season for _, h in rows if h.season})
     what = (f"Your records: {len(rows)} harvests of {', '.join(crops) or 'the crop'}"
             + (f" in {', '.join(seasons)}" if seasons else "") + f", {total_kg / 1000:.1f} t in all")
     if measured:
-        mean = sum(total for total in (h.harvest_kg or 0 for _, h in measured)) / 1000 / area if area else None
-        best, low = measured[0][1], measured[-1][1]
-        what += (f" on {_ha(area)}, {mean:.1f} t/ha overall. Best: {best.plot} ({best.tonnes_per_ha:.1f} t/ha); "
-                 f"lowest: {low.plot} ({low.tonnes_per_ha:.1f} t/ha).") if mean is not None else "."
-        # what the other records say about the lowest plots
-        samples = {_plot_key(s.place or s.sample): s for _, s in farm_records.soil_samples(list(here.records))}
+        mean = sum(total for total in (h.harvest_kg or 0 for _, h, _ in measured)) / 1000 / area if area else None
+        (_, best, best_link), (_, low, low_link) = measured[0], measured[-1]
+        what += (f" on {_ha(area)}, {mean:.1f} t/ha overall. Best: "
+                 f"{_in_record(here, best.plot, best_link, 'harvest record')} ({best.tonnes_per_ha:.1f} t/ha); lowest: "
+                 f"{_in_record(here, low.plot, low_link, 'harvest record')} ({low.tonnes_per_ha:.1f} t/ha)."
+                 ) if mean is not None else "."
+        # what the other records say about the lowest plots: only where both rows are linked to the same field
+        samples: dict[int, list[farm_records.SoilSample]] = {}
+        for _, s, link in record_links.soil(here.records, here.linked):
+            if link is not None and link.number is not None and _soil_flags(s):
+                samples.setdefault(link.number, []).append(s)
         notes = []
-        for _, h in measured[-2:]:
-            sample = samples.get(_plot_key(h.plot))
-            if sample is not None and _soil_flags(sample):
-                notes.append(f"{h.plot} also tested {', '.join(_soil_flags(sample)).lower()} (pH {_num(sample.ph, 1)})")
+        for _, h, link in measured[-2:]:
+            below = samples.get(link.number, []) if link is not None and link.number is not None else []
+            # a field with several samples: the most acidic one below the guide is the one said
+            sample = min(below, key=lambda s: s.ph if s.ph is not None else 99.0, default=None)
+            if sample is not None:
+                notes.append(f"{_where(here, link)} also tested {', '.join(_soil_flags(sample)).lower()} "
+                             f"(pH {_num(sample.ph, 1)})")
         if notes:
             what += " " + "; ".join(notes) + ": the soil may explain part of the gap."
     else:
         what += "."
-    facts = [{"label": " · ".join(x for x in (h.plot, h.farmer) if x) or "Harvest",
+    if here.plots is not None:
+        what += _not_linked_note(_waiting(here, placed), len(placed), "harvests")
+    facts = [{"label": f"{' · '.join(x for x in (h.plot, h.farmer) if x) or 'Harvest'} · {_where(here, link)}",
               "value": f"{_num(h.harvest_kg, 0)} kg" + (f" · {h.tonnes_per_ha:.1f} t/ha" if h.tonnes_per_ha is not None else "")}
-             for _, h in (measured or rows)[:12]]
+             for _, h, link in (measured or placed)[:12]]
     items = []
-    for _, h in measured[-3:]:
-        plot = _plot_named(here, h.plot)
+    for _, h, link in measured[-3:]:
+        plot = _plot_of(here, link)
         if plot is not None:
             items.append(_plot_item(analysis, _named(plot, here.plots), f"{h.tonnes_per_ha:.1f} t/ha last harvest"))
-    warnings = [w for d, _ in rows for w in d.warnings]
+    warnings = [link.note for _, _, link in placed if link is not None and link.note and not link.elsewhere]
+    warnings += [w for d, _ in rows for w in d.warnings]
     return _answer(
         "history", analysis, here, what=what,
         why="Harvests by plot show which plots keep doing badly, so the next season's effort goes where it pays back in crop.",
@@ -2043,20 +2082,28 @@ def _asks(card_id: str, analysis: PhotoAnalysis, here: Here, items: list[dict[st
         "history": [("How green was this place in past seasons?", f"{ctx}: compare satellite greenness here over the "
                      "last seasons. Were any seasons clearly worse?")],
     }
-    samples = farm_records.soil_samples(list(here.records))
-    if samples:
-        worst = min((s for _, s in samples if s.ph is not None), key=lambda s: s.ph or 0, default=None)
-        if worst is not None and worst.ph is not None and worst.ph < SOIL_GUIDE["ph"]:
-            where = worst.place or worst.sample or "the most acidic sample"
-            asks["soil"] = [(f"How much lime for pH {worst.ph:.1f} in {where}?",
+    # A document's own plot names are not the photo's: Sage is told the photo's field only for a linked row.
+    not_here = "which is not linked to a field on this photo, so its name is the document's own, not a plot of the photo"
+    acid = [(s, link) for _, s, link in record_links.soil(here.records, here.linked) if s.ph is not None]
+    if acid:
+        worst, link = min(acid, key=lambda t: t[0].ph or 0)
+        if worst.ph is not None and worst.ph < SOIL_GUIDE["ph"]:
+            plot = _plot_of(here, link)
+            short = (_plot_label(plot, here.plots) if plot is not None
+                     else f"sample {worst.sample or worst.place or 'with the lowest pH'} of my lab report")
+            where = f"{short} (plot number {plot['number']})" if plot is not None else f"{short}, {not_here}"
+            asks["soil"] = [(f"How much lime for pH {worst.ph:.1f} in {short}?",
                              f"{ctx}: my lab report shows pH {worst.ph:.1f}, phosphorus {_num(worst.phosphorus_mg_kg, 1)} "
                              f"mg/kg and potassium {_num(worst.potassium_cmol_kg, 2)} cmol/kg in {where}. How much lime and "
                              f"which fertilizer would suit {crop} there, and when should they go on?")] + asks["soil"]
-    harvested = [h for _, h in farm_records.harvests(list(here.records)) if h.tonnes_per_ha is not None]
+    harvested = [(h, link) for _, h, link in record_links.harvests(here.records, here.linked) if h.tonnes_per_ha is not None]
     if harvested:
-        low = min(harvested, key=lambda h: h.tonnes_per_ha or 0)
-        asks["history"] = [(f"Why did {low.plot} harvest only {low.tonnes_per_ha:.1f} t/ha?",
-                            f"{ctx}: {low.plot} harvested {low.tonnes_per_ha:.1f} t/ha of {low.crop or 'the crop'} in "
+        low, link = min(harvested, key=lambda t: t[0].tonnes_per_ha or 0)
+        plot = _plot_of(here, link)
+        short = _plot_label(plot, here.plots) if plot is not None else f'"{low.plot}" in my harvest record'
+        where = f"{short} (plot number {plot['number']})" if plot is not None else f"{short}, {not_here},"
+        asks["history"] = [(f"Why did {short} harvest only {low.tonnes_per_ha:.1f} t/ha?",
+                            f"{ctx}: {where} harvested {low.tonnes_per_ha:.1f} t/ha of {low.crop or 'the crop'} in "
                             f"{low.season or 'the last season'}. Using rain, satellite greenness and soil for this place, "
                             "what most likely held it back?")] + asks["history"]
     if card_id == "plant_count":  # asked of Sage only where a count can be given, and for a plot that can be counted

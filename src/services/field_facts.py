@@ -95,6 +95,8 @@ class FieldFacts:
     plants_said: Optional[str] = None
     counted_share: Optional[float] = None  # the share of the field where plants could be counted
     checked_said: Optional[str] = None  # a person's own check of that count, in parts the app chose
+    # rows of the farm's documents linked to this field by place (record_links), each as it is said everywhere
+    records_said: tuple[str, ...] = ()
 
     def shown(self) -> dict[str, Any]:
         return asdict(self)
@@ -112,7 +114,8 @@ def _counted(entry: Optional[dict[str, Any]]) -> Optional[dict[str, Any]]:
 
 
 def _facts(number: int, label: str, area_ha: float, row: Optional[dict[str, Any]], cover: Optional[float],
-           count: Optional[dict[str, Any]], check: Optional[dict[str, Any]]) -> FieldFacts:
+           count: Optional[dict[str, Any]], check: Optional[dict[str, Any]],
+           records: Optional[dict[int, list[str]]] = None) -> FieldFacts:
     return FieldFacts(
         number=number, name=label, area_ha=area_ha, area_said=area_said(area_ha),
         kept_id=row["id"] if row is not None else None,
@@ -120,7 +123,7 @@ def _facts(number: int, label: str, area_ha: float, row: Optional[dict[str, Any]
         plants_about=about(count["plants"]) if count else None,
         plants_said=plants_said(count["plants"], count.get("counted_share")) if count else None,
         counted_share=count.get("counted_share") if count else None,
-        checked_said=check["said"] if check else None)
+        checked_said=check["said"] if check else None, records_said=tuple((records or {}).get(number, ())))
 
 
 async def _check(s3: Any, bucket: str, photo_key: str, layer_id: str, row: Optional[dict[str, Any]],
@@ -149,9 +152,11 @@ async def _kept_and_counts(s3: Any, bucket: str, photo_key: str,
     return rows, covered, counts
 
 
-async def of_plots(s3: Any, bucket: str, photo_key: str, layer_id: str, plots: Any) -> list[FieldFacts]:
+async def of_plots(s3: Any, bucket: str, photo_key: str, layer_id: str, plots: Any,
+                   records: Optional[dict[int, list[str]]] = None) -> list[FieldFacts]:
     """The facts of every plot in a plot set, in the set's order. The reader's kept fields bring green cover and
-    checks; a plot bears them only when it is that field (same number, same outline)."""
+    checks; a plot bears them only when it is that field (same number, same outline). `records`: what the farm's
+    documents say per plot number, already linked by place (record_links.by_field)."""
     rows, covered, counts = await _kept_and_counts(s3, bucket, photo_key, layer_id)
     of_outlined = outlined(plots)
     by_number = {row["number"]: row for row in rows}
@@ -164,11 +169,12 @@ async def of_plots(s3: Any, bucket: str, photo_key: str, layer_id: str, plots: A
         count = _counted(counts.get(plant_finder.answer_key(photo_key, feature)))
         out.append(_facts(props["number"], name(props["number"], of_outlined, props.get("name")), props["area_ha"], row,
                           field_taps.cover_share(row) if row is not None and covered else None, count,
-                          await _check(s3, bucket, photo_key, layer_id, row, count)))
+                          await _check(s3, bucket, photo_key, layer_id, row, count), records))
     return out
 
 
-async def of_kept(s3: Any, bucket: str, photo_key: str, layer_id: str) -> dict[str, FieldFacts]:
+async def of_kept(s3: Any, bucket: str, photo_key: str, layer_id: str,
+                  records: Optional[dict[int, list[str]]] = None) -> dict[str, FieldFacts]:
     """The facts of the reader's kept fields, by field id, for the field panel: read from the fields themselves and
     the photo's record of counts, so nothing is measured and no plot set is built. A count is the field's when it
     was made on the field's own outline (same number, same outline)."""
@@ -180,5 +186,5 @@ async def of_kept(s3: Any, bucket: str, photo_key: str, layer_id: str) -> dict[s
                       and same_field(entry["geometry"], row["geometry"])), None)
         out[row["id"]] = _facts(row["number"], name(row["number"], True), row.get("area_ha") or 0.0, row,
                                 field_taps.cover_share(row) if covered else None, count,
-                                await _check(s3, bucket, photo_key, layer_id, row, count))
+                                await _check(s3, bucket, photo_key, layer_id, row, count), records)
     return out

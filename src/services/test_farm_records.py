@@ -111,3 +111,23 @@ def test_documents_are_kept_per_project_with_their_file(monkeypatch):
     records = asyncio.run(farm_records.load_records(s3, "b", "P1"))
     assert [d.id for d in records] == [doc.id] and len(farm_records.soil_samples(records)) == 2
     assert asyncio.run(farm_records.load_records(s3, "b", "P2")) == []
+
+
+def test_a_csv_with_title_lines_above_its_table_is_read_as_text():
+    content = b"Soil laboratory report\nLab: Example\nSample,Place,GPS,pH\nS1,North,\"-1.69677, 30.42697\",4.9\n"
+    text = farm_records._sheet_text(content, "lab.csv")
+    assert text.splitlines()[0] == "Soil laboratory report" and '"-1.69677, 30.42697"' in text
+
+
+def test_the_reading_schema_stays_within_the_models_limit_and_empty_text_is_not_kept():
+    def unions(schema):
+        if isinstance(schema, dict):
+            return int(isinstance(schema.get("type"), list)) + sum(unions(v) for v in schema.values())
+        return sum(unions(v) for v in schema) if isinstance(schema, list) else 0
+
+    assert unions(farm_records._SCHEMA) <= 16  # Anthropic refuses more either-or fields than this
+    raw = {"kind": farm_records.SOIL_REPORT, "title": "", "source": " ", "date": "", "harvests": [], "warnings": [],
+           "soil_samples": [{"sample": "S1", "place": "", "depth": "", "ph": 5.0, "coordinates": "", "texture": ""}]}
+    doc = farm_records.to_document(raw, "f.csv", "k", "m", "d")
+    assert doc.title is None and doc.source is None
+    assert doc.soil_samples[0].place is None and doc.soil_samples[0].coordinates is None

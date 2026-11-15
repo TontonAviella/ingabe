@@ -35,7 +35,27 @@ export interface KeptOutline {
   /** Share of the field under living green plants (0..1), or why it was not measured. Missing until measured. */
   green_cover?: { share: number | null; why_not: string | null };
   /** What is known of the field in the words the cards and Sage use too (src/services/field_facts.py). */
-  facts?: { area_said: string; plants_said: string | null; checked_said: string | null };
+  facts?: { area_said: string; plants_said: string | null; checked_said: string | null; records_said?: string[] };
+}
+
+/** A row of the farm's documents (a lab sample, a harvest) and the kept field it is linked to, if any. */
+export interface FieldRecordRow {
+  key: string;
+  kind: 'soil' | 'harvest';
+  /** What the document calls it. Its numbers are the document's own, not the photo's field numbers. */
+  label: string;
+  value: string;
+  document: string;
+  /** The row as every surface says it once linked. */
+  said: string;
+  field: number | null;
+  field_id: string | null;
+  /** 'document': the position printed in the document lies in the field. 'person': someone said so. */
+  by: 'document' | 'person' | null;
+  /** A field the reader may confirm; never applied by the app. */
+  suggest_id: string | null;
+  suggest_why: string | null;
+  note: string | null;
 }
 
 /** A corner of an outline as [longitude, latitude]. */
@@ -190,9 +210,34 @@ export function keepCountCheck(
   return sendJson(checkUrl(layerId, fieldId), 'POST', { square, shown, wrong, missed });
 }
 
+const recordsUrl = (layerId: string) => `${url(layerId)}/records`;
+
+/** Every row of the farm's documents with the field it is linked to. */
+export function useFieldRecords(layerId: string | null) {
+  return useQuery<{ rows: FieldRecordRow[]; not_linked: number }, ServerError>({
+    queryKey: ['field-records', layerId],
+    queryFn: () => getJson(recordsUrl(layerId as string)),
+    enabled: !!layerId,
+    retry: false,
+  });
+}
+
+/** The reader says a document row is this field (`linked`), or is not. The cards and Sage read the same link. */
+export function useLinkFieldRecord(layerId: string | null) {
+  const client = useQueryClient();
+  return useMutation<{ row: string; field: number | null }, ServerError, { row: string; field_id: string; linked: boolean }>({
+    mutationFn: (body) => sendJson(`${recordsUrl(layerId as string)}/link`, 'POST', body),
+    onSuccess: () => {
+      client.invalidateQueries({ queryKey: ['field-records', layerId] });
+      fieldsChanged(client, layerId);
+    },
+  });
+}
+
 /** The kept fields changed: they are also the plots the question cards read, so those are asked again too. */
 function fieldsChanged(client: QueryClient, layerId: string | null) {
   client.invalidateQueries({ queryKey: ['field-taps', layerId] });
+  client.invalidateQueries({ queryKey: ['field-records', layerId] });
   client.invalidateQueries({ queryKey: ['drone-cards', layerId] });
   client.invalidateQueries({ queryKey: ['drone-card-answer', layerId] });
 }
