@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import dataclasses
+import types
 import json
 import re
 import time
@@ -907,3 +908,36 @@ def test_roles_read_in_their_voices():
         ["farmer", "insurance", "farmer", "owner"]
     assert insurance_engine.normalize_audience("cooperative") == "farmer"  # reports keep their four voices
     assert insurance_engine.normalize_audience("technician") == insurance_engine.DEFAULT_AUDIENCE
+
+
+def _plots(*areas):
+    features = [{"type": "Feature", "geometry": None, "properties": {"number": n + 1, "area_ha": area}}
+                for n, area in enumerate(areas)]
+    return types.SimpleNamespace(count=len(features), source="found", plots=lambda: [f["properties"] for f in features])
+
+
+def test_stand_count_is_offered_only_where_a_count_can_be_given(photo):
+    coarse = _analysis(photo)  # 50 cm pixels
+    small = drone_cards.Here(plots=_plots(0.2, 0.9))
+    assert drone_cards.statuses(coarse, small)["plant_count"] == drone_cards.CANT_TELL
+    refused = drone_cards.answer_card("plant_count", coarse, "farmer", small)
+    assert "50.0 cm" in refused["what"] and "2.9 to 3.6 cm" in refused["what"] and refused["ask_sage"] == []
+    assert "will not become countable" in refused["todo"]
+    for edge in (2.9, 3.25, 3.6):  # the finder's own range, its ends included
+        fine = dataclasses.replace(coarse, look=dataclasses.replace(coarse.look, resolution_cm=edge))
+        assert drone_cards.statuses(fine, small)["plant_count"] == drone_cards.PARTLY
+    answer = drone_cards.answer_card("plant_count", fine, "farmer", small)
+    # what exists is said as it is: on request, an estimate, for plots small enough, and the reader can check it
+    assert "one field at a time" in answer["what"] and "1 of the 2 plots here are small enough" in answer["what"]
+    assert "Check the count" in answer["todo"]
+    assert answer["how_sure"]["level"] == "medium" and "within 18%" in answer["how_sure"]["because"][0]
+    assert answer["ask_sage"] == [{"label": "How many plants are in plot 1?",
+                                   "prompt": answer["ask_sage"][0]["prompt"]}]
+    # no plots yet, or none small enough: no count is promised, and Sage is not sent to fail
+    for here in (drone_cards.Here(), drone_cards.Here(plots=_plots(0.9, 2.0))):
+        assert drone_cards.statuses(fine, here)["plant_count"] == drone_cards.CANT_TELL
+        waiting = drone_cards.answer_card("plant_count", fine, "farmer", here)
+        assert "Outline a field" in waiting["todo"] and waiting["ask_sage"] == []
+    # more bands than colour: the finder was not measured on such a photo
+    spectral = dataclasses.replace(fine, band_count=5)
+    assert drone_cards.statuses(spectral, small)["plant_count"] == drone_cards.CANT_TELL

@@ -48,6 +48,7 @@ from src.services import (
     field_checks,
     ground_area,
     isdasoil_service,
+    plant_finder,
     reader_roles,
     wapor_service,
 )
@@ -447,7 +448,7 @@ _CARDS = [
     _CardDef("pests", 4, ("Where might pests or disease be starting?", "Is anything eating or killing the crop?")),
     _CardDef("field_outlines", 5, ("Where exactly are my plots, and how big is each?", "How many plots are there, and how big?")),
     _CardDef("growth", 6, ("Is the crop growing on schedule?", "Has the crop grown since the last flight?")),
-    _CardDef("plant_count", 7, ("How many plants came up, and where are the gaps?", "Did enough seeds come up?")),
+    _CardDef("plant_count", 7, ("How many plants came up?", "Did enough seeds come up?")),
     _CardDef("yield", 8, ("How much will this field yield?", "What harvest can we expect?")),
     _CardDef("spray", 9, ("Where should we spray, and where not?", "Can we spray less and still protect the crop?")),
     _CardDef("history", 10, ("How did this field do in past seasons?", "Has this land been farmed well before?"),
@@ -472,7 +473,7 @@ _ROLE_WORDS: dict[str, dict[str, tuple[str, ...]]] = {
         "weak_spots": ("Which part of my field is falling behind?", "Is any corner of my farm doing worse?"),
         "bare_ground": ("Which of my fields are still empty?", "Is any of my land not planted yet?"),
         "weeds": ("Which of my plots need weeding first?", "Where are weeds taking over my crop?"),
-        "plant_count": ("Did my seeds come up well?", "Where are the gaps in my rows?"),
+        "plant_count": ("Did my seeds come up well?", "How many plants do I have in a field?"),
         "water": ("Is my crop getting enough water?", "Which part of my field is driest?"),
         "pests": ("Is anything attacking my crop?", "Where should I look for pests?"),
         "crop_types": ("What is planted in each of my plots?",),
@@ -619,6 +620,18 @@ def _survey_status(here: Here) -> str:
     return WORKING if any(_running(job) for job in jobs) else PARTLY
 
 
+def _countable(analysis: PhotoAnalysis) -> bool:
+    """Whether the plant finder may be used on this photo: it was taught and tested at one pixel size only."""
+    size = analysis.look.resolution_cm
+    low, high = plant_finder.PIXEL_M
+    return analysis.camera == "colour" and size is not None and low <= round(size / 100, 4) <= high  # as the finder
+
+
+def _countable_plots(here: Here) -> list[dict[str, Any]]:
+    """The plots small enough to count live (the finder refuses a larger one)."""
+    return [p for p in here.plots.plots() if p["area_ha"] <= plant_finder.MAX_PLOT_HA] if here.plots is not None else []
+
+
 def _status(card_id: str, analysis: PhotoAnalysis, here: Here) -> str:
     if card_id in ("weak_spots", "bare_ground"):
         return READY
@@ -638,6 +651,12 @@ def _status(card_id: str, analysis: PhotoAnalysis, here: Here) -> str:
         return NEEDS_CAMERA if analysis.camera == "colour" else TO_BUILD
     if card_id == "growth":
         return NEEDS_FLIGHT if here.photos < 2 else TO_BUILD
+    if card_id == "plant_count":
+        if not _countable(analysis):
+            return CANT_TELL
+        if here.plots is None:  # a count is of one plot: none yet
+            return WORKING if _running(here.plot_job) else CANT_TELL
+        return PARTLY if _countable_plots(here) else CANT_TELL
     if card_id == "learn_camera":
         return LEARN
     return TO_BUILD
@@ -710,11 +729,17 @@ def _preview(card_id: str, analysis: PhotoAnalysis, here: Here) -> str:
         return ("This is the only photo of this place. Fly again to compare."
                 if here.photos < 2 else "Height and greenness against the last flight.")
     if card_id == "plant_count":
-        return "Every plant counted, gaps marked, checked against 3 hand counts."
+        if not _countable(analysis):
+            return "Plants cannot be counted on this photo; it takes one with smaller or larger pixels."
+        if here.plots is None:
+            return "Plants are counted plot by plot, once the plots are found."
+        if not _countable_plots(here):
+            return f"Every plot here is larger than {plant_finder.MAX_PLOT_HA} ha; outline a smaller field to count."
+        return "An estimate, one field at a time, with a ring on each plant; you can check it yourself."
     if card_id == "yield":
         return "A harvest range for each field that narrows through the season."
     if card_id == "spray":
-        return "Spray zones and the area to treat, from the pest map."
+        return "Spray zones and the area to treat. Today: weeds, grass and bush drawn field by field, on request."
     if card_id == "history":
         rows = farm_records.harvests(list(here.records))
         if rows:
@@ -1704,7 +1729,8 @@ _COMING = {
               "plant counts, growth, weather, and past harvests to learn from"),
     "spray": ("spray zones and the area to treat, with a route or file for the sprayer",
               "Spraying only where it is needed protects the crop, the workers and the water around the field.",
-              "the pest, weed or disease map from the pests question"),
+              "the map of green that is not the crop (Ingabe already draws it field by field: ask Sage where the "
+              "weeds are in a field), turned into zones, and a check on foot before spraying"),
 }
 
 
@@ -1718,6 +1744,53 @@ def _coming(card_id: str, analysis: PhotoAnalysis, audience: str, here: Here) ->
         why=why, todo=f"What it needs: {needs}.",
         how_sure=_how_sure("low", [f"Not answered yet: {STATUS_LABELS[status].lower()}"], None),
         terms=["near_infrared"] if card_id == "fertilizer" else [], audience=audience)
+
+
+def _plant_count(analysis: PhotoAnalysis, audience: str, here: Here) -> dict[str, Any]:
+    """Stand count as it exists today: an estimate for one field at a time, on request, that the reader can check."""
+    size = analysis.look.resolution_cm
+    low, high = (round(v * 100, 1) for v in plant_finder.PIXEL_M)
+    if not _countable(analysis):
+        pixels = f"{size:.1f} cm" if size is not None else "an unknown size"
+        why_not = ("it is not a normal colour photo" if analysis.camera != "colour"
+                   else f"its pixels are {pixels}, and plants are counted only at {low} to {high} cm")
+        return _answer(
+            "plant_count", analysis, here,
+            what=f"Plants cannot be counted on this photo yet: {why_not}.",
+            why="The plant finder was taught and tested at one pixel size. At another it has not been measured, so "
+                "it gives no number instead of an untested one.",
+            todo=f"This photo will not become countable. One of this place with pixels of {low} to {high} cm can be.",
+            how_sure=_how_sure("low", ["Not counted on this photo"], None), terms=[], audience=audience)
+    if here.plots is None or not _countable_plots(here):
+        what = ("Plants are counted one plot at a time, and the plots of this photo are not found yet."
+                if here.plots is None else
+                f"Plants are counted one plot at a time, in plots of up to {plant_finder.MAX_PLOT_HA} ha, and every plot "
+                "on this photo is larger.")
+        return _answer(
+            "plant_count", analysis, here, what=what,
+            why="A count over a large area takes too long to answer while you wait, so it is given for small plots.",
+            todo=f"Outline a field of up to {plant_finder.MAX_PLOT_HA} ha by tapping it, then ask Sage how many plants it holds.",
+            how_sure=_how_sure("low", ["Not counted on this photo"], None), terms=["hectare"], audience=audience)
+    can, total = len(_countable_plots(here)), here.plots.count
+    kind = "fields you outlined" if here.plots.source == drone_plots.OUTLINED_FIELDS_NAME else "plots"
+    of_them = (f"All {total} {kind} here are small enough." if can == total and total > 1 else
+               "The one here is small enough." if total == 1 else f"{can} of the {total} {kind} here are small enough.")
+    return _answer(
+        "plant_count", analysis, here,
+        what=(f"Plants are counted one field at a time, when you ask, in fields of up to {plant_finder.MAX_PLOT_HA} ha. "
+              f"{of_them} The answer is \"about N plants\", a ring drawn on each plant counted, and "
+              "the share of the field that could be counted. Parts where single plants cannot be told apart (closed "
+              "canopy, pasture, bush) are left out and said."),
+        why="Knowing early how many plants came up tells you whether to fill the gaps while there is time.",
+        todo=(f"Ask Sage \"how many plants are in plot {min(p['number'] for p in _countable_plots(here))}?\". Then tap that field and press Check the count: Ingabe "
+              "chooses a small part, you mark the rings that are not plants and the plants it missed, and it tells you "
+              "both counts."),
+        how_sure=_how_sure("medium", [
+            "An estimate: measured on one farm's photo, the total came within 18%",
+            "About 1 ring in 5 was not a crop plant, and about 1 plant in 10 was missed",
+            "Not measured on other farms or crops",
+        ], "Check the count on a few parts of your own field."),
+        terms=["hectare"], audience=audience)
 
 
 # --- The farm's own records: soil lab reports and harvests ------------------------------------
@@ -1889,6 +1962,7 @@ _ANSWERS: dict[str, Callable[[PhotoAnalysis, str, Here], dict[str, Any]]] = {
     "field_outlines": _field_outlines,
     "history": _history_card,
     "learn_camera": _learn_camera,
+    "plant_count": _plant_count,
 }
 
 
@@ -1970,6 +2044,12 @@ def _asks(card_id: str, analysis: PhotoAnalysis, here: Here, items: list[dict[st
                             f"{ctx}: {low.plot} harvested {low.tonnes_per_ha:.1f} t/ha of {low.crop or 'the crop'} in "
                             f"{low.season or 'the last season'}. Using rain, satellite greenness and soil for this place, "
                             "what most likely held it back?")] + asks["history"]
+    if card_id == "plant_count":  # asked of Sage only where a count can be given, and for a plot that can be counted
+        smallest = min(_countable_plots(here), key=lambda p: p["number"], default=None) if _countable(analysis) else None
+        if smallest is None:
+            return []
+        asks["plant_count"] = [(f"How many plants are in plot {smallest['number']}?",
+                                f"{ctx}: how many plants are in plot {smallest['number']}?")]
     chosen = asks.get(card_id) or [(f"Ask Sage: {_CARD_BY_ID[card_id].question.lower()}",
                                     f"{ctx}: {_CARD_BY_ID[card_id].question}")]
     return [{"label": label, "prompt": prompt} for label, prompt in chosen[:ASKS_PER_ANSWER]]
