@@ -114,6 +114,18 @@ with up to six more taps ("this part too" / "not this part"), and keep it with i
    (`my_crop.MAX_WAITING`); a sixth is told to come back (503). A reading that fails leaves only its reason in
    words, says it once, and the next ask starts again. Kept squares are not removed when a photo is deleted, and
    the queue lives in one process: with more than one app worker each would read on its own.
+24. Check a square (`src/services/count_check.py`, routes `.../kept/{id}/count-check` and `.../count-check/square`):
+    the reader checks the plant count on their own field. The app chooses the part (a 12.5 m square of the photo's
+    grid, in an order fixed by the field's id: the reader cannot pick the easy corner; squares mostly inside the
+    field come first; a square the picture check refuses is never offered). The plants shown are the count's own
+    (the same finder, centre inside the field). The reader taps a ring that is not a plant and a plant with no ring;
+    the server reads the square again and never takes a count from the browser. What is said is those parts alone
+    ("the app counted 38, you counted 41; 2 rings were not plants, it missed 5"). Nothing is scaled up to the field:
+    how well one part stands for a field was not measured, and a figure scaled from it would be a new number that
+    needs its own test. A check belongs to the field's line as it is and to the finder's method; change either and
+    the check no longer counts. Running the finder and keeping a check are for people who may edit the layer;
+    anyone who may see the layer reads what was checked. Sage's plant count gives the check as `checked_by_a_person`.
+    The check is a person's judgement from the photo, not a count on the ground.
 
 ## What was measured (plans/PLAN_RWANDA_CROPS.md, 2026-11-12)
 

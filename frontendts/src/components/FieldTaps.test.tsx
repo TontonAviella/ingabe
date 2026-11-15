@@ -36,6 +36,9 @@ function fakeServer(prepared: boolean) {
   // only my crop: what was asked, and the answers the server gives in turn (the last one is given again after that)
   const cropAsked: { url: string; crop: { lon: number; lat: number }[]; other: { lon: number; lat: number }[] }[] = [];
   const cropAnswers: { status?: number; body: unknown }[] = [];
+  // check a square: what was asked, and the checks kept
+  const checkAsked: { url: string; seen?: [number, number][]; square?: [number, number]; wrong?: number[]; missed?: unknown[] }[] = [];
+  const checks: { app: number; you: number; wrong: number; missed: number }[] = [];
   const outlines = (taps: Tap[], pick: number | null) =>
     taps.length === 1
       ? [0, 1, 2].map((choice) => ({ choice, geometry: square(choice + 1), area_ha: 0.1 * (choice + 1) }))
@@ -69,6 +72,37 @@ function fakeServer(prepared: boolean) {
       const answer = cropAnswers.length > 1 ? cropAnswers.shift() : cropAnswers[0];
       return answer ? json(answer.body, answer.status ?? 200) : json({ detail: 'Not Found' }, 404);
     }
+    if (url.endsWith('/count-check/square')) {
+      checkAsked.push({ url, ...body });
+      // the fake's rule: one part to show; once it was passed over there is no other
+      if (body.seen.length) return json({ detail: 'Every part of this field where plants are counted has been shown.' }, 422);
+      return json({
+        square: [4, 2],
+        plants: [
+          [30.2, -1.5],
+          [30.4, -1.5],
+          [30.6, -1.5],
+        ],
+        app: 3,
+        part: square(1),
+        side_m: 12.5,
+        squares_in_field: 13,
+        checked: null,
+        measured: 'Your own count, on a part the app chose.',
+      });
+    }
+    if (url.endsWith('/count-check') && init?.method === 'POST') {
+      checkAsked.push({ url, ...body });
+      if (body.missed.length > 2) return json({ detail: 'A plant you added lies outside this part of the field.' }, 422);
+      const here = { app: 3, wrong: body.wrong.length, missed: body.missed.length, you: 3 - body.wrong.length + body.missed.length };
+      checks.push(here);
+      const said = `In the 1 of 13 parts you checked, the app counted 3 plants and you counted ${here.you}.`;
+      return json({ here, checked: { parts: 1, ...here, said }, measured: 'Your own count, on a part the app chose.' });
+    }
+    if (url.endsWith('/count-check')) {
+      const last = checks.at(-1);
+      return json({ checked: last ? { parts: 1, ...last, said: `You counted ${last.you} where the app counted 3.` } : null, measured: '' });
+    }
     if (url.endsWith('/turned-down')) {
       turnedDown.push(body);
       return json({ id: `t${turnedDown.length}`, ...body });
@@ -93,7 +127,7 @@ function fakeServer(prepared: boolean) {
     }
     return json({ detail: 'Not Found' }, 404);
   });
-  return { kept, asked, turnedDown, measured, cropAsked, cropAnswers };
+  return { kept, asked, turnedDown, measured, cropAsked, cropAnswers, checkAsked };
 }
 
 /** The few things the component asks of the map; `tap` plays a reader's tap on the photo. */
@@ -107,6 +141,7 @@ function fakeMap() {
   const map = {
     queryRenderedFeatures: () => (under ? [{ properties: { id: under } }] : []),
     easeTo: vi.fn(),
+    fitBounds: vi.fn(),
     // one degree is 1000 px on this map
     project: (c: [number, number]) => ({ x: c[0] * 1000, y: -c[1] * 1000 }),
     unproject: (p: [number, number]) => ({ lng: p[0] / 1000, lat: -p[1] / 1000 }),
@@ -162,6 +197,9 @@ function fakeMap() {
     drawn: () => sources.get('field-taps') ?? { type: 'FeatureCollection', features: [] },
     /** What the only-my-crop step has on the map: its taps and the plants it found. */
     cropDrawn: () => sources.get('my-crop')?.features ?? [],
+    /** What the check of the count has on the map: the part, the app's rings and the reader's marks. */
+    checkDrawn: () => sources.get('count-check')?.features ?? [],
+    fitted: () => map.fitBounds.mock.calls.length,
   };
 }
 
@@ -517,6 +555,73 @@ describe('outlining a field by tapping it', () => {
     click(byButton('Close') as HTMLButtonElement);
     await vi.waitFor(() => expect(byText('Field 3 · 0.18 ha')).not.toBeNull());
     expect(m.cropDrawn()).toHaveLength(0);
+    expect(tapping.at(-1)).toBe(false);
+  });
+
+  it('lets the reader check the count on a part the app chose: rings that are not plants, plants with no ring', async () => {
+    const server = fakeServer(true);
+    server.kept.push({ id: 'a', number: 3, centre: [30.5, -1.5], geometry: square(1), area_ha: 0.18, corrections: 0, kept_at: 'then' });
+    const m = fakeMap();
+    const tapping: boolean[] = [];
+    mount(<FieldTaps map={m.map} layers={[photo]} hiddenLayerIDs={[]} onTapping={(on) => tapping.push(on)} />);
+    await vi.waitFor(() => expect(byButton(/^1 field outlined · show$/)).not.toBeNull());
+    m.clickOn('a');
+    await vi.waitFor(() => expect(byButton('Check the count')).not.toBeNull());
+    click(byButton('Check the count') as HTMLButtonElement);
+    await vi.waitFor(() => expect(byText('The app ringed 3 plants in this part of Field 3. Your count: 3.')).not.toBeNull());
+    expect(tapping.at(-1)).toBe(true);
+    expect(m.fitted()).toBe(1); // the map goes to the part
+    expect(server.checkAsked[0]).toEqual({ url: `/api/layer/${LAYER}/field-taps/kept/a/count-check/square`, seen: [] });
+    const signs = () =>
+      m
+        .checkDrawn()
+        .filter((f) => f.geometry.type === 'Point')
+        .map((f) => f.properties?.label);
+    expect(signs()).toEqual(['', '', '']);
+
+    // a tap on a ring: not a plant; the same ring again: a plant after all
+    m.tap(30.4, -1.505);
+    await vi.waitFor(() => expect(signs()).toEqual(['', '×', '']));
+    m.tap(30.4, -1.5);
+    await vi.waitFor(() => expect(signs()).toEqual(['', '', '']));
+    m.tap(30.2, -1.5);
+    // a tap away from every ring adds a plant; outside the part it is not taken
+    m.tap(30.5, -1.2);
+    m.tap(30.7, -1.2);
+    m.tap(35, -1.5);
+    await vi.waitFor(() => expect(byText('That tap is outside the part being checked. Tap inside the dashed line.')).not.toBeNull());
+    await vi.waitFor(() => expect(signs()).toEqual(['×', '', '', '+', '+']));
+    expect(byText('The app ringed 3 plants in this part of Field 3. Your count: 4.')).not.toBeNull();
+    // a tap on a plant the reader added takes it away, and Undo takes back the last mark
+    m.tap(30.7, -1.21);
+    await vi.waitFor(() => expect(signs()).toEqual(['×', '', '', '+']));
+    m.tap(30.8, -1.8);
+    await vi.waitFor(() => expect(signs()).toHaveLength(5));
+    click(byButton('Undo') as HTMLButtonElement);
+    await vi.waitFor(() => expect(signs()).toEqual(['×', '', '', '+']));
+
+    click(byButton('Save my count') as HTMLButtonElement);
+    await vi.waitFor(() =>
+      expect(
+        byText('In this part the app counted 3 plants and you counted 3: 1 of its rings was not a plant, and it missed 1.'),
+      ).not.toBeNull(),
+    );
+    expect(server.checkAsked[1]).toEqual({
+      url: `/api/layer/${LAYER}/field-taps/kept/a/count-check`,
+      square: [4, 2],
+      wrong: [0],
+      missed: [{ lon: 30.5, lat: -1.2 }],
+    });
+    expect(byText('Your own count, on a part the app chose.')).not.toBeNull();
+    // there is no other part on this field: the server's words are shown
+    click(byButton('Check another part') as HTMLButtonElement);
+    await vi.waitFor(() => expect(byText('Every part of this field where plants are counted has been shown.')).not.toBeNull());
+    expect(server.checkAsked[2].seen).toEqual([[4, 2]]);
+
+    // Close takes the rings off the map; the field now says what was checked
+    click(byButton('Close') as HTMLButtonElement);
+    await vi.waitFor(() => expect(byText('You counted 3 where the app counted 3.')).not.toBeNull());
+    expect(m.checkDrawn()).toHaveLength(0);
     expect(tapping.at(-1)).toBe(false);
   });
 

@@ -124,6 +124,67 @@ export function countMyCrop(
   return sendJson(`${url(layerId)}/kept/${fieldId}/my-crop`, 'POST', { crop, other });
 }
 
+/** What the reader's own checks of the plant count say for a field (src/services/count_check.py). */
+export interface CountChecked {
+  parts: number;
+  app: number;
+  you: number;
+  wrong: number;
+  missed: number;
+  /** The same, as a sentence written by the server. */
+  said: string;
+}
+
+/** One part of a field, chosen by the server, with the plants the count holds there. */
+export interface SquareToCheck {
+  /** The part's place on the photo's grid, sent back with the check. */
+  square: [number, number];
+  /** Each plant as [longitude, latitude]; a ring that is not a plant is named by its place in this list. */
+  plants: [number, number][];
+  app: number;
+  /** The part of the square that lies in the field: plants are counted there and nowhere else. */
+  part: GeoJSON.Polygon | GeoJSON.MultiPolygon;
+  side_m: number;
+  squares_in_field: number;
+  checked: CountChecked | null;
+  measured: string;
+}
+
+export interface CheckedSquare {
+  app: number;
+  you: number;
+  wrong: number;
+  missed: number;
+}
+
+const checkUrl = (layerId: string, fieldId: string) => `${url(layerId)}/kept/${fieldId}/count-check`;
+
+/** What the reader's checks say for a kept field; `checked` is null when none was made. */
+export function useCountChecked(layerId: string | null, fieldId: string | null) {
+  return useQuery<{ checked: CountChecked | null; measured: string }, ServerError>({
+    queryKey: ['field-count-check', layerId, fieldId],
+    queryFn: () => getJson(checkUrl(layerId as string, fieldId as string)),
+    enabled: !!layerId && !!fieldId,
+    retry: false,
+  });
+}
+
+/** The next part of the field to check; `seen` are parts already shown and passed over. */
+export function squareToCheck(layerId: string, fieldId: string, seen: [number, number][]): Promise<SquareToCheck> {
+  return sendJson(`${checkUrl(layerId, fieldId)}/square`, 'POST', { seen });
+}
+
+/** Keep the reader's check of one part: the rings that are not plants and the plants that got no ring. */
+export function keepCountCheck(
+  layerId: string,
+  fieldId: string,
+  square: [number, number],
+  wrong: number[],
+  missed: Place[],
+): Promise<{ here: CheckedSquare; checked: CountChecked | null; measured: string }> {
+  return sendJson(checkUrl(layerId, fieldId), 'POST', { square, wrong, missed });
+}
+
 /** The kept fields changed: they are also the plots the question cards read, so those are asked again too. */
 function fieldsChanged(client: QueryClient, layerId: string | null) {
   client.invalidateQueries({ queryKey: ['field-taps', layerId] });
