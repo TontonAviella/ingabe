@@ -328,7 +328,8 @@ def resolve(records: Sequence[farm_records.FarmDocument], links: dict[str, dict[
 
 def kept_features(kept_rows: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
     """The reader's kept fields in the shape `resolve` reads."""
-    return [{"geometry": row["geometry"], "properties": {"number": row["number"], "area_ha": row.get("area_ha")}}
+    return [{"geometry": row["geometry"], "properties": {"number": row["number"], "area_ha": row.get("area_ha"),
+                                                          "name": row.get("name")}}
             for row in kept_rows]
 
 

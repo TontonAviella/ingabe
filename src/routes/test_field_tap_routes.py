@@ -396,3 +396,38 @@ async def test_a_document_row_is_linked_to_a_field_by_a_person_never_by_its_numb
     assert (await client.post(f"{base}/records/link", json=off)).json()["field"] is None
     (row,) = (await client.get(f"{base}/records")).json()["rows"]
     assert row["field"] is None and row["suggest"] is None  # said not to be this field: not offered for it again
+
+
+@pytest.mark.anyio
+async def test_a_field_is_given_the_farms_own_name_and_keeps_its_number(client, photo, taps_on, monkeypatch):
+    from src.services import farm_records
+
+    ids = await photo()
+    base = f"/api/layer/{ids['layer']}/field-taps"
+    _as(ids["owner"])
+    kept = (await client.post(f"{base}/kept", json=_json(_tap(60, 10), pick=0))).json()
+    named = await client.put(f"{base}/kept/{kept['id']}/name", json={"name": "  Block   A "})
+    assert named.status_code == 200 and named.json()["name"] == "Block A" and named.json()["number"] == kept["number"]
+    (row,) = (await client.get(base)).json()["kept"]
+    assert row["name"] == "Block A" and row["facts"]["name"] == f"Block A · field {kept['number']}"
+    # a number alone would read as another field's number; a very long name is refused
+    assert (await client.put(f"{base}/kept/{kept['id']}/name", json={"name": "12"})).status_code == 422
+    assert (await client.put(f"{base}/kept/{kept['id']}/name", json={"name": "x" * 41})).status_code == 422
+    assert (await client.put(f"{base}/kept/nope/name", json={"name": "B"})).status_code == 404
+    # a document that uses the name is offered for the field, never linked by the name
+    doc = farm_records.FarmDocument(
+        id=f"d{uuid.uuid4().hex[:8]}", filename="lab.pdf", file_key="k", kind=farm_records.SOIL_REPORT, title=None,
+        source="Lab", date=None, added_at="x",
+        soil_samples=[farm_records.SoilSample("S1", "block a", None, 5.1, None, 0.1, 4.0, None, 0.2, None)])
+
+    async def records(s3, bucket, project_id):
+        return [doc]
+
+    monkeypatch.setattr(farm_records, "load_records", records)
+    (offered,) = (await client.get(f"{base}/records")).json()["rows"]
+    assert offered["field"] is None and offered["suggest_id"] == kept["id"] and "same name" in offered["suggest_why"]
+    _as(VIEWER)
+    assert (await client.put(f"{base}/kept/{kept['id']}/name", json={"name": "Mine"})).status_code in (403, 404)
+    _as(ids["owner"])  # an empty name takes it off
+    assert "name" not in (await client.put(f"{base}/kept/{kept['id']}/name", json={"name": ""})).json()
+    assert (await client.get(base)).json()["kept"][0]["facts"]["name"] == f"Field {kept['number']}"

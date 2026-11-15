@@ -188,9 +188,16 @@ with up to six more taps ("this part too" / "not this part"), and keep it with i
     Not tested: how well the vision model copies printed positions (no document with positions has been
     uploaded yet; the first one must be checked against the page by eye; a wrongly copied digit can put a row
     on a neighbouring field, which is why a linked row always shows the position it was linked by). Not built:
-    reading a grid reference, a field's own name given by the reader, linking from the cards or by Sage; rows
+    reading a grid reference, linking from the cards or by Sage; rows
     of plots that are not the reader's kept fields can be linked by a printed position only. As before this
     rule, the farm's records are those of the project whose map with this photo was edited last.
+
+27. A kept field can carry the farm's own name ("Block A"; `field_taps.name_field`, "Name" on the picked field).
+    The field keeps its number: the name is said with it ("Block A · field 7", `field_facts.name`) on the panel,
+    the cards and to Sage, and the number stays the label on the photo. A name needs a letter (a bare number
+    would read as another field's number) and is at most 40 letters; an empty name takes it off. A document that
+    uses the same name is offered for the field (rule 26), never linked by the name. Naming changes the fields'
+    version, so the cards read the plots again; counts, cover and checks are kept by outline and stay.
 
 ## What was measured (plans/PLAN_RWANDA_CROPS.md, 2026-11-12)
 

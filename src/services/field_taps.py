@@ -731,6 +731,32 @@ async def remove(s3: Any, bucket: str, photo_key: str, layer_id: str, outline_id
     return True
 
 
+MAX_NAME = 40  # letters of a field's own name
+
+
+async def name_field(s3: Any, bucket: str, photo_key: str, layer_id: str, outline_id: str,
+                     name: str) -> Optional[dict[str, Any]]:
+    """Give a kept field the farm's own name for it ("Block A"), or take the name off with an empty one; None when
+    there is no such field. The field keeps its number: the name is said with it, never in its place. A name needs
+    a letter, since a bare number would read as another field's number."""
+    clean = " ".join(name.split())
+    if len(clean) > MAX_NAME:
+        raise TapError(f"A field's name can be up to {MAX_NAME} letters long.")
+    if clean and not any(ch.isalpha() for ch in clean):
+        raise TapError("A name needs a letter: a number alone would read as a field's number.")
+    async with _lock(photo_key, layer_id):
+        rows, following = await _kept_record(s3, bucket, photo_key, layer_id)
+        row = next((r for r in rows if r["id"] == outline_id), None)
+        if row is None:
+            return None
+        if clean:
+            row["name"] = clean
+        else:
+            row.pop("name", None)
+        await _store_kept(s3, bucket, photo_key, layer_id, rows, following)
+    return row
+
+
 # Why a tap ended without a kept outline. Kept and turned-down taps together are every tap that was answered, so
 # the share that was kept can be counted instead of guessed.
 TURN_DOWN_REASONS = ("none_of_these", "started_again", "closed", "no_outline")

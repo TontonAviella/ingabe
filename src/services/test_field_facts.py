@@ -106,3 +106,7 @@ async def test_a_plot_carries_the_kept_fields_cover_count_and_check(monkeypatch)
     assert (await field_facts.of_plots(None, "b", "photo", "L1", plots))[0].plants_said.startswith("about 700 plants")
     monkeypatch.setattr(plant_finder, "counted", broken)
     assert field_facts.said((await field_facts.of_plots(None, "b", "photo", "L1", plots))[0]) == "Field 3 · 0.18 ha · green cover 62%"
+
+
+def test_a_field_the_reader_named_is_said_with_its_name_and_its_number():
+    assert field_facts.name(7, True, "Block A") == "Block A · field 7"

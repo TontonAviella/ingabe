@@ -31,11 +31,13 @@ export interface KeptOutline {
   corrections: number;
   /** true: the reader moved the line by hand; the area is of their line, not the model's. */
   by_hand?: boolean;
+  /** The farm's own name for the field ("Block A"), when the reader gave one. Said with the number, never instead. */
+  name?: string;
   kept_at: string;
   /** Share of the field under living green plants (0..1), or why it was not measured. Missing until measured. */
   green_cover?: { share: number | null; why_not: string | null };
   /** What is known of the field in the words the cards and Sage use too (src/services/field_facts.py). */
-  facts?: { area_said: string; plants_said: string | null; checked_said: string | null; records_said?: string[] };
+  facts?: { name?: string; area_said: string; plants_said: string | null; checked_said: string | null; records_said?: string[] };
 }
 
 /** A row of the farm's documents (a lab sample, a harvest) and the kept field it is linked to, if any. */
@@ -246,6 +248,15 @@ export function useKeepOutline(layerId: string | null) {
   const client = useQueryClient();
   return useMutation<KeptOutline, ServerError, { taps: Tap[]; pick: number; moved?: Corner[] }>({
     mutationFn: (body) => sendJson<KeptOutline>(`${url(layerId as string)}/kept`, 'POST', body),
+    onSuccess: () => fieldsChanged(client, layerId),
+  });
+}
+
+/** Give a kept field the farm's own name (empty: take it off). The cards and Sage then say it too. */
+export function useNameField(layerId: string | null) {
+  const client = useQueryClient();
+  return useMutation<KeptOutline, ServerError, { id: string; name: string }>({
+    mutationFn: ({ id, name }) => sendJson<KeptOutline>(`${url(layerId as string)}/kept/${id}/name`, 'PUT', { name }),
     onSuccess: () => fieldsChanged(client, layerId),
   });
 }

@@ -77,14 +77,14 @@ async def plot_maps(conn: Any, layer_id: str, bounds: list[float]) -> list[tuple
 async def outlined_fields(s3: Any, bucket: str, layer_id: str,
                           metadata: dict[str, Any]) -> Optional[tuple[drone_plots.PlotMap, str]]:
     """(source, version) for the fields the reader outlined on this photo layer, or None when there are none or the
-    FIELD_TAPS switch is off. The version changes when a field is kept, removed or its line moved. The fields
+    FIELD_TAPS switch is off. The version changes when a field is kept, removed, named or its line moved. The fields
     belong to the layer, not to the stored image copies of it share."""
     if not field_taps.enabled():
         return None
     rows = await field_taps.kept(s3, bucket, photo_key(metadata), layer_id)
     if not rows:
         return None
-    said = json.dumps([[row["id"], row["number"], row["geometry"]] for row in rows], sort_keys=True)
+    said = json.dumps([[row["id"], row["number"], row["geometry"], row.get("name")] for row in rows], sort_keys=True)
     return (drone_plots.PlotMap(layer_id=FIELDS, name=FIELDS_NAME, shapes=len(rows)),
             f"{FIELDS}:{hashlib.sha256(said.encode()).hexdigest()[:16]}")
 
@@ -107,7 +107,7 @@ def chosen_source(metadata: dict[str, Any], maps: list[tuple[drone_plots.PlotMap
 async def _field_plots(s3: Any, bucket: str, layer_id: str, metadata: dict[str, Any]) -> list[drone_plots.MapPlot]:
     """The reader's outlined fields as plots; each keeps its field number as its plot number."""
     rows = await field_taps.kept(s3, bucket, photo_key(metadata), layer_id)
-    return [drone_plots.MapPlot(shape(row["geometry"]), number=row["number"]) for row in rows]
+    return [drone_plots.MapPlot(shape(row["geometry"]), name=row.get("name"), number=row["number"]) for row in rows]
 
 
 async def plots_from_chosen_map(
