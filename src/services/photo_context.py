@@ -8,6 +8,7 @@ DRONE_VISION_SURVEY is on (drone_vision.survey_enabled).
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from typing import Any, Optional
 
@@ -19,12 +20,15 @@ from src.services import (
     drone_vision,
     farm_records,
     field_checks,
+    field_facts,
     photo_plots,
     reader_roles,
 )
 from src.services.remote_cog_layer import validate_remote_cog_bounds
 from src.services.shown_maps import SHOWN_MAPS_SQL
 from src.structures import async_read_conn
+
+logger = logging.getLogger(__name__)
 
 LONG_URL_SECONDS = 4 * 3600  # the plot search and the survey read the photo for many minutes
 
@@ -203,7 +207,13 @@ async def load(s3: Any, bucket: str, *, layer_id: str, name: str, bounds: Any, m
                               scope=drone_vision.reference_scope(org_id, user_id), start=start_jobs,
                               retry_failed=retry_failed, layer_id=layer_id)
              if plots is not None else PlotLooks())
-    here = drone_cards.Here(photos=max(1, int(photos_here or 0)), plots=plots, plot_job=plot_job,
+    fields: list[field_facts.FieldFacts] = []
+    if plots is not None:
+        try:
+            fields = await field_facts.of_plots(s3, bucket, photo_plots.photo_key(metadata), layer_id, plots)
+        except Exception:  # the cards still answer, without the per-field facts gathered from the other surfaces
+            logger.exception("photo context: the fields' facts could not be read for layer %s", layer_id)
+    here = drone_cards.Here(fields=tuple(fields), photos=max(1, int(photos_here or 0)), plots=plots, plot_job=plot_job,
                             plot_maps=tuple(m for m, _ in maps), plot_map=plot_map, plot_map_error=map_error,
                             survey=looks.survey, survey_job=looks.survey_job,
                             vision_looks=drone_vision.survey_enabled(), seed=seed,

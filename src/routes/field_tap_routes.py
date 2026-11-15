@@ -14,7 +14,7 @@ from src.database.models import LAYER_TYPE_RASTER, MapLayer
 from src.dependencies.dag import edit_layer, get_layer
 from src.dependencies.session import UserContext, verify_session_required
 from src.routes.switched_routes import switched_route
-from src.services import count_check, field_taps, industry, my_crop, photo_context, photo_plots, plant_finder
+from src.services import count_check, field_facts, field_taps, industry, my_crop, photo_context, photo_plots, plant_finder
 from src.structures import async_read_conn
 from src.utils import get_async_s3_client, get_bucket_name, get_s3_client
 
@@ -101,7 +101,25 @@ async def get_field_taps(layer: MapLayer = Depends(get_layer),
     s3, bucket = await get_async_s3_client(), get_bucket_name()
     # a link that outlasts the background job measuring green cover, as the other background photo readers use
     cog_url = await photo_context.cog_url(s3, bucket, layer.metadata_dict or {}, photo_context.LONG_URL_SECONDS)
-    return await field_taps.state(s3, bucket, key, layer.layer_id, cog_url)
+    state = await field_taps.state(s3, bucket, key, layer.layer_id, cog_url)
+    state["kept"] = await _with_facts(state["kept"], s3, bucket, key, layer.layer_id)
+    return state
+
+
+async def _with_facts(rows: list[dict[str, Any]], s3: Any, bucket: str, key: str, layer_id: str) -> list[dict[str, Any]]:
+    """Each kept field with what is known of it in the words every surface uses (field_facts): its size, and its
+    plant count and a person's check of it once Sage counted it. Reads only; a field whose facts cannot be read is
+    still shown."""
+    if not rows:
+        return rows
+    known: dict[str, field_facts.FieldFacts] = {}
+    try:
+        known = await field_facts.of_kept(s3, bucket, key, layer_id)
+    except Exception:
+        logger.exception("field taps: the facts of the kept fields could not be read")
+    return [{**row, "facts": {"area_said": known[row["id"]].area_said, "plants_said": known[row["id"]].plants_said,
+                              "checked_said": known[row["id"]].checked_said}} if row["id"] in known else row
+            for row in rows]
 
 
 @router.post("/layer/{layer_id}/field-taps/outline", operation_id="outline_field_from_taps")

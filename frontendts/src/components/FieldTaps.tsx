@@ -504,7 +504,11 @@ export function FieldTaps({
           map={map}
           layerId={layerId}
           field={selected}
-          onSaved={() => void client.invalidateQueries({ queryKey: ['field-count-check', layerId, selected.id] })}
+          onSaved={() => {
+            // a check is a fact of the field: the field's row, the question cards and their answers all carry it
+            for (const key of ['field-count-check', 'field-taps', 'drone-cards', 'drone-card-answer'])
+              void client.invalidateQueries({ queryKey: [key, layerId] });
+          }}
           onClose={() => setChecking(false)}
         />
       )}
@@ -512,9 +516,10 @@ export function FieldTaps({
         <div className="flex flex-col gap-2">
           <div className="flex items-center justify-between gap-3">
             <span className="text-[14px] font-semibold">
-              Field {selected.number} · {ha(selected.area_ha)}
+              Field {selected.number} · {selected.facts?.area_said ?? ha(selected.area_ha)}
               {selected.by_hand ? ' · by hand' : ''}
               {coverText(selected) ? ` · ${coverText(selected)}` : ''}
+              {selected.facts?.plants_said ? ` · ${selected.facts.plants_said}` : ''}
             </span>
             {!removing && (
               <button type="button" className={link} onClick={() => setRemoving(true)}>
