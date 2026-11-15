@@ -194,10 +194,15 @@ with up to six more taps ("this part too" / "not this part"), and keep it with i
 
 27. A kept field can carry the farm's own name ("Block A"; `field_taps.name_field`, "Name" on the picked field).
     The field keeps its number: the name is said with it ("Block A · field 7", `field_facts.name`) on the panel,
-    the cards and to Sage, and the number stays the label on the photo. A name needs a letter (a bare number
-    would read as another field's number) and is at most 40 letters; an empty name takes it off. A document that
-    uses the same name is offered for the field (rule 26), never linked by the name. Naming changes the fields'
-    version, so the cards read the plots again; counts, cover and checks are kept by outline and stay.
+    the cards' labels and to Sage, and the number stays the label on the photo and in the cards' sentences. A name
+    may not read as a field's number once the words for a field are taken off ("Field 8", "Block 3"), read like
+    a measurement (ha, m², %, plants, cover), repeat another field's name on the photo, or hold marks other than
+    letters, numbers, spaces and hyphens (so it cannot start a spreadsheet formula, hide a character, or close a
+    quote in a question for Sage); it is at most 40 letters; an empty name takes it off. The panel's "Ask Sage"
+    sends the field's number only: Sage reads the name from its own findings, as data. A document
+    that uses the same name is offered for the field (rule 26), never linked by the name. Names are laid over
+    the measured plots when they are read (`photo_plots._with_field_names`, `properties.field_name`) and are no
+    part of them: naming a field measures nothing again, so fingerprints, looks, counts, cover and checks stay.
 
 ## What was measured (plans/PLAN_RWANDA_CROPS.md, 2026-11-12)
 

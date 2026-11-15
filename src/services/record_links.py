@@ -32,7 +32,7 @@ from shapely.ops import transform, unary_union
 from shapely.validation import make_valid
 
 from src.services import farm_records
-from src.services.field_facts import area_said
+from src.services.field_facts import area_said, own_name
 
 logger = logging.getLogger(__name__)
 
@@ -230,11 +230,11 @@ def _size_note(row: Row, props: dict[str, Any]) -> Optional[str]:
 def _by_name(row: Row, fields: list[tuple[int, Any, dict[str, Any]]]) -> Optional[tuple[int, str]]:
     keys = {name_key(n) for n in row.names} - {""}
     hits = [(number, props) for number, _, props in fields
-            if keys & {name_key(props.get("name")), name_key(str(number))} - {""}]
+            if keys & {name_key(own_name(props)), name_key(str(number))} - {""}]
     if len(hits) != 1:
         return None
     number, props = hits[0]
-    same = "name" if name_key(props.get("name")) in keys else "number"
+    same = "name" if name_key(own_name(props)) in keys else "number"
     return number, f"the document uses the same {same}; that alone does not make it the same land"
 
 

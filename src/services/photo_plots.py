@@ -7,6 +7,7 @@ One home for this choice, so the question cards and Sage number the same plots t
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import hashlib
 import json
 import logging
@@ -77,14 +78,14 @@ async def plot_maps(conn: Any, layer_id: str, bounds: list[float]) -> list[tuple
 async def outlined_fields(s3: Any, bucket: str, layer_id: str,
                           metadata: dict[str, Any]) -> Optional[tuple[drone_plots.PlotMap, str]]:
     """(source, version) for the fields the reader outlined on this photo layer, or None when there are none or the
-    FIELD_TAPS switch is off. The version changes when a field is kept, removed, named or its line moved. The fields
+    FIELD_TAPS switch is off. The version changes when a field is kept, removed or its line moved. The fields
     belong to the layer, not to the stored image copies of it share."""
     if not field_taps.enabled():
         return None
     rows = await field_taps.kept(s3, bucket, photo_key(metadata), layer_id)
     if not rows:
         return None
-    said = json.dumps([[row["id"], row["number"], row["geometry"], row.get("name")] for row in rows], sort_keys=True)
+    said = json.dumps([[row["id"], row["number"], row["geometry"]] for row in rows], sort_keys=True)
     return (drone_plots.PlotMap(layer_id=FIELDS, name=FIELDS_NAME, shapes=len(rows)),
             f"{FIELDS}:{hashlib.sha256(said.encode()).hexdigest()[:16]}")
 
@@ -107,7 +108,21 @@ def chosen_source(metadata: dict[str, Any], maps: list[tuple[drone_plots.PlotMap
 async def _field_plots(s3: Any, bucket: str, layer_id: str, metadata: dict[str, Any]) -> list[drone_plots.MapPlot]:
     """The reader's outlined fields as plots; each keeps its field number as its plot number."""
     rows = await field_taps.kept(s3, bucket, photo_key(metadata), layer_id)
-    return [drone_plots.MapPlot(shape(row["geometry"]), name=row.get("name"), number=row["number"]) for row in rows]
+    return [drone_plots.MapPlot(shape(row["geometry"]), number=row["number"]) for row in rows]
+
+
+async def _with_field_names(s3: Any, bucket: str, layer_id: str, metadata: dict[str, Any],
+                            plots: drone_plots.PlotSet) -> drone_plots.PlotSet:
+    """The outlined fields' plots carrying the names the reader gave them (properties.field_name). Names are laid
+    over the measured plots when they are read and are no part of them: naming a field must not measure the plots
+    again, which would throw away every fingerprint and look made on them."""
+    names = {row["number"]: row["name"] for row in await field_taps.kept(s3, bucket, photo_key(metadata), layer_id)
+             if row.get("name")}
+    if not names:
+        return plots
+    features = [{**f, "properties": {**f["properties"], "field_name": names[f["properties"]["number"]]}}
+                if f["properties"]["number"] in names else f for f in plots.geojson["features"]]
+    return dataclasses.replace(plots, geojson={**plots.geojson, "features": features})
 
 
 async def plots_from_chosen_map(
@@ -135,6 +150,11 @@ async def plots_from_chosen_map(
     except Exception as exc:  # the cards say the map could not be read and use the plots Ingabe found
         logger.exception("plot map %s could not be read for %s", plot_map.layer_id, layer_id)
         return None, None, f"{plot_map.name} could not be read ({str(exc)[:120]})"
+    if plot_map.layer_id == FIELDS and plots is not None:
+        try:
+            plots = await _with_field_names(s3, bucket, layer_id, metadata, plots)
+        except Exception:  # the fields are then said by their numbers alone
+            logger.exception("the names of the outlined fields could not be read for %s", layer_id)
     return plots, plot_map.layer_id, None
 
 

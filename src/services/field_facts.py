@@ -52,6 +52,12 @@ def name(number: int, of_outlined: bool, own: Optional[str] = None) -> str:
     return f"{'Field' if of_outlined else 'Plot'} {number}"
 
 
+def own_name(props: dict[str, Any]) -> Optional[str]:
+    """The reader's own name for a plot: from their map ("name"), or given to a field they outlined
+    ("field_name", laid over the plots when read: photo_plots)."""
+    return props.get("name") or props.get("field_name")
+
+
 def area_said(area_ha: float) -> str:
     """A field's size as it is said everywhere: whole hectares from 10 ha, a decimal from 1 ha, two from 0.05 ha,
     and square metres below that (the frontend's `ha` in FieldTaps.tsx words an outline being drawn the same way)."""
@@ -169,7 +175,7 @@ async def of_plots(s3: Any, bucket: str, photo_key: str, layer_id: str, plots: A
         if row is not None and not same_field(row["geometry"], feature["geometry"]):
             row = None
         count = _counted(counts.get(plant_finder.answer_key(photo_key, feature)))
-        out.append(_facts(props["number"], name(props["number"], of_outlined, props.get("name")), props["area_ha"], row,
+        out.append(_facts(props["number"], name(props["number"], of_outlined, own_name(props)), props["area_ha"], row,
                           field_taps.cover_share(row) if row is not None and covered else None, count,
                           await _check(s3, bucket, photo_key, layer_id, row, count), records))
     return out

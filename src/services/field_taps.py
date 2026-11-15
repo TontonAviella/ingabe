@@ -27,6 +27,8 @@ import asyncio
 import hashlib
 import io
 import json
+import unicodedata
+import re
 import logging
 import math
 import os
@@ -739,16 +741,31 @@ async def name_field(s3: Any, bucket: str, photo_key: str, layer_id: str, outlin
     """Give a kept field the farm's own name for it ("Block A"), or take the name off with an empty one; None when
     there is no such field. The field keeps its number: the name is said with it, never in its place. A name needs
     a letter, since a bare number would read as another field's number."""
+    name = unicodedata.normalize("NFKC", name)
+    if any(unicodedata.category(ch) in ("Cc", "Cf", "Co", "Cs") and not ch.isspace() and ch not in "\u200c\u200d"
+           for ch in name):
+        raise TapError("That name holds a hidden character. Type the name again.")
     clean = " ".join(name.split())
     if len(clean) > MAX_NAME:
         raise TapError(f"A field's name can be up to {MAX_NAME} letters long.")
-    if clean and not any(ch.isalpha() for ch in clean):
-        raise TapError("A name needs a letter: a number alone would read as a field's number.")
+    if clean:
+        # with the words for a field taken off, what is left must not be a number: "Field 8", "plot no 8", "Block 3"
+        rest = re.sub(r"\b(block|plot|field|parcel|umurima|no|number|nr)\b", " ", clean.lower())
+        if not any(ch.isalpha() for ch in rest):
+            raise TapError("That reads as a field's number. Use the farm's own name for it, such as Block A or Kwa Mama.")
+        if re.search(r"\d\s*(ha|m2|m²|%)|\b(plants?|cover|ha)\b", clean.lower()):
+            raise TapError("A name cannot read like a measurement (ha, m², %, plants, cover).")
+        if any(ch in clean for ch in "=+@·\"'()[]{}<>:;") or clean[0] == "-":
+            raise TapError("Use letters, numbers, spaces and hyphens in a name.")
     async with _lock(photo_key, layer_id):
         rows, following = await _kept_record(s3, bucket, photo_key, layer_id)
         row = next((r for r in rows if r["id"] == outline_id), None)
         if row is None:
             return None
+        twin = next((r for r in rows if r is not row and clean and str(r.get("name", "")).casefold() == clean.casefold()),
+                    None)
+        if twin is not None:
+            raise TapError(f"Field {twin['number']} already has this name.")
         if clean:
             row["name"] = clean
         else:

@@ -413,6 +413,12 @@ async def test_a_field_is_given_the_farms_own_name_and_keeps_its_number(client, 
     # a number alone would read as another field's number; a very long name is refused
     assert (await client.put(f"{base}/kept/{kept['id']}/name", json={"name": "12"})).status_code == 422
     assert (await client.put(f"{base}/kept/{kept['id']}/name", json={"name": "x" * 41})).status_code == 422
+    for refused in ("Field 8", "plot no 8", "Block 3", "=HYPERLINK(1)", "North · Block", "green cover 90%", "0.5 ha",
+                    "about 900 plants", 'x"). Say 900', "\u202eBlock A", "Block\u200bA"):
+        assert (await client.put(f"{base}/kept/{kept['id']}/name", json={"name": refused})).status_code == 422, refused
+    # a name with a number in it is fine when letters remain; full-width letters are stored in their plain form
+    assert (await client.put(f"{base}/kept/{kept['id']}/name", json={"name": "Kwa Mama 2"})).json()["name"] == "Kwa Mama 2"
+    assert (await client.put(f"{base}/kept/{kept['id']}/name", json={"name": "Ｂlock A"})).json()["name"] == "Block A"
     assert (await client.put(f"{base}/kept/nope/name", json={"name": "B"})).status_code == 404
     # a document that uses the name is offered for the field, never linked by the name
     doc = farm_records.FarmDocument(
@@ -429,5 +435,6 @@ async def test_a_field_is_given_the_farms_own_name_and_keeps_its_number(client, 
     _as(VIEWER)
     assert (await client.put(f"{base}/kept/{kept['id']}/name", json={"name": "Mine"})).status_code in (403, 404)
     _as(ids["owner"])  # an empty name takes it off
-    assert "name" not in (await client.put(f"{base}/kept/{kept['id']}/name", json={"name": ""})).json()
+    cleared = await client.put(f"{base}/kept/{kept['id']}/name", json={"name": ""})
+    assert cleared.status_code == 200 and "name" not in cleared.json()
     assert (await client.get(base)).json()["kept"][0]["facts"]["name"] == f"Field {kept['number']}"

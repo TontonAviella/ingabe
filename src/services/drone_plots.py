@@ -341,9 +341,7 @@ def _plot_set(ds: Any, found: list[_Outline], source: str, seconds: float) -> Pl
         props: dict[str, Any] = {
             "number": number,
             "name": outline.name,
-            # a field the reader outlined is found on the photo by its number, also once it has a name
-            "tag": (outline.name if outline.name and len(outline.name) <= TAG_CHARS and outline.number is None
-                    else str(number)),
+            "tag": outline.name if outline.name and len(outline.name) <= TAG_CHARS else str(number),
             "area_ha": round(ground_area.area_ha(wgs84), 3),
             "greenness": None if greenness is None else round(greenness, 4),
             "bare_share": None if bare is None else round(bare, 3),

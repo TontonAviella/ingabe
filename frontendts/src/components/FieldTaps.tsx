@@ -69,6 +69,9 @@ const ha = (value: number) => {
 const coverText = (field: KeptOutline) =>
   typeof field.green_cover?.share === 'number' ? `green cover ${Math.round(field.green_cover.share * 100)}%` : '';
 // 44 px tall under a finger, 36 px with a mouse
+/** A kept field's name while the server's wording of it is not at hand: the same words (field_facts.name). */
+const fieldName = (k: KeptOutline) => (k.name ? `${k.name} · field ${k.number}` : `Field ${k.number}`);
+
 const link = 'inline-flex min-h-11 cursor-pointer items-center px-2 text-[12.5px] text-fg-soft underline sm:min-h-9';
 
 const closed = (ring: Corner[]): GeoJSON.Polygon => ({ type: 'Polygon', coordinates: [[...ring, ring[0]]] });
@@ -521,7 +524,7 @@ export function FieldTaps({
         <div className="flex flex-col gap-2">
           <div className="flex items-center justify-between gap-3">
             <span className="text-[14px] font-semibold">
-              {selected.facts?.name ?? `Field ${selected.number}`} · {selected.facts?.area_said ?? ha(selected.area_ha)}
+              {selected.facts?.name ?? fieldName(selected)} · {selected.facts?.area_said ?? ha(selected.area_ha)}
               {selected.by_hand ? ' · by hand' : ''}
               {coverText(selected) ? ` · ${coverText(selected)}` : ''}
               {selected.facts?.plants_said ? ` · ${selected.facts.plants_said}` : ''}
@@ -542,6 +545,7 @@ export function FieldTaps({
               className="flex flex-wrap items-center gap-2"
               onSubmit={(e) => {
                 e.preventDefault();
+                if (rename.isPending) return;
                 rename.mutate(
                   { id: selected.id, name: naming },
                   {
@@ -565,7 +569,14 @@ export function FieldTaps({
               <button type="submit" className={strong} disabled={rename.isPending}>
                 Save
               </button>
-              <button type="button" className={plain} onClick={() => setNaming(null)}>
+              <button
+                type="button"
+                className={plain}
+                onClick={() => {
+                  setNaming(null);
+                  setProblem(null);
+                }}
+              >
                 Cancel
               </button>
               <span className="basis-full text-[12px] text-fg-muted">
@@ -627,7 +638,7 @@ export function FieldTaps({
                 if (!asked) return;
                 const [lon, lat] = selected.centre;
                 onAskSage(
-                  `About Field ${selected.number}${selected.name ? ` (which I call "${selected.name}")` : ''} on the drone photo "${photo?.name ?? ''}" (plot ${selected.number} of my outlined fields: ${ha(selected.area_ha)}${coverText(selected) ? `, ${coverText(selected)}` : ''}, centred at latitude ${lat}, longitude ${lon}): ${asked}`,
+                  `About Field ${selected.number} on the drone photo "${photo?.name ?? ''}" (plot ${selected.number} of my outlined fields: ${ha(selected.area_ha)}${coverText(selected) ? `, ${coverText(selected)}` : ''}, centred at latitude ${lat}, longitude ${lon}): ${asked}`,
                 );
                 setQuestion('');
               }}
@@ -824,7 +835,7 @@ export function FieldTaps({
                   map?.easeTo({ center: k.centre, offset: [0, -140] });
                 }}
               >
-                {k.facts?.name ?? `Field ${k.number}`} · {ha(k.area_ha)}
+                {k.facts?.name ?? fieldName(k)} · {ha(k.area_ha)}
                 {coverText(k) ? ` · ${coverText(k)}` : ''}
                 {k.by_hand ? ' · by hand' : ''}
               </button>

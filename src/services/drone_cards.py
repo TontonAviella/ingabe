@@ -840,7 +840,7 @@ def _plot_label(plot: dict[str, Any], plots: Optional[drone_plots.PlotSet] = Non
     field the reader outlined is "Field 7" everywhere."""
     if plot.get("_label"):
         return plot["_label"]
-    return field_facts.name(plot["number"], field_facts.outlined(plots), plot.get("name"))
+    return field_facts.name(plot["number"], field_facts.outlined(plots), field_facts.own_name(plot))
 
 
 def _named(plot: dict[str, Any], plots: Optional[drone_plots.PlotSet]) -> dict[str, Any]:
@@ -2046,9 +2046,12 @@ def _asks(card_id: str, analysis: PhotoAnalysis, here: Here, items: list[dict[st
     ctx = _context(analysis)
     crop = _main_crop(here) or "the crop"
     # Items are plots: their id is the plot number, their title "<name> · plot <n>" or "Plot <n>".
-    shown = [{"number": i["id"], "name": i["title"].split(" · ")[0] if " · " in i["title"] else None} for i in items[:3]]
+    # A field the reader outlined is asked about by its number, also once it has a name: Sage finds a plot by number.
+    by_number = field_facts.outlined(here.plots)
+    shown = [{"number": i["id"], "name": i["title"].split(" · ")[0] if " · " in i["title"] and not by_number else None}
+             for i in items[:3]]
     names = _plot_names(shown) if shown else None
-    first = items[0]["title"].split(" · ")[0] if items else None
+    first = (f"Field {items[0]['id']}" if by_number else items[0]["title"].split(" · ")[0]) if items else None
     rain = ("Has it rained enough here?", f"{ctx}: how much rain fell here in the last 30 days compared with "
                                           f"normal for this season, and is {crop} short of water?")
     asks: dict[str, list[tuple[str, str]]] = {
@@ -2110,7 +2113,7 @@ def _asks(card_id: str, analysis: PhotoAnalysis, here: Here, items: list[dict[st
         smallest = min(_countable_plots(here), key=lambda p: p["number"], default=None) if _countable(analysis) else None
         if smallest is None:
             return []
-        named = field_facts.name(smallest["number"], field_facts.outlined(here.plots), smallest.get("name"))
+        named = field_facts.name(smallest["number"], field_facts.outlined(here.plots), field_facts.own_name(smallest))
         asks["plant_count"] = [(f"How many plants are in {named}?",
                                 f"{ctx}: how many plants are in {named} (plot number {smallest['number']})?")]
     chosen = asks.get(card_id) or [(f"Ask Sage: {_CARD_BY_ID[card_id].question.lower()}",

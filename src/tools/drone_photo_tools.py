@@ -176,7 +176,7 @@ async def count_plants_in_plot(args: CountPlantsArgs, meta: IngabeToolCallMetaAr
         await plant_finder.save_found(s3, bucket, key, feature, found)
     else:  # a count kept before the photo had its record of counts joins it now, so every surface shows it
         await plant_finder.note_counted(s3, bucket, key, feature, found)
-    name = field_facts.name(args.plot_number, field_facts.outlined(plots), feature["properties"].get("name"))
+    name = field_facts.name(args.plot_number, field_facts.outlined(plots), field_facts.own_name(feature["properties"]))
     if found.squares_counted == 0:
         return {"status": "error",
                 "error": (f"Plants cannot be counted in {name}: in every part of it the picture check found ground "
