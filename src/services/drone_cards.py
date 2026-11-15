@@ -48,6 +48,7 @@ from src.services import (
     field_checks,
     ground_area,
     isdasoil_service,
+    plant_finder,
     reader_roles,
     wapor_service,
 )
@@ -619,6 +620,13 @@ def _survey_status(here: Here) -> str:
     return WORKING if any(_running(job) for job in jobs) else PARTLY
 
 
+def _countable(analysis: PhotoAnalysis) -> bool:
+    """Whether the plant finder may be used on this photo: it was taught and tested at one pixel size only."""
+    size = analysis.look.resolution_cm
+    low, high = plant_finder.PIXEL_M
+    return analysis.camera == "colour" and size is not None and low * 100 <= size <= high * 100
+
+
 def _status(card_id: str, analysis: PhotoAnalysis, here: Here) -> str:
     if card_id in ("weak_spots", "bare_ground"):
         return READY
@@ -638,6 +646,8 @@ def _status(card_id: str, analysis: PhotoAnalysis, here: Here) -> str:
         return NEEDS_CAMERA if analysis.camera == "colour" else TO_BUILD
     if card_id == "growth":
         return NEEDS_FLIGHT if here.photos < 2 else TO_BUILD
+    if card_id == "plant_count":
+        return PARTLY if _countable(analysis) else CANT_TELL
     if card_id == "learn_camera":
         return LEARN
     return TO_BUILD
@@ -710,11 +720,13 @@ def _preview(card_id: str, analysis: PhotoAnalysis, here: Here) -> str:
         return ("This is the only photo of this place. Fly again to compare."
                 if here.photos < 2 else "Height and greenness against the last flight.")
     if card_id == "plant_count":
-        return "Every plant counted, gaps marked, checked against 3 hand counts."
+        if _countable(analysis):
+            return "An estimate field by field, drawn as a ring on each plant; you can check it yourself."
+        return "This photo's pixels are not the size plants can be counted at yet."
     if card_id == "yield":
         return "A harvest range for each field that narrows through the season."
     if card_id == "spray":
-        return "Spray zones and the area to treat, from the pest map."
+        return "Spray zones and the area to treat. Today: weeds, grass and bush drawn field by field, on request."
     if card_id == "history":
         rows = farm_records.harvests(list(here.records))
         if rows:
@@ -1704,7 +1716,8 @@ _COMING = {
               "plant counts, growth, weather, and past harvests to learn from"),
     "spray": ("spray zones and the area to treat, with a route or file for the sprayer",
               "Spraying only where it is needed protects the crop, the workers and the water around the field.",
-              "the pest, weed or disease map from the pests question"),
+              "the map of green that is not the crop (Ingabe already draws it field by field: ask Sage where the "
+              "weeds are in a field), turned into zones, and a check on foot before spraying"),
 }
 
 
@@ -1718,6 +1731,41 @@ def _coming(card_id: str, analysis: PhotoAnalysis, audience: str, here: Here) ->
         why=why, todo=f"What it needs: {needs}.",
         how_sure=_how_sure("low", [f"Not answered yet: {STATUS_LABELS[status].lower()}"], None),
         terms=["near_infrared"] if card_id == "fertilizer" else [], audience=audience)
+
+
+def _plant_count(analysis: PhotoAnalysis, audience: str, here: Here) -> dict[str, Any]:
+    """Stand count as it exists today: an estimate for one field at a time, on request, that the reader can check."""
+    size = analysis.look.resolution_cm
+    low, high = (round(v * 100, 1) for v in plant_finder.PIXEL_M)
+    if not _countable(analysis):
+        pixels = f"{size:.1f} cm" if size is not None else "an unknown size"
+        why_not = ("it is not a normal colour photo" if analysis.camera != "colour"
+                   else f"its pixels are {pixels}, and plants are counted only at {low} to {high} cm")
+        return _answer(
+            "plant_count", analysis, here,
+            what=f"Plants cannot be counted on this photo yet: {why_not}.",
+            why="The plant finder was taught and tested at one pixel size. At another it has not been measured, so "
+                "it gives no number instead of an untested one.",
+            todo=f"A photo of this place with pixels of {low} to {high} cm can be counted.",
+            how_sure=_how_sure("low", ["Not counted on this photo"], None), terms=[], audience=audience)
+    fields = (f"{here.plots.count} {'fields you outlined' if here.plots.source == drone_plots.OUTLINED_FIELDS_NAME else 'plots'}"
+              if here.plots is not None else "the plots, once they are found")
+    return _answer(
+        "plant_count", analysis, here,
+        what=(f"Plants are counted one field at a time, when you ask, in {fields} of up to "
+              f"{plant_finder.MAX_PLOT_HA} ha. The answer is \"about N plants\", a ring drawn on each plant counted, and "
+              "the share of the field that could be counted. Parts where single plants cannot be told apart (closed "
+              "canopy, pasture, bush) are left out and said."),
+        why="Knowing early how many plants came up tells you whether to fill the gaps while there is time.",
+        todo=("Ask Sage \"how many plants are in field 3?\". Then tap that field and press Check the count: Ingabe "
+              "chooses a small part, you mark the rings that are not plants and the plants it missed, and it tells you "
+              "both counts."),
+        how_sure=_how_sure("medium", [
+            "An estimate: measured on one farm's photo, the total came within 18%",
+            "About 1 ring in 5 was not a crop plant, and about 1 plant in 10 was missed",
+            "Not measured on other farms or crops",
+        ], "Check the count on a few parts of your own field."),
+        terms=["hectare"], audience=audience)
 
 
 # --- The farm's own records: soil lab reports and harvests ------------------------------------
@@ -1889,6 +1937,7 @@ _ANSWERS: dict[str, Callable[[PhotoAnalysis, str, Here], dict[str, Any]]] = {
     "field_outlines": _field_outlines,
     "history": _history_card,
     "learn_camera": _learn_camera,
+    "plant_count": _plant_count,
 }
 
 

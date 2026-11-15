@@ -907,3 +907,19 @@ def test_roles_read_in_their_voices():
         ["farmer", "insurance", "farmer", "owner"]
     assert insurance_engine.normalize_audience("cooperative") == "farmer"  # reports keep their four voices
     assert insurance_engine.normalize_audience("technician") == insurance_engine.DEFAULT_AUDIENCE
+
+
+def test_stand_count_is_offered_only_at_the_pixel_size_it_was_measured_at(photo):
+    coarse = _analysis(photo)  # 50 cm pixels
+    assert drone_cards.statuses(coarse, drone_cards.Here())["plant_count"] == drone_cards.CANT_TELL
+    refused = drone_cards.answer_card("plant_count", coarse, "farmer", drone_cards.Here())
+    assert "50.0 cm" in refused["what"] and "2.9 to 3.6 cm" in refused["what"]
+    fine = dataclasses.replace(coarse, look=dataclasses.replace(coarse.look, resolution_cm=3.25))
+    assert drone_cards.statuses(fine, drone_cards.Here())["plant_count"] == drone_cards.PARTLY
+    answer = drone_cards.answer_card("plant_count", fine, "farmer", drone_cards.Here())
+    # what exists is said as it is: on request, an estimate, and the reader can check it
+    assert "one field at a time" in answer["what"] and "Check the count" in answer["todo"]
+    assert answer["how_sure"]["level"] == "medium" and "within 18%" in answer["how_sure"]["because"][0]
+    # more bands than colour: the finder was not measured on such a photo
+    spectral = dataclasses.replace(fine, band_count=5)
+    assert drone_cards.statuses(spectral, drone_cards.Here())["plant_count"] == drone_cards.CANT_TELL
