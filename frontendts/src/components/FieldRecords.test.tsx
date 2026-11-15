@@ -50,7 +50,7 @@ describe('FieldRecords', () => {
     await findText(/May be this field: the document uses the same number/);
     expect(mutate).not.toHaveBeenCalled();
     click(byButton('This is Field 7') as HTMLButtonElement);
-    expect(mutate).toHaveBeenCalledWith({ row: 'd:soil:0', field_id: 'f7' });
+    expect(mutate).toHaveBeenCalledWith({ row: 'd:soil:0', field_id: 'f7', linked: true });
   });
 
   it('shows a linked row with how it was linked, and lets the reader take it off', async () => {
@@ -59,6 +59,6 @@ describe('FieldRecords', () => {
     await findText(/linked by the position printed in the document/);
     expect(byButton(/Link a record/)).toBeNull(); // the other row belongs to another field
     click(byButton('Not this field') as HTMLButtonElement);
-    expect(mutate).toHaveBeenCalledWith({ row: 'd:soil:0', field_id: null });
+    expect(mutate).toHaveBeenCalledWith({ row: 'd:soil:0', field_id: 'f7', linked: false });
   });
 });

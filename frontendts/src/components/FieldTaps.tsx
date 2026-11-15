@@ -562,7 +562,7 @@ export function FieldTaps({
           {!removing && (
             <div className="flex flex-col gap-2">
               {checked.data?.checked && <p className="m-0 text-[12.5px] text-fg-soft">{checked.data.checked.said}</p>}
-              {layerId && <FieldRecords layerId={layerId} field={selected} />}
+              {layerId && <FieldRecords key={selected.id} layerId={layerId} field={selected} />}
               <div className="flex flex-wrap gap-2">
                 <button type="button" className={plain} onClick={() => setCropping(true)}>
                   Count my crop

@@ -13,7 +13,7 @@ import io
 import json
 import logging
 import uuid
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, fields
 from datetime import datetime, timezone
 from typing import Any, Optional
 
@@ -247,9 +247,16 @@ def _records_key(project_id: str) -> str:
     return f"{_STORE_PREFIX}/{project_id}/records.json"
 
 
+def _known(cls: Any, data: dict[str, Any]) -> dict[str, Any]:
+    """Only the fields this build knows, so records written by a later build still load after a step back."""
+    names = {f.name for f in fields(cls)}
+    return {k: v for k, v in data.items() if k in names}
+
+
 def _from_dict(data: dict[str, Any]) -> FarmDocument:
-    return FarmDocument(**{**data, "soil_samples": [SoilSample(**s) for s in data.get("soil_samples", [])],
-                           "harvests": [Harvest(**h) for h in data.get("harvests", [])]})
+    return FarmDocument(**{**_known(FarmDocument, data),
+                           "soil_samples": [SoilSample(**_known(SoilSample, s)) for s in data.get("soil_samples", [])],
+                           "harvests": [Harvest(**_known(Harvest, h)) for h in data.get("harvests", [])]})
 
 
 async def load_records(s3: Any, bucket: str, project_id: str) -> list[FarmDocument]:

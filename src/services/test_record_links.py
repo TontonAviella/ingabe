@@ -54,17 +54,35 @@ def test_a_matching_number_is_never_a_link_only_a_suggestion():
 
 def test_a_position_in_the_document_links_the_row_to_the_field_it_lies_in_whatever_the_names_say():
     # sample "7" was taken in the middle of the photo's Field 8
-    (row,) = record_links.resolve([_soil(("7", None, "-1.9995, 30.0015"))], {}, FIELDS)
+    (row,) = record_links.resolve([_soil(("7", None, "-1.99950, 30.00150"))], {}, FIELDS)
     assert (row.number, row.by, row.suggest) == (8, record_links.BY_DOCUMENT, None)
-    assert record_links.by_field([row]) == {8: ["Soil sample 7: pH 5.1 · N 0.10 % · P 4.0 mg/kg · K 0.20 cmol/kg (Lab, 2026-03)"]}
+    assert record_links.by_field([row]) == {8: ["Soil sample 7: pH 5.1 · N 0.10 % · P 4.0 mg/kg · K 0.20 cmol/kg (Lab, 2026-03), taken at -1.99950, 30.00150 "
+                                                 "as the document prints it"]}
 
 
 def test_a_position_near_an_edge_or_off_the_photo_is_not_a_link():
     # 2 m inside Field 7 from the edge it shares with Field 8: a GPS cannot tell those apart
-    (edge,) = record_links.resolve([_soil(("S1", None, "-1.9995, 30.00098"))], {}, FIELDS)
+    (edge,) = record_links.resolve([_soil(("S1", None, "-1.99950, 30.00098"))], {}, FIELDS)
     assert edge.number is None and edge.suggest in (7, 8) and "within 5 m" in edge.suggest_why
+    # printed to two decimals a position is good to about 550 m: never a link, however deep in a field it falls
+    (coarse,) = record_links.resolve([_soil(("S6", None, "-2.00, 30.00"))], {}, [_field(1, 29.997, south=-2.003, size=0.006)])
+    assert coarse.number is None and coarse.suggest == 1 and "only good to about" in coarse.suggest_why
+    # one position printed for every row of a document is likely the farm's, not each sample's
+    same = record_links.resolve([_soil(("S7", None, "-1.99950, 30.00150"), ("S8", None, "-1.99950, 30.00150"))], {}, FIELDS)
+    assert [(r.number, r.suggest) for r in same] == [(None, 8), (None, 8)] and "same position for 2 rows" in same[0].suggest_why
     (off,) = record_links.resolve([_soil(("S2", None, "-1.5, 29.7"))], {}, FIELDS)
-    assert off.number is None and off.suggest is None and "not on a field outlined" in off.note
+    assert off.number is None and off.suggest is None and off.elsewhere and "not on a field outlined" in off.note
+    # a minus sign as a PDF prints it is still a minus
+    assert record_links.positions("\u22121.9995, 30.0015") == record_links.positions("-1.9995, 30.0015")
+    # clearly inside Field 9 but beside a field drawn over its edge: offered for Field 9, not the neighbour
+    beside = FIELDS + [_field(10, 30.0105, size=0.00048)]
+    (both,) = record_links.resolve([_soil(("S4", None, "-1.99980, 30.01047"))], {}, beside)
+    assert both.number is None and both.suggest == 9
+    # an outline that repairs into an area and a stray line still holds its samples
+    spike = {"type": "Feature", "properties": {"number": 5, "area_ha": 1.2}, "geometry": {"type": "Polygon", "coordinates": [[
+        [31.0, -2.0], [31.001, -2.0], [31.001, -1.999], [31.002, -1.999], [31.001, -1.999], [31.0, -1.999], [31.0, -2.0]]]}}
+    (held,) = record_links.resolve([_soil(("S5", None, "-1.9995, 31.0005"))], {}, [spike])
+    assert held.number == 5
     (grid,) = record_links.resolve([_soil(("S3", None, "36M 512345 9784321"))], {}, FIELDS)
     assert grid.number is None and "cannot read" in grid.note
 
@@ -90,28 +108,41 @@ class _Store:
     async def put_object(self, Bucket, Key, Body, **_):
         self.objects[Key] = Body
 
+    async def list_objects_v2(self, Bucket, Prefix, **_):
+        return {"Contents": [{"Key": k, "ETag": str(hash(v))} for k, v in self.objects.items() if k.startswith(Prefix)]}
+
 
 @pytest.mark.asyncio
-async def test_a_persons_link_is_a_place_so_it_outlasts_the_numbering():
+async def test_a_persons_link_is_to_the_land_so_it_outlasts_the_numbering():
     s3, records = _Store(), [_harvests(("7", 0.3, None))]
     key = record_links.rows(records)[0].key
-    await record_links.keep(s3, "b", "p", key, FIELDS[2]["geometry"], 9, "user")
+    await record_links.keep(s3, "b", "p", key, FIELDS[2]["geometry"], True, "user")
     links = await record_links.load(s3, "b", "p")
     (row,) = record_links.resolve(records, links, FIELDS)
     assert (row.number, row.by) == (9, record_links.BY_PERSON)
-    # the fields are outlined again and the same land is now number 2: the link follows the land
-    again = [_field(1, 30.000), _field(2, 30.010)]
+    # the fields are outlined again, a little differently, and the same land is now number 2: the link follows the land
+    again = [_field(1, 30.000), _field(2, 30.01003)]
     assert record_links.resolve(records, links, again)[0].number == 2
     # the record says 0.3 ha, the field measures 1.2 ha: said, not hidden
     assert "0.30 ha" in row.note and "1.2 ha" in row.note and row.note in record_links.row_said(row)
-    # the land is no longer outlined: not linked, and said why; never moved to another field
+    # a different, larger field drawn later over that ground is not what the person pointed at: offered, never linked
+    other = record_links.resolve(records, links, [_field(4, 30.0095, south=-2.001, size=0.003)])[0]
+    assert other.number is None and other.suggest == 4 and "outline has changed" in other.suggest_why
+    # the land has no field on this photo: not linked, said why, and not counted as waiting to be linked here
     gone = record_links.resolve(records, links, FIELDS[:2])[0]
-    assert gone.number is None and "not outlined on this photo now" in gone.note
-    # a person can also say a row belongs to no field here, which sets aside the document's own position
-    placed = [_soil(("S9", None, "-1.9995, 30.0015"))]
+    assert gone.number is None and gone.elsewhere and "no field outlined on this photo" in gone.note
+    assert record_links.not_linked([gone]) == 0
+    # a person can say a row is not this field, which sets aside the document's own position in it, there only
+    placed = [_soil(("S9", None, "-1.99950, 30.00150"))]
     key = record_links.rows(placed)[0].key
-    await record_links.keep(s3, "b", "p", key, None, None, "user")
-    assert record_links.resolve(placed, await record_links.load(s3, "b", "p"), FIELDS)[0].number is None
+    assert record_links.resolve(placed, {}, FIELDS)[0].number == 8
+    await record_links.keep(s3, "b", "p", key, FIELDS[1]["geometry"], False, "user")
+    links = await record_links.load(s3, "b", "p")
+    assert len(links) == 2  # each row's word is its own object: two people linking at once cannot overwrite each other
+    assert record_links.resolve(placed, links, FIELDS)[0].number is None
+    # one unreadable link loses that link only
+    s3.objects["farm_records/v1/p/links/broken.json"] = b"{"
+    assert set(await record_links.load(s3, "b", "p")) == set(links)
 
 
 def test_records_kept_before_positions_were_read_still_load():

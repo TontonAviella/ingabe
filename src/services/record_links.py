@@ -6,8 +6,9 @@ field is a place; its number is a label, and the document's number is somebody e
 a field in two ways only:
 
 - the document prints a position for the row, and that position lies inside one field, clear of its edge;
-- a person says once which field the row is. What is kept is a point inside that field, not its number, so the
-  link holds when fields are outlined again or numbered differently.
+- a person says once which field the row is. What is kept is that field's outline, not its number, so the link
+  holds when fields are numbered differently or outlined again a little differently, and does not pass to a
+  different field drawn later over part of the same ground.
 
 A name or number that matches is offered as a suggestion for a person to confirm, never applied. A row that is not
 linked stays in the farm's records as "not linked to a field yet". Every surface (the cards, Sage, the field
@@ -17,6 +18,7 @@ panel) reads the links from `resolve`, and words a linked row with `row_said`.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import math
@@ -26,7 +28,7 @@ from datetime import datetime, timezone
 from typing import Any, Optional, Sequence
 
 from shapely.geometry import Point, shape
-from shapely.ops import transform
+from shapely.ops import transform, unary_union
 from shapely.validation import make_valid
 
 from src.services import farm_records
@@ -34,6 +36,7 @@ from src.services.field_facts import area_said
 
 logger = logging.getLogger(__name__)
 
+SAME_LAND = 0.5  # shared area over joined area: an outline a person pointed at and a field this alike are one land
 EDGE_M = 5.0  # a printed position closer than this to a field's edge is a suggestion, not a link: a handheld GPS
 # is good to a few metres, and a sample taken on a field's edge can be read into the next field
 SIZE_APART = 2.0  # a record's own area this many times larger or smaller than the field's measured size is said
@@ -41,7 +44,6 @@ SOIL, HARVEST = "soil", "harvest"
 BY_DOCUMENT, BY_PERSON = "document", "person"
 NOT_LINKED = "not linked to a field yet"
 _STORE_PREFIX = "farm_records/v1"
-_locks: dict[str, asyncio.Lock] = {}
 
 
 @dataclass(frozen=True)
@@ -64,6 +66,9 @@ class Linked:
     suggest: Optional[int] = None  # a field a person may confirm
     suggest_why: Optional[str] = None
     note: Optional[str] = None  # what a reader should know: sizes that disagree, a position off the photo
+    # the row has a place (a person's link, or a position the document prints) and it is on no field of this photo:
+    # another photo of the farm, or land not outlined here. It is not counted as waiting to be linked.
+    elsewhere: bool = False
 
 
 def _num(value: Optional[float], digits: int) -> str:
@@ -111,6 +116,8 @@ def row_said(linked: Linked) -> str:
     row = linked.row
     kind = "Soil sample" if row.kind == SOIL else "Harvest"
     text = f"{kind} {row.label}: {row.value}" + (f" ({row.document})" if row.document else "")
+    if linked.by == BY_DOCUMENT:  # the position it was linked by, so a reader can check it against the page
+        text += f", taken at {row.coordinates} as the document prints it"
     return f"{text}. {linked.note}" if linked.note else text
 
 
@@ -127,6 +134,8 @@ def positions(text: Optional[str]) -> list[tuple[float, float]]:
     if not text:
         return []
     plain = text.replace(",", " ").replace(";", " ")
+    for dash in "\u2212\u2013\u2014":  # a minus sign as PDFs print it
+        plain = plain.replace(dash, "-")
     angles = _ANGLE.findall(plain)
     letters = [m.upper() for m in _LETTER.findall(plain)]
     if len(angles) != 2 or len(letters) not in (0, 2):
@@ -145,6 +154,17 @@ def positions(text: Optional[str]) -> list[tuple[float, float]]:
     return [(lon, lat) for lon, lat in orders if abs(lat) <= 90 and abs(lon) <= 180]
 
 
+def precision_m(text: Optional[str]) -> float:
+    """How far off a printed position can be from its last printed digit alone, in metres: "-1.95, 30.06" is good to
+    about 550 m, five decimals to about half a metre, whole seconds of arc to about 15 m."""
+    worst = 0.0
+    for degrees, minutes, seconds in _ANGLE.findall(text or ""):
+        last, per_degree = (seconds, 3600) if seconds else (minutes, 60) if minutes else (degrees, 1)
+        decimals = len(last.split(".")[1]) if "." in last else 0
+        worst = max(worst, 0.5 * 10 ** -decimals / per_degree * 111_320)
+    return worst
+
+
 # --- Which field a point is in -------------------------------------------------------------------
 
 def name_key(name: Optional[str]) -> str:
@@ -159,28 +179,38 @@ def _in_metres(geometry: Any, lat: float) -> Any:
     return transform(lambda x, y, *_: (x * east, y * 110_540), geometry)
 
 
+def _area_of(geometry: dict[str, Any]) -> Any:
+    """An outline's area alone: repairing a broken outline can leave stray lines and points, which hold nothing."""
+    valid = make_valid(shape(geometry))
+    parts = [g for g in getattr(valid, "geoms", [valid]) if g.geom_type in ("Polygon", "MultiPolygon")]
+    if not parts:
+        raise ValueError("an outline with no area")
+    return unary_union(parts)
+
+
 def _fields(features: Sequence[dict[str, Any]]) -> list[tuple[int, Any, dict[str, Any]]]:
     out = []
     for feature in features:
         try:
-            out.append((feature["properties"]["number"], make_valid(shape(feature["geometry"])), feature["properties"]))
+            out.append((feature["properties"]["number"], _area_of(feature["geometry"]), feature["properties"]))
         except Exception:  # a broken outline holds no records; the others still do
             logger.warning("record links: an outline could not be read", exc_info=True)
     return out
 
 
-def _around(point: tuple[float, float], fields: list[tuple[int, Any, dict[str, Any]]]) -> tuple[list[int], list[int]]:
-    """(fields the point is inside and clear of the edge, fields whose edge is within EDGE_M of it)."""
+def _around(point: tuple[float, float], fields: list[tuple[int, Any, dict[str, Any]]],
+            clear_m: float) -> tuple[list[int], list[int]]:
+    """(fields the point is inside and at least `clear_m` from the edge, fields whose edge is nearer than that)."""
     lon, lat = point
     spot = _in_metres(Point(lon, lat), lat)
+    reach = clear_m / 100_000  # degrees, generously
     inside, near = [], []
     for number, outline, _ in fields:
         minx, miny, maxx, maxy = outline.bounds
-        if not (minx - 0.001 <= lon <= maxx + 0.001 and miny - 0.001 <= lat <= maxy + 0.001):
+        if not (minx - reach <= lon <= maxx + reach and miny - reach <= lat <= maxy + reach):
             continue
         metres = _in_metres(outline, lat)
-        to_edge = metres.boundary.distance(spot)
-        if to_edge < EDGE_M:
+        if metres.boundary.distance(spot) < clear_m:
             near.append(number)
         elif metres.contains(spot):
             inside.append(number)
@@ -208,34 +238,67 @@ def _by_name(row: Row, fields: list[tuple[int, Any, dict[str, Any]]]) -> Optiona
     return number, f"the document uses the same {same}; that alone does not make it the same land"
 
 
-def _resolve(row: Row, kept: Optional[dict[str, Any]], fields: list[tuple[int, Any, dict[str, Any]]]) -> Linked:
+def _same_land(then: Any, fields: list[tuple[int, Any, dict[str, Any]]]) -> tuple[Optional[int], Optional[int]]:
+    """(the field that is the land of an outline a person pointed at, a field that only shares ground with it).
+    The same land: shared area over joined area of SAME_LAND or more, so a field outlined again a little
+    differently is still it, and a different field drawn over part of the ground is not."""
+    best, number = 0.0, None
+    for n, outline, _ in fields:
+        joined = outline.union(then).area
+        share = outline.intersection(then).area / joined if joined > 0 else 0.0
+        if share > best:
+            best, number = share, n
+    if number is None:
+        return None, None
+    return (number, None) if best >= SAME_LAND else (None, number)
+
+
+def _resolve(row: Row, kept: Optional[dict[str, Any]], fields: list[tuple[int, Any, dict[str, Any]]],
+             shared: int) -> Linked:
     by_number = {number: props for number, _, props in fields}
+    refused: Optional[int] = None  # the field a person said this row is not
     if kept is not None:
-        if kept.get("none"):
-            return Linked(row)
-        # the point a person's link keeps was taken inside the field, so the edge rule does not apply to it
-        spot = Point(kept["lon"], kept["lat"])
-        here = sorted((outline.area, number) for number, outline, _ in fields if outline.contains(spot))
-        if here:
-            number = kept.get("number_then") if kept.get("number_then") in {n for _, n in here} else here[0][1]
-            return Linked(row, number=number, by=BY_PERSON, note=_size_note(row, by_number[number]))
-        return Linked(row, note="The field this was linked to is not outlined on this photo now")
+        same, overlaps = _same_land(_area_of(kept["outline"]), fields)
+        if kept.get("linked"):
+            if same is not None:
+                return Linked(row, number=same, by=BY_PERSON, note=_size_note(row, by_number[same]))
+            if overlaps is not None:
+                return Linked(row, suggest=overlaps, suggest_why=(
+                    "a person linked it to an outline that covered part of this field; the outline has changed since"))
+            return Linked(row, elsewhere=True,
+                          note="A person linked this to land that has no field outlined on this photo")
+        refused = same
+    clear = max(EDGE_M, precision_m(row.coordinates))
     for point in positions(row.coordinates):
-        inside, near = _around(point, fields)
+        inside, near = _around(point, fields, clear)
+        if not inside and not near:
+            continue
+        first = (inside or near)[0]
+        if first == refused:
+            return Linked(row)
+        where = f"the document's position ({row.coordinates})"
+        if len(inside) == 1 and not near and shared < 2:
+            return Linked(row, number=first, by=BY_DOCUMENT, note=_size_note(row, by_number[first]))
         if len(inside) == 1 and not near:
-            return Linked(row, number=inside[0], by=BY_DOCUMENT, note=_size_note(row, by_number[inside[0]]))
-        if inside or near:
-            first = (near or inside)[0]
-            return Linked(row, suggest=first, suggest_why=(
-                f"the document's position ({row.coordinates}) is within {EDGE_M:.0f} m of this field's edge"
-                if near else f"the document's position ({row.coordinates}) lies on more than one field"))
+            why = (f"{where} lies in this field, but the document prints that same position for {shared} rows, so "
+                   "it may be the farm's position and not this row's")
+        elif len(inside) > 1:
+            why = f"{where} lies on more than one field"
+        elif clear > EDGE_M:
+            why = (f"{where} is only good to about {clear:.0f} m as printed, and this field's edge is nearer than "
+                   "that")
+        elif inside:
+            why = f"{where} lies in this field, but within {EDGE_M:.0f} m of another field's edge"
+        else:
+            why = f"{where} is within {EDGE_M:.0f} m of this field's edge"
+        return Linked(row, suggest=first, suggest_why=why)
+    if positions(row.coordinates):
+        return Linked(row, elsewhere=True,
+                      note=f"The document's position ({row.coordinates}) is not on a field outlined on this photo")
     if row.coordinates:
-        note = (f"The document's position ({row.coordinates}) is not on a field outlined on this photo"
-                if positions(row.coordinates) else
-                f"The document gives a position Ingabe cannot read ({row.coordinates})")
-        return Linked(row, note=note)
+        return Linked(row, note=f"The document gives a position Ingabe cannot read ({row.coordinates})")
     suggestion = _by_name(row, fields)
-    if suggestion is not None:
+    if suggestion is not None and suggestion[0] != refused:
         return Linked(row, suggest=suggestion[0], suggest_why=suggestion[1])
     return Linked(row)
 
@@ -245,10 +308,18 @@ def resolve(records: Sequence[farm_records.FarmDocument], links: dict[str, dict[
     """Every row of the documents with the field it belongs to among `features` (GeoJSON features with a number
     and an area_ha), if it is linked. A row that cannot be resolved is still returned, not linked."""
     fields = _fields(features)
+    every = rows(records)
+    # a position printed for several rows of one document is likely the farm's, not each row's
+    printed: dict[tuple[str, str], int] = {}
+    for row in every:
+        if row.coordinates:
+            at = (row.key.split(":")[0], " ".join(row.coordinates.split()))
+            printed[at] = printed.get(at, 0) + 1
     out: list[Linked] = []
-    for row in rows(records):
+    for row in every:
+        shared = printed.get((row.key.split(":")[0], " ".join((row.coordinates or "").split())), 0)
         try:
-            out.append(_resolve(row, links.get(row.key), fields))
+            out.append(_resolve(row, links.get(row.key), fields, shared))
         except Exception:
             logger.exception("record links: row %s could not be placed", row.key)
             out.append(Linked(row))
@@ -286,45 +357,73 @@ def by_field(linked: Sequence[Linked]) -> dict[int, list[str]]:
 
 
 def not_linked(linked: Sequence[Linked]) -> int:
-    return sum(1 for item in linked if item.number is None)
+    """Rows still waiting for a field: on no field, and not placed on other land either."""
+    return sum(1 for item in linked if item.number is None and not item.elsewhere)
 
 
 # --- Kept per project ---------------------------------------------------------------------------
+# One small object per row a person spoke for, so two people linking at once (the server runs several workers)
+# cannot overwrite each other. A read is one listing; an entry is fetched again only when it changed.
 
-def _key(project_id: str) -> str:
-    return f"{_STORE_PREFIX}/{project_id}/links.json"
+_entries: dict[tuple[str, str], dict[str, Any]] = {}  # (object key, ETag) -> entry
+_MAX_CACHED = 5000
+
+
+def _prefix(project_id: str) -> str:
+    return f"{_STORE_PREFIX}/{project_id}/links/"
+
+
+def _key(project_id: str, row_key: str) -> str:
+    return f"{_prefix(project_id)}{hashlib.sha256(row_key.encode()).hexdigest()[:32]}.json"
+
+
+async def _entry(s3: Any, bucket: str, key: str, etag: str) -> Optional[dict[str, Any]]:
+    if (key, etag) in _entries:
+        return _entries[(key, etag)]
+    try:
+        response = await s3.get_object(Bucket=bucket, Key=key)
+        async with response["Body"] as body:
+            entry = json.loads(await body.read())
+        if not (isinstance(entry, dict) and isinstance(entry.get("row"), str) and isinstance(entry.get("outline"), dict)):
+            raise ValueError("not a link")
+    except Exception:  # one unreadable link loses that link; its row is then shown as not linked
+        logger.exception("record links: %s cannot be read", key)
+        return None
+    if len(_entries) >= _MAX_CACHED:
+        _entries.clear()
+    _entries[(key, etag)] = entry
+    return entry
 
 
 async def load(s3: Any, bucket: str, project_id: str) -> dict[str, dict[str, Any]]:
-    try:
-        response = await s3.get_object(Bucket=bucket, Key=_key(project_id))
-    except s3.exceptions.NoSuchKey:
-        return {}
-    async with response["Body"] as body:
-        data = json.loads(await body.read())
-    return data if isinstance(data, dict) else {}
+    """What people said about rows, by row key."""
+    listed: list[tuple[str, str]] = []
+    token: Optional[str] = None
+    while True:
+        more = {"ContinuationToken": token} if token else {}
+        page = await s3.list_objects_v2(Bucket=bucket, Prefix=_prefix(project_id), **more)
+        listed += [(o["Key"], str(o.get("ETag", ""))) for o in page.get("Contents", [])]
+        token = page.get("NextContinuationToken")
+        if not token:
+            break
+    entries = await asyncio.gather(*(_entry(s3, bucket, key, etag) for key, etag in listed))
+    return {e["row"]: e for e in entries if e is not None}
 
 
-async def keep(s3: Any, bucket: str, project_id: str, row_key: str, geometry: Optional[dict[str, Any]],
-               number: Optional[int], user_id: str) -> None:
-    """A person's word on a row: this field (`geometry`, its outline), or no field (None), which also sets aside
-    what the document's own position says. A point inside the field is kept, not the field's number."""
-    entry: dict[str, Any] = {"by": user_id, "at": datetime.now(timezone.utc).isoformat(timespec="seconds")}
-    if geometry is None:
-        entry["none"] = True
-    else:
-        spot = make_valid(shape(geometry)).representative_point()
-        entry.update({"lon": spot.x, "lat": spot.y, "number_then": number})
-    async with _locks.setdefault(project_id, asyncio.Lock()):
-        links = await load(s3, bucket, project_id)
-        links[row_key] = entry
-        await s3.put_object(Bucket=bucket, Key=_key(project_id), ContentType="application/json",
-                            Body=json.dumps(links).encode())
+async def keep(s3: Any, bucket: str, project_id: str, row_key: str, geometry: dict[str, Any], linked: bool,
+               user_id: str) -> None:
+    """A person's word on a row and a field: it is this land (`linked`), or it is not. The field's outline is
+    kept, not its number. Saying "not this land" also sets aside a position the document prints inside it."""
+    _area_of(geometry)  # refuses an outline with no area
+    entry = {"row": row_key, "outline": geometry, "linked": linked, "by": user_id,
+             "at": datetime.now(timezone.utc).isoformat(timespec="seconds")}
+    await s3.put_object(Bucket=bucket, Key=_key(project_id, row_key), ContentType="application/json",
+                        Body=json.dumps(entry).encode())
 
 
 async def of_project(s3: Any, bucket: str, project_id: Optional[str],
                      features: Sequence[dict[str, Any]]) -> list[Linked]:
-    """The project's document rows placed on these fields: two small reads."""
+    """The project's document rows placed on these fields: the records, and one listing of the links."""
     if not project_id:
         return []
     records = await farm_records.load_records(s3, bucket, project_id)

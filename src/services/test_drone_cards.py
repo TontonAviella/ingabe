@@ -474,19 +474,20 @@ def test_the_soil_card_answers_from_the_lab_report(photo):
     plots, (soil, harvest) = _plot_set(), _records()
     # the lab calls its acidic sample "Plot 3", but printed where it was taken: in the middle of the photo's plot 5
     lon, lat = _spot_in(plots, 5)
-    soil = dc.replace(soil, soil_samples=[dc.replace(soil.soil_samples[0], coordinates=f"{lat}, {lon}"),
+    soil = dc.replace(soil, soil_samples=[dc.replace(soil.soil_samples[0], coordinates=f"{lat:.5f}, {lon:.5f}"),
                                           soil.soil_samples[1]])
     here = drone_cards.Here(plots=plots, records=(soil, harvest), linked=_linked((soil, harvest), plots))
     answer = drone_cards.answer_card("soil", _analysis(photo), "farmer", here)
     assert answer["status"] == drone_cards.READY
     assert answer["what"].startswith("Your lab report (Example Soil Laboratory, 26/09/2026) has 2 samples.")
     # it goes on the land it was taken from, not on the plot whose number matches
-    assert "lime Plot 3" in answer["todo"] and [i["title"] for i in answer["items"]] == ["Plot 5"]
+    assert 'lime "Plot 3" in your lab report (Plot 5 on the photo)' in answer["todo"]
+    assert [i["title"] for i in answer["items"]] == ["Plot 5"]
+    assert answer["ask_sage"][0]["label"] == "How much lime for pH 4.9 in Plot 5?"
     assert answer["facts"][0]["label"] == "S1 · Plot 3 · Plot 5"
     assert answer["facts"][1]["label"] == "S2 · Plot 5 · not linked to a field yet"
     assert "1 of the 2 samples is not linked to a field yet" in answer["what"]
     assert answer["facts"][0]["value"] == "pH 4.9 · N 0.08 % · P 4.1 mg/kg · K 0.12 cmol/kg"
-    assert answer["ask_sage"][0]["label"] == "How much lime for pH 4.9 in Plot 3?"
     assert "1 low phosphorus" in answer["what"] and "low p," not in answer["what"]
     assert answer["how_sure"]["level"] == "medium"  # numbers copied by a model from a document
 
@@ -497,16 +498,21 @@ def test_the_history_card_answers_from_harvests_and_links_the_soil(photo):
     answer = drone_cards.answer_card("history", _analysis(photo), "farmer", drone_cards.Here(
         plots=plots, records=records, linked=_linked(records, plots)))
     assert answer["status"] == drone_cards.READY
-    assert "Best: 5 (4.3 t/ha); lowest: 3 (1.9 t/ha)" in answer["what"]
+    assert 'Best: "5" in your harvest record (4.3 t/ha); lowest: "3" in your harvest record (1.9 t/ha)' in answer["what"]
     assert "also tested" not in answer["what"] and answer["items"] == []
+    # Sage is not handed the record's "3" as if it were the photo's plot 3
+    assert answer["ask_sage"][0]["label"] == 'Why did "3" in my harvest record harvest only 1.9 t/ha?'
+    assert "not linked to a field on this photo" in answer["ask_sage"][0]["prompt"]
     assert "2 of the 2 harvests are not linked to a field yet" in answer["what"]
     # a person linked the low harvest and the acidic sample to the same land (the photo's plot 7)
-    lon, lat = _spot_in(plots, 7)
-    links = {"h:harvest:0": {"lon": lon, "lat": lat}, "s:soil:0": {"lon": lon, "lat": lat}}
+    land = next(f["geometry"] for f in plots.geojson["features"] if f["properties"]["number"] == 7)
+    links = {key: {"row": key, "outline": land, "linked": True} for key in ("h:harvest:0", "s:soil:0")}
     answer = drone_cards.answer_card("history", _analysis(photo), "farmer", drone_cards.Here(
         plots=plots, records=records, linked=_linked(records, plots, links)))
-    assert "3 also tested acidic, low phosphorus" in answer["what"]
+    assert "Plot 7 also tested acidic, low phosphorus" in answer["what"]
+    assert 'lowest: "3" in your harvest record (Plot 7 on the photo)' in answer["what"]
     assert [i["title"] for i in answer["items"]] == ["Plot 7"]
+    assert answer["ask_sage"][0]["label"] == "Why did Plot 7 harvest only 1.9 t/ha?"
     assert any("0.10 ha" in line and "0.79 ha" in line for line in answer["how_sure"]["because"])  # sizes disagree
     assert answer["how_sure"]["level"] == "medium"
     assert answer["upload"]["href"] == "/api/layer/Ltest/records"

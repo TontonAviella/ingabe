@@ -21,7 +21,7 @@ export function FieldRecords({ layerId, field }: { layerId: string; field: KeptO
   const offered = rows
     .filter((r) => r.field_id === null)
     .sort((a, b) => Number(b.suggest_id === field.id) - Number(a.suggest_id === field.id));
-  const set = (row: FieldRecordRow, fieldId: string | null) => link.mutate({ row: row.key, field_id: fieldId });
+  const set = (row: FieldRecordRow, linked: boolean) => link.mutate({ row: row.key, field_id: field.id, linked });
 
   return (
     <div className="flex flex-col gap-1.5">
@@ -33,7 +33,7 @@ export function FieldRecords({ layerId, field }: { layerId: string; field: KeptO
               {row.by === 'document' ? ' · linked by the position printed in the document' : ' · linked by a person'}
             </span>
           </p>
-          <button type="button" className={small} disabled={link.isPending} onClick={() => set(row, null)}>
+          <button type="button" className={small} disabled={link.isPending} onClick={() => set(row, false)}>
             Not this field
           </button>
         </div>
@@ -58,7 +58,7 @@ export function FieldRecords({ layerId, field }: { layerId: string; field: KeptO
                 )}
                 {row.note && <span className="block text-fg-muted">{row.note}.</span>}
               </span>
-              <button type="button" className={button} disabled={link.isPending} onClick={() => set(row, field.id)}>
+              <button type="button" className={button} disabled={link.isPending} onClick={() => set(row, true)}>
                 This is Field {field.number}
               </button>
             </li>

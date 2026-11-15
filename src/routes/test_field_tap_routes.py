@@ -379,7 +379,7 @@ async def test_a_document_row_is_linked_to_a_field_by_a_person_never_by_its_numb
     monkeypatch.setattr(farm_records, "load_records", records)
     (row,) = (await client.get(f"{base}/records")).json()["rows"]
     assert row["field"] is None and row["suggest"] == kept["number"] and row["suggest_id"] == kept["id"]
-    assert "records_said" not in str((await client.get(base)).json()["kept"][0]["facts"]["records_said"] or "")
+    assert (await client.get(base)).json()["kept"][0]["facts"]["records_said"] == []
     linked = await client.post(f"{base}/records/link", json={"row": row["key"], "field_id": kept["id"]})
     assert linked.json() == {"row": row["key"], "field": kept["number"]}
     (row,) = (await client.get(f"{base}/records")).json()["rows"]
@@ -390,7 +390,9 @@ async def test_a_document_row_is_linked_to_a_field_by_a_person_never_by_its_numb
     assert (await client.post(f"{base}/records/link", json={"row": row["key"], "field_id": "nope"})).status_code == 404
     _as(VIEWER)  # a viewer reads the links and cannot change them
     assert (await client.get(f"{base}/records")).status_code == 200
-    assert (await client.post(f"{base}/records/link", json={"row": row["key"], "field_id": None})).status_code in (403, 404)
+    off = {"row": row["key"], "field_id": kept["id"], "linked": False}
+    assert (await client.post(f"{base}/records/link", json=off)).status_code in (403, 404)
     _as(ids["owner"])
-    await client.post(f"{base}/records/link", json={"row": row["key"], "field_id": None})
-    assert (await client.get(f"{base}/records")).json()["rows"][0]["field"] is None
+    assert (await client.post(f"{base}/records/link", json=off)).json()["field"] is None
+    (row,) = (await client.get(f"{base}/records")).json()["rows"]
+    assert row["field"] is None and row["suggest"] is None  # said not to be this field: not offered for it again

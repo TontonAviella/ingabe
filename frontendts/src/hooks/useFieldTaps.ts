@@ -222,10 +222,10 @@ export function useFieldRecords(layerId: string | null) {
   });
 }
 
-/** The reader says which field a document row belongs to (null: none here). The cards and Sage read the same link. */
+/** The reader says a document row is this field (`linked`), or is not. The cards and Sage read the same link. */
 export function useLinkFieldRecord(layerId: string | null) {
   const client = useQueryClient();
-  return useMutation<{ row: string; field: number | null }, ServerError, { row: string; field_id: string | null }>({
+  return useMutation<{ row: string; field: number | null }, ServerError, { row: string; field_id: string; linked: boolean }>({
     mutationFn: (body) => sendJson(`${recordsUrl(layerId as string)}/link`, 'POST', body),
     onSuccess: () => {
       client.invalidateQueries({ queryKey: ['field-records', layerId] });
