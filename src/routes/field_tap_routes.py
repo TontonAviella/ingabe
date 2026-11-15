@@ -14,7 +14,7 @@ from src.database.models import LAYER_TYPE_RASTER, MapLayer
 from src.dependencies.dag import edit_layer, get_layer
 from src.dependencies.session import UserContext, verify_session_required
 from src.routes.switched_routes import switched_route
-from src.services import field_taps, industry, my_crop, photo_context, photo_plots, plant_finder
+from src.services import count_check, field_taps, industry, my_crop, photo_context, photo_plots, plant_finder
 from src.structures import async_read_conn
 from src.utils import get_async_s3_client, get_bucket_name, get_s3_client
 
@@ -58,6 +58,17 @@ class MyCropIn(BaseModel):
                                 description="taps on plants of the reader's crop")
     other: list[PlaceIn] = Field(min_length=my_crop.MIN_TAPS, max_length=my_crop.MAX_TAPS,
                                  description="taps on green things that are not the reader's crop")
+
+
+Square = tuple[Annotated[int, Field(ge=0, le=100_000)], Annotated[int, Field(ge=0, le=100_000)]]
+
+
+class CheckIn(BaseModel):
+    square: Square
+    shown: str = Field(min_length=16, max_length=16, description="the plants_mark of the part the reader was shown")
+    wrong: list[Annotated[int, Field(ge=0, le=100_000)]] = Field(
+        max_length=5000, description="the app's rings that are not plants, by their place in the square's list")
+    missed: list[PlaceIn] = Field(max_length=count_check.MAX_MISSED, description="plants that got no ring")
 
 
 class TurnDownIn(TapsIn):
@@ -176,4 +187,52 @@ async def count_my_crop_in_field(outline_id: str, body: MyCropIn, layer: MapLaye
     except (my_crop.TapProblem, plant_finder.CannotCount) as e:
         raise HTTPException(422, str(e)) from None
     except my_crop.Busy as e:
+        raise HTTPException(503, str(e)) from None
+
+
+async def _kept_field(layer: MapLayer, outline_id: str) -> tuple[str, Any, str, dict[str, Any]]:
+    key = await _photo_key(layer)
+    s3, bucket = await get_async_s3_client(), get_bucket_name()
+    row = next((r for r in await field_taps.kept(s3, bucket, key, layer.layer_id) if r["id"] == outline_id), None)
+    if row is None:
+        raise HTTPException(404, "No such kept outline on this photo")
+    return key, s3, bucket, row
+
+
+@router.get("/layer/{layer_id}/field-taps/kept/{outline_id}/count-check", operation_id="get_field_count_checks")
+async def get_field_count_checks(outline_id: str, layer: MapLayer = Depends(get_layer),
+                                 session: UserContext = Depends(verify_session_required)) -> dict[str, Any]:
+    """What the reader's own checks of the plant count say for this field: {"checked": null} when there are none."""
+    key, s3, bucket, row = await _kept_field(layer, outline_id)
+    return {"checked": await count_check.summary(s3, bucket, key, layer.layer_id, row), "measured": count_check.MEASURED}
+
+
+@router.post("/layer/{layer_id}/field-taps/kept/{outline_id}/count-check/square", operation_id="next_square_to_check")
+async def next_square_to_check(outline_id: str, layer: MapLayer = Depends(edit_layer),
+                               session: UserContext = Depends(verify_session_required)) -> dict[str, Any]:
+    """The next part of a kept field to check, chosen by the app, with the plants the count holds there. For
+    people who may edit the layer: it runs the plant finder."""
+    key, s3, bucket, row = await _kept_field(layer, outline_id)
+    url = await photo_context.cog_url(s3, bucket, layer.metadata_dict or {}, photo_context.LONG_URL_SECONDS)
+    try:
+        return await count_check.square(url, s3, get_s3_client(), bucket, key, layer.layer_id, row)
+    except (count_check.CheckProblem, plant_finder.CannotCount) as e:
+        raise HTTPException(422, str(e)) from None
+    except count_check.Busy as e:
+        raise HTTPException(503, str(e)) from None
+
+
+@router.post("/layer/{layer_id}/field-taps/kept/{outline_id}/count-check", operation_id="keep_field_count_check")
+async def keep_field_count_check(outline_id: str, body: CheckIn, layer: MapLayer = Depends(edit_layer),
+                                 session: UserContext = Depends(verify_session_required)) -> dict[str, Any]:
+    """Keep the reader's check of one square: the rings that are not plants and the plants that got no ring."""
+    key, s3, bucket, row = await _kept_field(layer, outline_id)
+    url = await photo_context.cog_url(s3, bucket, layer.metadata_dict or {}, photo_context.LONG_URL_SECONDS)
+    try:
+        return await count_check.keep(url, s3, get_s3_client(), bucket, key, layer.layer_id, row, body.square,
+                                      body.shown, body.wrong, [(p.lon, p.lat) for p in body.missed],
+                                      session.get_user_id())
+    except (count_check.CheckProblem, plant_finder.CannotCount) as e:
+        raise HTTPException(422, str(e)) from None
+    except count_check.Busy as e:
         raise HTTPException(503, str(e)) from None

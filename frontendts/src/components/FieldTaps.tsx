@@ -1,3 +1,4 @@
+import { useQueryClient } from '@tanstack/react-query';
 import { ChevronDown, ChevronUp } from 'lucide-react';
 import type { GeoJSONSource, MapMouseEvent, MapTouchEvent, Map as MLMap } from 'maplibre-gl';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -10,6 +11,7 @@ import {
   type TapOutline,
   type TurnDownReason,
   turnDown,
+  useCountChecked,
   useFieldTapState,
   useKeepOutline,
   useRemoveOutline,
@@ -17,6 +19,7 @@ import {
 import type { ServerError } from '@/lib/serverError';
 import { capped, nearestOnRing, type Pixel, pulled } from '@/lib/traceEdge';
 import type { MapLayer } from '@/lib/types';
+import { CountCheck } from './CountCheck';
 import { MyCrop } from './MyCrop';
 
 // Tap a field on a prepared drone photo: up to three outlines come back, the reader picks one, may correct it
@@ -207,6 +210,7 @@ export function FieldTaps({
   const [question, setQuestion] = useState('');
   const [removing, setRemoving] = useState(false); // "Remove Field 7?" is showing
   const [cropping, setCropping] = useState(false); // the reader is tapping their crop in the picked field
+  const [checking, setChecking] = useState(false); // the reader is checking the plant count in the picked field
   const [slow, setSlow] = useState(false); // an answer is taking over a second: say what is happening
   // The picked outline's corners once the reader starts moving its line, and the area the server gives for them
   // (null while a moved line is not a valid outline).
@@ -240,6 +244,8 @@ export function FieldTaps({
   const step = steps.at(-1) ?? null;
   const corrections = step ? step.taps.length - 1 : 0;
   const selected = mode === 'off' ? (kept.find((k) => k.id === selectedId) ?? null) : null;
+  const checked = useCountChecked(layerId, selected?.id ?? null);
+  const client = useQueryClient();
   const shown =
     mode === 'off' ? features([], null, kept, null, false, selected?.id ?? null) : features(steps, pick, kept, ring, mode === 'move');
   useDrawn(map, prepared ? shown : EMPTY);
@@ -319,7 +325,7 @@ export function FieldTaps({
 
   // With the panel closed, a click on a kept field picks it; a click anywhere else lets it go.
   useEffect(() => {
-    if (!map || mode !== 'off' || !prepared || cropping) return; // while the crop is tapped, a click is a tap
+    if (!map || mode !== 'off' || !prepared || cropping || checking) return; // while the crop is tapped, a click is a tap
     const onClick = (e: MapMouseEvent) => {
       const hit = map.queryRenderedFeatures(e.point, { layers: [LAYERS.fill] }).find((f) => f.properties?.id);
       setSelectedId(hit ? String(hit.properties.id) : null);
@@ -330,7 +336,7 @@ export function FieldTaps({
     return () => {
       map.off('click', onClick);
     };
-  }, [map, mode, prepared, cropping]);
+  }, [map, mode, prepared, cropping, checking]);
 
   // The server says what area a hand-drawn line has, or why it is no longer an outline.
   const firstTap = step?.taps[0] ?? null;
@@ -438,9 +444,12 @@ export function FieldTaps({
   }, [map, mode, layerId, firstTap, measure]);
 
   const open = mode !== 'off' && !!layerId && prepared;
-  const counting = cropping && !!selected;
+  const counting = (cropping || checking) && !!selected;
   // biome-ignore lint/correctness/useExhaustiveDependencies: another field, or none, ends the crop taps
-  useEffect(() => setCropping(false), [selectedId, mode]);
+  useEffect(() => {
+    setCropping(false);
+    setChecking(false);
+  }, [selectedId, mode]);
   useEffect(() => {
     onTapping?.(open || counting);
     return () => onTapping?.(false);
@@ -489,7 +498,16 @@ export function FieldTaps({
       }`}
       data-docked={docked}
     >
-      {selected && counting && layerId && <MyCrop map={map} layerId={layerId} field={selected} onClose={() => setCropping(false)} />}
+      {selected && cropping && layerId && <MyCrop map={map} layerId={layerId} field={selected} onClose={() => setCropping(false)} />}
+      {selected && checking && !cropping && layerId && (
+        <CountCheck
+          map={map}
+          layerId={layerId}
+          field={selected}
+          onSaved={() => void client.invalidateQueries({ queryKey: ['field-count-check', layerId, selected.id] })}
+          onClose={() => setChecking(false)}
+        />
+      )}
       {selected && !counting && (
         <div className="flex flex-col gap-2">
           <div className="flex items-center justify-between gap-3">
@@ -536,10 +554,16 @@ export function FieldTaps({
             </p>
           )}
           {!removing && (
-            <div>
-              <button type="button" className={plain} onClick={() => setCropping(true)}>
-                Count my crop
-              </button>
+            <div className="flex flex-col gap-2">
+              {checked.data?.checked && <p className="m-0 text-[12.5px] text-fg-soft">{checked.data.checked.said}</p>}
+              <div className="flex flex-wrap gap-2">
+                <button type="button" className={plain} onClick={() => setCropping(true)}>
+                  Count my crop
+                </button>
+                <button type="button" className={plain} onClick={() => setChecking(true)}>
+                  Check the count
+                </button>
+              </div>
             </div>
           )}
           {onAskSage && (

@@ -114,6 +114,25 @@ with up to six more taps ("this part too" / "not this part"), and keep it with i
    (`my_crop.MAX_WAITING`); a sixth is told to come back (503). A reading that fails leaves only its reason in
    words, says it once, and the next ask starts again. Kept squares are not removed when a photo is deleted, and
    the queue lives in one process: with more than one app worker each would read on its own.
+24. Check a square (`src/services/count_check.py`, routes `.../kept/{id}/count-check` and `.../count-check/square`):
+    a person checks the plant count on their own field. The app chooses the part (a 12.5 m square of the photo's
+    grid) in an order fixed by the field's line: squares mostly inside the field first, a square the picture check
+    refuses never. A part cannot be passed over and cannot be chosen: the next one comes only when this one's
+    check is kept, and the server keeps a check only for the part that is next and only against the list of plants
+    it showed (Pre-Landing Review 2026-11-15: with "Another part" a reader could skip to the easy parts, and the
+    sentence then read as a fair sample when it was a chosen one). The plants shown are the count's own (the same
+    finder, centre inside the field). The person taps a ring that is not a plant and the middle of a plant with no
+    ring; a plant added within 15 cm of a ring left standing, or of another added plant, is counted once. What is
+    said is those parts alone, in the third person ("in the 2 of 9 parts checked by hand, the app counted 48 and
+    the person checking counted 51"), because others read it too. Nothing is scaled up to the field: how well a
+    few parts stand for a field was not measured, and a figure scaled from them would be a new number that needs
+    its own test. A check belongs to the field's line as it is and to the finder's method; change either and it no
+    longer counts. Running the finder and keeping a check are for people who may edit the layer; anyone who may
+    see the layer reads what was checked. Sage's plant count gives it as `checked_by_a_person`.
+    Limits: it is a judgement from the photo, not a count on the ground; a kept check cannot be redone; each part
+    is checked by itself, so a plant ringed in two neighbouring parts does not show; a slightly different outline
+    of the same field is dealt a new order; one read of the photo at a time and at most 4 waiting (503 past it);
+    the lock that orders two keeps on one field lives in one process, like rule 22's queue.
 
 ## What was measured (plans/PLAN_RWANDA_CROPS.md, 2026-11-12)
 

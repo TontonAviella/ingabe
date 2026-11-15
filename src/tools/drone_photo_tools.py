@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import math
 import uuid
 from typing import Any, Optional
@@ -16,8 +17,10 @@ from shapely.geometry import shape
 
 from src.routes.websocket import kue_ephemeral_action
 from src.services import (
+    count_check,
     drone_cards,
     drone_vision,
+    field_taps,
     photo_context,
     photo_plots,
     plant_finder,
@@ -26,6 +29,8 @@ from src.structures import async_read_conn
 from src.tools.geojson_transport import geojson_layer_update
 from src.tools.pyd import IngabeToolCallMetaArgs
 from src.utils import get_async_s3_client, get_bucket_name, get_s3_client
+
+logger = logging.getLogger(__name__)
 
 # The cards Sage reads for an overview, in this order: plots, crops, problems, stage, weeds, bare ground.
 FINDING_CARDS = ("field_outlines", "crop_types", "plot_problems", "plot_stage", "weeds", "bare_ground", "plots_green")
@@ -122,7 +127,9 @@ async def count_plants_in_plot(args: CountPlantsArgs, meta: IngabeToolCallMetaAr
     within 18%, about 4 plant dots in 5 sat on a crop plant, and 9 plants in 10 were found. Always give it as
     "about N", with the share of the plot counted and these limits; never as an exact count. What each piece
     of other green is (weed, grass or bush) is not known: do not name it. An answer is kept, so asking again
-    is free. Give the number exactly as `say_it_as` gives it (two figures, "about 700"), never a longer one. The
+    is free. When `checked_by_a_person` is given, say it too: it is the person's own count in parts of the field,
+    not scaled to the whole field; when it is not, say they can check the count themselves with "Check the count"
+    on the field. Give the number exactly as `say_it_as` gives it (two figures, "about 700"), never a longer one. The
     map shows a ring around each plant counted; other green is drawn only with show_other_green, so set that
     when, and only when, the person asks where the weeds, grass or other green are; "remove the grass" or "show
     only the plants" means call again without it.
@@ -162,6 +169,7 @@ async def count_plants_in_plot(args: CountPlantsArgs, meta: IngabeToolCallMetaAr
     org_id = meta.session.get_org_id() if meta.session is not None else None
     look = await _crop_seen(s3, bucket, metadata, plots, args.plot_number, meta.project_id,
                             drone_vision.reference_scope(org_id, meta.user_uuid), row["layer_id"])
+    checked = await _checked_by_a_person(s3, bucket, key, row["layer_id"], feature)
     # What a reader must get at a glance: one number, and a ring around each plant it counts, with the plant visible
     # inside its ring. Other green is drawn only when asked for: unasked, it buries the plants. The number is said
     # to two figures ("about 700"): the total was within 18% in the test, so "702" would claim what was not measured.
@@ -196,6 +204,9 @@ async def count_plants_in_plot(args: CountPlantsArgs, meta: IngabeToolCallMetaAr
         "plants_per_ha_in_counted_part": found.per_ha,
         "parts_refused": found.squares_refused,
         "parts_counted": found.squares_counted,
+        # the person's own count in parts of this field the app chose (Check the count, on the field's panel); say it
+        # as written when present, and when absent say they can check the count themselves there
+        "checked_by_a_person": checked,
         "photo_cm_per_pixel": found.cm_per_px,
         "drawn_on_map": ("a ring around each plant counted, and the other green in another colour" if args.show_other_green
                          else "a ring around each plant counted; other green is not drawn unless the person asks for it"),
@@ -220,6 +231,23 @@ async def _crop_seen(s3: Any, bucket: str, metadata: dict[str, Any], plots: Any,
     if look is None or look.main_crop == "unsure":
         return None
     return drone_vision.CROP_LABELS[look.main_crop]
+
+
+async def _checked_by_a_person(s3: Any, bucket: str, photo_key: str, layer_id: str,
+                               feature: dict[str, Any]) -> Optional[str]:
+    """What a person's own check of the count says for this plot, when the plot is a field they outlined and they
+    checked it as its line is now; else None."""
+    if not field_taps.enabled():
+        return None
+    try:
+        outline = shape(feature["geometry"])
+        for row in await field_taps.kept(s3, bucket, photo_key, layer_id):
+            if row["number"] == feature["properties"]["number"] and shape(row["geometry"]).equals(outline):
+                summary = await count_check.summary(s3, bucket, photo_key, layer_id, row)
+                return summary["said"] if summary else None
+    except Exception:  # the check is an extra: the count is still given when the check cannot be read
+        logger.exception("count check of plot %s could not be read", feature["properties"].get("number"))
+    return None
 
 
 def points_drawn(points: dict[str, Any], show_other_green: bool) -> dict[str, Any]:
