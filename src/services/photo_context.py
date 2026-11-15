@@ -19,6 +19,7 @@ from src.services import (
     drone_vision,
     farm_records,
     field_checks,
+    field_facts,
     photo_plots,
     reader_roles,
 )
@@ -203,7 +204,9 @@ async def load(s3: Any, bucket: str, *, layer_id: str, name: str, bounds: Any, m
                               scope=drone_vision.reference_scope(org_id, user_id), start=start_jobs,
                               retry_failed=retry_failed, layer_id=layer_id)
              if plots is not None else PlotLooks())
-    here = drone_cards.Here(photos=max(1, int(photos_here or 0)), plots=plots, plot_job=plot_job,
+    fields = (await field_facts.of_plots(s3, bucket, photo_plots.photo_key(metadata), layer_id, plots)
+              if plots is not None else [])
+    here = drone_cards.Here(fields=tuple(fields), photos=max(1, int(photos_here or 0)), plots=plots, plot_job=plot_job,
                             plot_maps=tuple(m for m, _ in maps), plot_map=plot_map, plot_map_error=map_error,
                             survey=looks.survey, survey_job=looks.survey_job,
                             vision_looks=drone_vision.survey_enabled(), seed=seed,

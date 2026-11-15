@@ -46,6 +46,7 @@ from src.services import (
     drone_vision,
     farm_records,
     field_checks,
+    field_facts,
     ground_area,
     isdasoil_service,
     plant_finder,
@@ -175,6 +176,8 @@ class Here:
     """What else is known about the photo's place: how many photos of it, and its plots."""
 
     photos: int = 1
+    # each plot's own facts (field_facts): what the field panel and Sage say of it too
+    fields: tuple[field_facts.FieldFacts, ...] = ()
     plots: Optional[drone_plots.PlotSet] = None
     plot_job: Optional[background_jobs.Job] = None
     plot_maps: tuple[drone_plots.PlotMap, ...] = ()  # the reader's maps of polygons that cover this photo
@@ -735,6 +738,10 @@ def _preview(card_id: str, analysis: PhotoAnalysis, here: Here) -> str:
             return "Plants are counted plot by plot, once the plots are found."
         if not _countable_plots(here):
             return f"Every plot here is larger than {plant_finder.MAX_PLOT_HA} ha; outline a smaller field to count."
+        counted = [f for f in here.fields if f.plants_said]
+        if counted:
+            return (f"{counted[0].name}: {counted[0].plants_said}"
+                    + (f", and {len(counted) - 1} more counted" if len(counted) > 1 else "") + ". An estimate you can check.")
         return "An estimate, one field at a time, with a ring on each plant; you can check it yourself."
     if card_id == "yield":
         return "A harvest range for each field that narrows through the season."
@@ -830,9 +837,19 @@ def _plot_names(plots: list[dict[str, Any]]) -> str:
     return names[0] if len(names) == 1 else ", ".join(names[:-1]) + " and " + names[-1]
 
 
-def _plot_label(plot: dict[str, Any]) -> str:
-    """How a plot is named on its label on the photo."""
-    return f"{plot['name']} · plot {plot['number']}" if plot.get("name") else f"Plot {plot['number']}"
+def _plot_label(plot: dict[str, Any], plots: Optional[drone_plots.PlotSet] = None) -> str:
+    """How a plot is named on its label on the photo: as the field panel and Sage name it (field_facts.name), so a
+    field the reader outlined is "Field 7" everywhere."""
+    if plot.get("_label"):
+        return plot["_label"]
+    if plot.get("name"):
+        return f"{plot['name']} · plot {plot['number']}"
+    return field_facts.name(plot["number"], field_facts.outlined(plots))
+
+
+def _named(plot: dict[str, Any], plots: Optional[drone_plots.PlotSet]) -> dict[str, Any]:
+    """A plot carrying the name it has in this plot set, for the helpers that are given the plot alone."""
+    return {**plot, "_label": _plot_label(plot, plots)}
 
 
 def statuses(analysis: PhotoAnalysis, here: Here) -> dict[str, str]:
@@ -1098,8 +1115,10 @@ def _field_outlines(analysis: PhotoAnalysis, audience: str, here: Here) -> dict[
         facts += [{"label": "Middle plot size", "value": _ha(median)},
                   {"label": "Smallest and largest", "value": f"{_ha(areas[0])} and {_ha(areas[-1])}"}]
     facts.append({"label": "Outlines", "value": _plot_source(plots)})
+    told = {facts.number: field_facts.said(facts) for facts in here.fields}  # one line a field, as on every surface
     features = [{**f, "properties": {**f["properties"],
-                                     "label": f"{_plot_label(f['properties'])} · {_ha(f['properties']['area_ha'])}"}}
+                                     "label": told.get(f["properties"]["number"])
+                                     or f"{_plot_label(f['properties'], plots)} · {_ha(f['properties']['area_ha'])}"}}
                 for f in plots.geojson["features"]]
     because = [_plot_source(plots), "Areas measured from the outlines"]
     if found:
@@ -1139,7 +1158,7 @@ def _plots_green(analysis: PhotoAnalysis, audience: str, here: Here) -> dict[str
                    drone_plots.UNKNOWN: "not measured"}
 
     def label(p: dict[str, Any]) -> str:
-        text = f"{_plot_label(p)} · {_ha(p['area_ha'])} · {group_label[p['group']]}"
+        text = f"{_plot_label(p, plots)} · {_ha(p['area_ha'])} · {group_label[p['group']]}"
         return text + (f" · GRVI {p['greenness']:.3f}" if technical and p["greenness"] is not None else "")
 
     features = [{**f, "properties": {**f["properties"], "label": label(f["properties"])}}
@@ -1183,7 +1202,7 @@ def _plots_green(analysis: PhotoAnalysis, audience: str, here: Here) -> dict[str
         why = ("Less green can mean plants short of water or food, missing plants, or weeds cleared. A crop "
                "planted later than its neighbours is also less green, so look before acting.")
         todo = f"Walk to plots {_plot_names(first)} first and look at the plants and the soil. Tap a plot to see its name."
-    items = [_plot_item(analysis, p, f"{_ha(p['area_ha'])}" + (f" · {_pct(p['bare_share'])} bare soil" if p["bare_share"] else ""))
+    items = [_plot_item(analysis, _named(p, here.plots), f"{_ha(p['area_ha'])}" + (f" · {_pct(p['bare_share'])} bare soil" if p["bare_share"] else ""))
              for p in least[:5]]
     facts = [{"label": "Plots with a crop", "value": str(len(with_crop))},
              {"label": "Least green fifth", "value": f"{len(least)} plots, {_ha(least_ha)}"},
@@ -1408,7 +1427,7 @@ def _field_check(analysis: PhotoAnalysis, plots: drone_plots.PlotSet, survey: dr
         "title": "What really grows here?",
         "detail": ("Tap the crop you find in each plot." + _naming_promise(here) if named_by_checks else
                    "Tap the crop you find in each plot. Your answer replaces the model's, and shows how often it is right."),
-        "plots": [{**_plot_item(analysis, p, guess(look)), "number": p["number"]} for p, look in chosen],
+        "plots": [{**_plot_item(analysis, _named(p, here.plots), guess(look)), "number": p["number"]} for p, look in chosen],
         "options": [{"id": c, "label": drone_vision.CROP_LABELS[c]} for c in field_checks.CHECK_CROPS],
         "href": f"/api/layer/{analysis.layer_id}/plots/{{number}}/check",
         "checked": len(here.checked),
@@ -1432,7 +1451,7 @@ def _flag_overlay(analysis: PhotoAnalysis, plots: drone_plots.PlotSet, flagged: 
     for f in plots.geojson["features"]:
         p = f["properties"]
         reason = flagged.get(p["number"])
-        label = f"{_plot_label(p)} · {_ha(p['area_ha'])}" + (f" · {reason}" if reason else "")
+        label = f"{_plot_label(p, plots)} · {_ha(p['area_ha'])}" + (f" · {reason}" if reason else "")
         props = {**p, "flag": reason is not None, "label": label}
         if p["number"] in badges:
             props["badge"] = badges[p["number"]]
@@ -1527,7 +1546,7 @@ def _crop_types(analysis: PhotoAnalysis, audience: str, here: Here) -> dict[str,
         stage = f" · {look.stage.replace('_', ' ')}" if look and look.stage not in (None, "unsure") else ""
         named = (" or ".join(drone_vision.CROP_LABELS[c] for c in look.candidates) + "?" if look and look.candidates
                  else drone_vision.CROP_LABELS[crop])
-        label = (f"{_plot_label(p)} · {named}{extra}{stage} · {_ha(p['area_ha'])}"
+        label = (f"{_plot_label(p, plots)} · {named}{extra}{stage} · {_ha(p['area_ha'])}"
                  + (" · checked on the ground" if checked else ""))
         props = {**p, "crop": crop, "label": label, "checked": checked}
         if crop not in _NOT_A_CROP:
@@ -1591,7 +1610,7 @@ def _plot_problems(analysis: PhotoAnalysis, audience: str, here: Here) -> dict[s
     else:
         what = f"The AI vision model saw no problems from the air in the {len(pairs)} plots it looked at."
         todo = "Nothing to chase from this photo. Fly again in a few weeks to see what changes."
-    items = [_plot_item(analysis, p, flagged[p["number"]] + (f" · {look.note}" if look.note else "")) for p, look in seen[:5]]
+    items = [_plot_item(analysis, _named(p, here.plots), flagged[p["number"]] + (f" · {look.note}" if look.note else "")) for p, look in seen[:5]]
     overlay = _flag_overlay(analysis, plots, flagged, "Possible problems seen from the air",
                             {p["number"]: PROBLEM_BADGES[look.problems[0]] for p, look in seen})
     progress = None
@@ -1642,7 +1661,7 @@ def _weeds(analysis: PhotoAnalysis, audience: str, here: Here) -> dict[str, Any]
     else:
         what = f"No plot with a crop looks very weedy; {some} of {len(cropped)} have a few weeds."
         todo = "No urgent weeding seen from the air. Check again after the next rains."
-    items = [_plot_item(analysis, p, f"{_ha(p['area_ha'])}" + (f" · {look.note}" if look.note else "")) for p, look in weedy[:5]]
+    items = [_plot_item(analysis, _named(p, here.plots), f"{_ha(p['area_ha'])}" + (f" · {look.note}" if look.note else "")) for p, look in weedy[:5]]
     return _answer(
         "weeds", analysis, here, what=what, why=why, todo=todo,
         how_sure=_vision_how_sure(survey, 0, ["Young weeds and young crop can look alike from above"], here),
@@ -1677,7 +1696,7 @@ def _plot_stage(analysis: PhotoAnalysis, audience: str, here: Here) -> dict[str,
     else:
         what = f"The {compared} plots compared look at a similar stage to the rest of their crop."
         todo = "Nothing behind from this photo. Fly again in a few weeks to see who keeps up."
-    items = [_plot_item(analysis, p, flagged[p["number"]]) for p, _, _ in behind[:5]]
+    items = [_plot_item(analysis, _named(p, here.plots), flagged[p["number"]]) for p, _, _ in behind[:5]]
     return _answer(
         "plot_stage", analysis, here, what=what, why=why, todo=todo,
         how_sure=_vision_how_sure(survey, 0, ["Stage judged from one photo, without planting dates"], here),
@@ -1771,6 +1790,11 @@ def _plant_count(analysis: PhotoAnalysis, audience: str, here: Here) -> dict[str
             why="A count over a large area takes too long to answer while you wait, so it is given for small plots.",
             todo=f"Outline a field of up to {plant_finder.MAX_PLOT_HA} ha by tapping it, then ask Sage how many plants it holds.",
             how_sure=_how_sure("low", ["Not counted on this photo"], None), terms=["hectare"], audience=audience)
+    counted = [f for f in here.fields if f.plants_said]
+    facts = [{"label": f.name, "value": f.plants_said + (
+        f" in the {f.counted_share:.0%} of it that can be counted" if f.counted_share is not None and f.counted_share < 0.995
+        else "")} for f in counted]
+    facts += [{"label": f"{f.name}, checked by hand", "value": f.checked_said} for f in counted if f.checked_said]
     can, total = len(_countable_plots(here)), here.plots.count
     kind = "fields you outlined" if here.plots.source == drone_plots.OUTLINED_FIELDS_NAME else "plots"
     of_them = (f"All {total} {kind} here are small enough." if can == total and total > 1 else
@@ -1790,7 +1814,7 @@ def _plant_count(analysis: PhotoAnalysis, audience: str, here: Here) -> dict[str
             "About 1 ring in 5 was not a crop plant, and about 1 plant in 10 was missed",
             "Not measured on other farms or crops",
         ], "Check the count on a few parts of your own field."),
-        terms=["hectare"], audience=audience)
+        terms=["hectare"], audience=audience, facts=facts)
 
 
 # --- The farm's own records: soil lab reports and harvests ------------------------------------
@@ -1865,7 +1889,7 @@ def _soil_card(analysis: PhotoAnalysis, audience: str, here: Here) -> dict[str, 
         plot = _plot_named(here, sample.place or sample.sample)
         if plot is not None and words:
             flags_by_plot[plot["number"]] = ", ".join(words)
-            items.append(_plot_item(analysis, plot, f"{', '.join(words)} · pH {_num(sample.ph, 1)}"))
+            items.append(_plot_item(analysis, _named(plot, here.plots), f"{', '.join(words)} · pH {_num(sample.ph, 1)}"))
     acidic = [s.place or s.sample for _, s, w in flagged if "Acidic" in w]
     low_p = [s.place or s.sample for _, s, w in flagged if "Low phosphorus" in w]
     steps = []
@@ -1935,7 +1959,7 @@ def _history_card(analysis: PhotoAnalysis, audience: str, here: Here) -> dict[st
     for _, h in measured[-3:]:
         plot = _plot_named(here, h.plot)
         if plot is not None:
-            items.append(_plot_item(analysis, plot, f"{h.tonnes_per_ha:.1f} t/ha last harvest"))
+            items.append(_plot_item(analysis, _named(plot, here.plots), f"{h.tonnes_per_ha:.1f} t/ha last harvest"))
     warnings = [w for d, _ in rows for w in d.warnings]
     return _answer(
         "history", analysis, here, what=what,

@@ -133,6 +133,20 @@ with up to six more taps ("this part too" / "not this part"), and keep it with i
     is checked by itself, so a plant ringed in two neighbouring parts does not show; a slightly different outline
     of the same field is dealt a new order; one read of the photo at a time and at most 4 waiting (503 past it);
     the lock that orders two keeps on one field lives in one process, like rule 22's queue.
+25. One field, one set of facts (`src/services/field_facts.py`; Roger 2026-11-15: the cards, Sage, the field panel
+    and the uploaded documents are one body). A field's name ("Field 7" when the reader outlined it, "Plot 7" when
+    Ingabe found it, the reader's own name from their map), its size ("0.18 ha", "390 m²") and a plant count
+    ("about 700 plants") are worded in that module and nowhere else. It gathers per field what is already kept:
+    green cover (only on a photo the rule was checked on), the plant finder's count once someone asked for it, and
+    a person's check of that count. The question cards (labels on the photo, the stand count card), Sage
+    (`get_drone_photo_findings` lists every field; `count_plants_in_plot`) and the field panel read it. A plot is a
+    kept field when it has the field's number and its outline (shared area over joined area at least 0.999: a
+    plot set stores outlines after a trip to the photo's coordinates and back, so they are never equal to the last
+    bit; found 2026-11-15 when Sage never reported a check that had been kept). It reads only and starts no work.
+    A count or a check made on one surface makes the others ask again (the field's row, the cards).
+    Not joined yet: uploaded soil and harvest records are matched to a field by name on the cards and for Sage
+    but are not shown on the field panel; "only my crop" is not kept, so no other surface can show it; the green
+    of the "least green" card (relative) and green cover (absolute) are two measures with two names.
 
 ## What was measured (plans/PLAN_RWANDA_CROPS.md, 2026-11-12)
 

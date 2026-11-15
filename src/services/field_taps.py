@@ -625,6 +625,15 @@ def _cover_missing(row: dict[str, Any]) -> bool:
     return not isinstance(cover, dict) or cover.get("threshold") != GREEN_THRESHOLD
 
 
+def cover_share(row: dict[str, Any]) -> Optional[float]:
+    """A kept field's green cover as a share, when it holds one made by today's rule; None otherwise. The caller
+    checks that the rule was checked on this photo (cover_checked)."""
+    if _cover_missing(row):
+        return None
+    share = row["green_cover"].get("share")
+    return float(share) if isinstance(share, (int, float)) else None
+
+
 def _stamped(cover: dict[str, Any]) -> dict[str, Any]:
     return {**cover, "threshold": GREEN_THRESHOLD}
 

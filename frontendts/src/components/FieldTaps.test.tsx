@@ -561,13 +561,24 @@ describe('outlining a field by tapping it', () => {
 
   it('lets the reader check the count on a part the app chose: rings that are not plants, plants with no ring', async () => {
     const server = fakeServer(true);
-    server.kept.push({ id: 'a', number: 3, centre: [30.5, -1.5], geometry: square(1), area_ha: 0.18, corrections: 0, kept_at: 'then' });
+    server.kept.push({
+      id: 'a',
+      number: 3,
+      centre: [30.5, -1.5],
+      geometry: square(1),
+      area_ha: 0.18,
+      corrections: 0,
+      kept_at: 'then',
+      // the field's facts in the server's words, the same the cards and Sage use: Sage counted this field earlier
+      facts: { area_said: '0.18 ha', plants_said: 'about 700 plants', checked_said: null },
+    });
     const m = fakeMap();
     const tapping: boolean[] = [];
     mount(<FieldTaps map={m.map} layers={[photo]} hiddenLayerIDs={[]} onTapping={(on) => tapping.push(on)} />);
     await vi.waitFor(() => expect(byButton(/^1 field outlined · show$/)).not.toBeNull());
     m.clickOn('a');
     await vi.waitFor(() => expect(byButton('Check the count')).not.toBeNull());
+    expect(byText('Field 3 · 0.18 ha · about 700 plants')).not.toBeNull();
     click(byButton('Check the count') as HTMLButtonElement);
     const asks = 'The app ringed 3 plants in this part of Field 3. Is every ring on a plant, and every plant in a ring?';
     await vi.waitFor(() => expect(byText(asks)).not.toBeNull());

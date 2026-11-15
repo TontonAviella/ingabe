@@ -20,6 +20,7 @@ from src.services import (
     count_check,
     drone_cards,
     drone_vision,
+    field_facts,
     field_taps,
     photo_context,
     photo_plots,
@@ -35,6 +36,7 @@ logger = logging.getLogger(__name__)
 # The cards Sage reads for an overview, in this order: plots, crops, problems, stage, weeds, bare ground.
 FINDING_CARDS = ("field_outlines", "crop_types", "plot_problems", "plot_stage", "weeds", "bare_ground", "plots_green")
 RECORD_CARDS = ("soil", "history")  # added when the project has a lab report or harvest records
+MAX_FIELDS_TOLD = 60  # fields listed one by one in Sage's findings; more are counted, not listed
 SPOT_COLOUR = "#FF4D1A"  # the cards' colour for things found inside plots
 OTHER_GREEN_COLOUR = "#2F80ED"  # green that is not a crop plant: weed, grass or bush
 
@@ -111,6 +113,11 @@ async def get_drone_photo_findings(args: DronePhotoArgs, meta: IngabeToolCallMet
                   "cm_per_pixel": round(look.resolution_cm, 1) if look.resolution_cm is not None else None,
                   "camera": analysis.camera},
         "plots": here.plots.count if here.plots else None,
+        # each field's own facts, the same ones the cards and the field panel show, in the same words
+        "fields": [{"field": facts.name, "size": facts.area_said, "green_cover": facts.cover_said,
+                    "plants": facts.plants_said, "counted_share_of_field": facts.counted_share,
+                    "checked_by_a_person": facts.checked_said} for facts in here.fields[:MAX_FIELDS_TOLD]],
+        "fields_left_out": max(0, len(here.fields) - MAX_FIELDS_TOLD),
         "findings": findings,
         "source": "Ingabe drone photo analysis (the question cards)",
     }
@@ -159,7 +166,7 @@ async def count_plants_in_plot(args: CountPlantsArgs, meta: IngabeToolCallMetaAr
         except plant_finder.CannotCount as why:
             return {"status": "error", "error": str(why)}
         await plant_finder.save_found(s3, bucket, key, feature, found)
-    name = feature["properties"].get("name") or f"Plot {args.plot_number}"
+    name = field_facts.name(args.plot_number, field_facts.outlined(plots), feature["properties"].get("name"))
     if found.squares_counted == 0:
         return {"status": "error",
                 "error": (f"Plants cannot be counted in {name}: in every part of it the picture check found ground "
@@ -201,7 +208,7 @@ async def count_plants_in_plot(args: CountPlantsArgs, meta: IngabeToolCallMetaAr
         "counted_share_of_plot": found.counted_share,
         "plot_area_m2": found.plot_area_m2,
         "counted_area_m2": found.counted_area_m2,
-        "plants_per_ha_in_counted_part": found.per_ha,
+        "plants_per_ha_in_counted_part": field_facts.about(found.per_ha) if found.per_ha is not None else None,
         "parts_refused": found.squares_refused,
         "parts_counted": found.squares_counted,
         # the person's own count in parts of this field the app chose (Check the count, on the field's panel); say it
@@ -240,9 +247,9 @@ async def _checked_by_a_person(s3: Any, bucket: str, photo_key: str, layer_id: s
     if not field_taps.enabled():
         return None
     try:
-        outline = shape(feature["geometry"])
         for row in await field_taps.kept(s3, bucket, photo_key, layer_id):
-            if row["number"] == feature["properties"]["number"] and shape(row["geometry"]).equals(outline):
+            if row["number"] == feature["properties"]["number"] and field_facts.same_field(row["geometry"],
+                                                                                           feature["geometry"]):
                 summary = await count_check.summary(s3, bucket, photo_key, layer_id, row)
                 return summary["said"] if summary else None
     except Exception:  # the check is an extra: the count is still given when the check cannot be read
@@ -258,13 +265,7 @@ def points_drawn(points: dict[str, Any], show_other_green: bool) -> dict[str, An
             "features": [f for f in points["features"] if f["properties"]["kind_code"] == 0]}
 
 
-def plants_about(count: int) -> int:
-    """A plant count as it is said: two figures (702 -> 700, 163 -> 160, 95 -> 95, 4,987 -> 5,000). The test put
-    the total within 18%, so the third figure means nothing."""
-    if count < 100:
-        return count
-    step = 10 ** (len(str(count)) - 2)
-    return int(round(count / step) * step)
+plants_about = field_facts.about  # a count as it is said, the same on every surface
 
 
 CLOSE_VIEW_M = 30.0  # the square the map opens on, inside the plot

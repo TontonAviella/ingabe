@@ -34,6 +34,8 @@ export interface KeptOutline {
   kept_at: string;
   /** Share of the field under living green plants (0..1), or why it was not measured. Missing until measured. */
   green_cover?: { share: number | null; why_not: string | null };
+  /** What is known of the field in the words the cards and Sage use too (src/services/field_facts.py). */
+  facts?: { area_said: string; plants_said: string | null; checked_said: string | null };
 }
 
 /** A corner of an outline as [longitude, latitude]. */

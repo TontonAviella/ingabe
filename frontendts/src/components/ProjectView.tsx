@@ -547,6 +547,10 @@ export default function ProjectView() {
           if (action.updates?.add_geojson_layer && mapRef.current) {
             const gl = action.updates.add_geojson_layer;
             const map = mapRef.current;
+            // Sage counted the plants of a field: that count is a fact of the field, so the field's row and the
+            // question cards are asked again and show it too (source ids of counts: src/tools/drone_photo_tools.py)
+            if (gl.source_id.startsWith('plants-'))
+              for (const key of ['field-taps', 'drone-cards', 'drone-card-answer']) void queryClient.invalidateQueries({ queryKey: [key] });
             if (!map.getSource(gl.source_id)) {
               let geojsonData: unknown;
               try {

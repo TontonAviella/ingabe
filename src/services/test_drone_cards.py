@@ -941,3 +941,20 @@ def test_stand_count_is_offered_only_where_a_count_can_be_given(photo):
     # more bands than colour: the finder was not measured on such a photo
     spectral = dataclasses.replace(fine, band_count=5)
     assert drone_cards.statuses(spectral, small)["plant_count"] == drone_cards.CANT_TELL
+
+
+def test_the_cards_say_a_field_as_the_field_panel_and_sage_do(photo):
+    from src.services import field_facts
+
+    fine = dataclasses.replace(_analysis(photo), look=dataclasses.replace(_analysis(photo).look, resolution_cm=3.25))
+    fields = (field_facts.FieldFacts(number=1, name="Field 1", area_ha=0.2, area_said="0.20 ha", kept_id="a",
+                                     plants_about=700, plants_said="about 700 plants", counted_share=0.86,
+                                     checked_said="In the 1 part of this field checked by hand, the app counted 38."),
+              field_facts.FieldFacts(number=2, name="Field 2", area_ha=0.9, area_said="0.90 ha"))
+    here = drone_cards.Here(plots=_plots(0.2, 0.9), fields=fields)
+    assert drone_cards._preview("plant_count", fine, here).startswith("Field 1: about 700 plants")
+    answer = drone_cards.answer_card("plant_count", fine, "farmer", here)
+    assert answer["facts"] == [
+        {"label": "Field 1", "value": "about 700 plants in the 86% of it that can be counted"},
+        {"label": "Field 1, checked by hand",
+         "value": "In the 1 part of this field checked by hand, the app counted 38."}]
