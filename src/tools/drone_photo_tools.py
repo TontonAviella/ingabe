@@ -114,9 +114,10 @@ async def get_drone_photo_findings(args: DronePhotoArgs, meta: IngabeToolCallMet
                   "camera": analysis.camera},
         "plots": here.plots.count if here.plots else None,
         # each field's own facts, the same ones the cards and the field panel show, in the same words
-        "fields": [{"field": facts.name, "size": facts.area_said, "green_cover": facts.cover_said,
-                    "plants": facts.plants_said, "counted_share_of_field": facts.counted_share,
-                    "checked_by_a_person": facts.checked_said} for facts in here.fields[:MAX_FIELDS_TOLD]],
+        "fields": [{k: v for k, v in {"field": facts.name, "size": facts.area_said, "green_cover": facts.cover_said,
+                                      "plants": facts.plants_said, "counted_share_of_field": facts.counted_share,
+                                      "checked_by_a_person": facts.checked_said}.items() if v is not None}
+                   for facts in here.fields[:MAX_FIELDS_TOLD]],
         "fields_left_out": max(0, len(here.fields) - MAX_FIELDS_TOLD),
         "findings": findings,
         "source": "Ingabe drone photo analysis (the question cards)",
@@ -136,7 +137,8 @@ async def count_plants_in_plot(args: CountPlantsArgs, meta: IngabeToolCallMetaAr
     of other green is (weed, grass or bush) is not known: do not name it. An answer is kept, so asking again
     is free. When `checked_by_a_person` is given, say it too: it is the person's own count in parts of the field,
     not scaled to the whole field; when it is not, say they can check the count themselves with "Check the count"
-    on the field. Give the number exactly as `say_it_as` gives it (two figures, "about 700"), never a longer one. The
+    on the field. Give the number exactly as `say_it_as` gives it (two figures, "about 700", with the part of the field it
+    covers when that is not all of it), never a longer one, and the field's size as `size` gives it. The
     map shows a ring around each plant counted; other green is drawn only with show_other_green, so set that
     when, and only when, the person asks where the weeds, grass or other green are; "remove the grass" or "show
     only the plants" means call again without it.
@@ -166,6 +168,8 @@ async def count_plants_in_plot(args: CountPlantsArgs, meta: IngabeToolCallMetaAr
         except plant_finder.CannotCount as why:
             return {"status": "error", "error": str(why)}
         await plant_finder.save_found(s3, bucket, key, feature, found)
+    else:  # a count kept before the photo had its record of counts joins it now, so every surface shows it
+        await plant_finder.note_counted(s3, bucket, key, feature, found)
     name = field_facts.name(args.plot_number, field_facts.outlined(plots), feature["properties"].get("name"))
     if found.squares_counted == 0:
         return {"status": "error",
@@ -182,7 +186,7 @@ async def count_plants_in_plot(args: CountPlantsArgs, meta: IngabeToolCallMetaAr
     # to two figures ("about 700"): the total was within 18% in the test, so "702" would claim what was not measured.
     about = plants_about(found.plants)
     points = points_drawn(found.points, args.show_other_green)
-    part = "" if found.counted_share >= 0.995 else f" in the {found.counted_share:.0%} of it that can be counted"
+    said = field_facts.plants_said(found.plants, found.counted_share)  # the words every surface uses
     items = [{"label": "each ring is one plant, found by its shape", "color": SPOT_COLOUR}]
     if args.show_other_green:
         items.append({"label": f"{found.other_green:,} other green (weed, grass or bush; which is not known)",
@@ -197,17 +201,16 @@ async def count_plants_in_plot(args: CountPlantsArgs, meta: IngabeToolCallMetaAr
             # for someone who cannot tell red from green
             style={"geometry": "point", "color_property": "kind_code",
                    "stops": [{"max": 0.5, "color": SPOT_COLOUR}, {"max": 9, "color": OTHER_GREEN_COLOUR}],
-                   "legend": {"title": f"{name}: about {about:,} plants{part}", "items": items}})
+                   "legend": {"title": f"{name}: {said}", "items": items}})
     return {
         "status": "success",
         "plot": name,
         "crop_seen": look,
         "plants_about": about,
-        "say_it_as": f"about {about:,} plants",
+        "say_it_as": said,
+        "size": field_facts.area_said(feature["properties"]["area_ha"]),
         "other_green_spots": found.other_green,
         "counted_share_of_plot": found.counted_share,
-        "plot_area_m2": found.plot_area_m2,
-        "counted_area_m2": found.counted_area_m2,
         "plants_per_ha_in_counted_part": field_facts.about(found.per_ha) if found.per_ha is not None else None,
         "parts_refused": found.squares_refused,
         "parts_counted": found.squares_counted,

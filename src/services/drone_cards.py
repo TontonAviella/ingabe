@@ -317,12 +317,7 @@ def _tone(audience: str) -> str:
     return "technical" if audience in ("agronomist", "scientist") else "plain"
 
 
-def _ha(value: float) -> str:
-    if value >= 10:
-        return f"{value:.0f} ha"
-    if value >= 1:
-        return f"{value:.1f} ha"
-    return f"{value:.2f} ha"
+_ha = field_facts.area_said  # a size is worded in one place for every surface
 
 
 def _pct(share: float) -> str:
@@ -842,9 +837,7 @@ def _plot_label(plot: dict[str, Any], plots: Optional[drone_plots.PlotSet] = Non
     field the reader outlined is "Field 7" everywhere."""
     if plot.get("_label"):
         return plot["_label"]
-    if plot.get("name"):
-        return f"{plot['name']} · plot {plot['number']}"
-    return field_facts.name(plot["number"], field_facts.outlined(plots))
+    return field_facts.name(plot["number"], field_facts.outlined(plots), plot.get("name"))
 
 
 def _named(plot: dict[str, Any], plots: Optional[drone_plots.PlotSet]) -> dict[str, Any]:
@@ -1791,9 +1784,7 @@ def _plant_count(analysis: PhotoAnalysis, audience: str, here: Here) -> dict[str
             todo=f"Outline a field of up to {plant_finder.MAX_PLOT_HA} ha by tapping it, then ask Sage how many plants it holds.",
             how_sure=_how_sure("low", ["Not counted on this photo"], None), terms=["hectare"], audience=audience)
     counted = [f for f in here.fields if f.plants_said]
-    facts = [{"label": f.name, "value": f.plants_said + (
-        f" in the {f.counted_share:.0%} of it that can be counted" if f.counted_share is not None and f.counted_share < 0.995
-        else "")} for f in counted]
+    facts = [{"label": f.name, "value": f.plants_said} for f in counted]
     facts += [{"label": f"{f.name}, checked by hand", "value": f.checked_said} for f in counted if f.checked_said]
     can, total = len(_countable_plots(here)), here.plots.count
     kind = "fields you outlined" if here.plots.source == drone_plots.OUTLINED_FIELDS_NAME else "plots"
@@ -1806,7 +1797,7 @@ def _plant_count(analysis: PhotoAnalysis, audience: str, here: Here) -> dict[str
               "the share of the field that could be counted. Parts where single plants cannot be told apart (closed "
               "canopy, pasture, bush) are left out and said."),
         why="Knowing early how many plants came up tells you whether to fill the gaps while there is time.",
-        todo=(f"Ask Sage \"how many plants are in plot {min(p['number'] for p in _countable_plots(here))}?\". Then tap that field and press Check the count: Ingabe "
+        todo=("Ask Sage how many plants are in one of them. Then tap that field and press Check the count: Ingabe "
               "chooses a small part, you mark the rings that are not plants and the plants it missed, and it tells you "
               "both counts."),
         how_sure=_how_sure("medium", [
@@ -2072,8 +2063,9 @@ def _asks(card_id: str, analysis: PhotoAnalysis, here: Here, items: list[dict[st
         smallest = min(_countable_plots(here), key=lambda p: p["number"], default=None) if _countable(analysis) else None
         if smallest is None:
             return []
-        asks["plant_count"] = [(f"How many plants are in plot {smallest['number']}?",
-                                f"{ctx}: how many plants are in plot {smallest['number']}?")]
+        named = field_facts.name(smallest["number"], field_facts.outlined(here.plots), smallest.get("name"))
+        asks["plant_count"] = [(f"How many plants are in {named}?",
+                                f"{ctx}: how many plants are in {named} (plot number {smallest['number']})?")]
     chosen = asks.get(card_id) or [(f"Ask Sage: {_CARD_BY_ID[card_id].question.lower()}",
                                     f"{ctx}: {_CARD_BY_ID[card_id].question}")]
     return [{"label": label, "prompt": prompt} for label, prompt in chosen[:ASKS_PER_ANSWER]]

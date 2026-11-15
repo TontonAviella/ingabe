@@ -931,7 +931,7 @@ def test_stand_count_is_offered_only_where_a_count_can_be_given(photo):
     assert "one field at a time" in answer["what"] and "1 of the 2 plots here are small enough" in answer["what"]
     assert "Check the count" in answer["todo"]
     assert answer["how_sure"]["level"] == "medium" and "within 18%" in answer["how_sure"]["because"][0]
-    assert answer["ask_sage"] == [{"label": "How many plants are in plot 1?",
+    assert answer["ask_sage"] == [{"label": "How many plants are in Plot 1?",
                                    "prompt": answer["ask_sage"][0]["prompt"]}]
     # no plots yet, or none small enough: no count is promised, and Sage is not sent to fail
     for here in (drone_cards.Here(), drone_cards.Here(plots=_plots(0.9, 2.0))):
@@ -948,7 +948,7 @@ def test_the_cards_say_a_field_as_the_field_panel_and_sage_do(photo):
 
     fine = dataclasses.replace(_analysis(photo), look=dataclasses.replace(_analysis(photo).look, resolution_cm=3.25))
     fields = (field_facts.FieldFacts(number=1, name="Field 1", area_ha=0.2, area_said="0.20 ha", kept_id="a",
-                                     plants_about=700, plants_said="about 700 plants", counted_share=0.86,
+                                     plants_about=700, plants_said="about 700 plants in the 86% of it that can be counted", counted_share=0.86,
                                      checked_said="In the 1 part of this field checked by hand, the app counted 38."),
               field_facts.FieldFacts(number=2, name="Field 2", area_ha=0.9, area_said="0.90 ha"))
     here = drone_cards.Here(plots=_plots(0.2, 0.9), fields=fields)

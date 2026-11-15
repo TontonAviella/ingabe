@@ -27,6 +27,7 @@ reference squares and 156 for 155 on the other; the picture scores agree to 0.00
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import math
@@ -284,3 +285,40 @@ async def load_found(s3: Any, bucket: str, photo_key: str, feature: dict[str, An
 async def save_found(s3: Any, bucket: str, photo_key: str, feature: dict[str, Any], found: PlantsFound) -> None:
     await s3.put_object(Bucket=bucket, Key=_store_key(photo_key, feature), Body=json.dumps(asdict(found)).encode(),
                         ContentType="application/json")
+    await note_counted(s3, bucket, photo_key, feature, found)
+
+
+# The counts made on one photo, in one small record: every surface that says a field's count (the question cards,
+# Sage's findings, the field panel) reads this once instead of asking for each plot's own answer.
+
+def _index_key(photo_key: str) -> str:
+    return f"{_STORE_PREFIX}/index/{hashlib.sha256(json.dumps([photo_key, METHOD]).encode()).hexdigest()[:32]}.json"
+
+
+_index_locks: dict[str, asyncio.Lock] = {}
+
+
+async def counted(s3: Any, bucket: str, photo_key: str) -> dict[str, dict[str, Any]]:
+    """The plots counted on this photo by today's method: answer key -> {number, plants, counted_share,
+    squares_counted, geometry}. Empty when none, or when the record is not one."""
+    record = await stored_files.load_json(s3, bucket, _index_key(photo_key))
+    return record if isinstance(record, dict) else {}
+
+
+def answer_key(photo_key: str, feature: dict[str, Any]) -> str:
+    """The name under which this plot's count is kept (one per photo, outline and method)."""
+    return _store_key(photo_key, feature)
+
+
+async def note_counted(s3: Any, bucket: str, photo_key: str, feature: dict[str, Any], found: PlantsFound) -> None:
+    """Write this plot's count into the photo's record of counts (also for a count kept before the record existed)."""
+    key, name = _index_key(photo_key), _store_key(photo_key, feature)
+    entry = {"number": feature["properties"].get("number"), "plants": found.plants,
+             "counted_share": found.counted_share, "squares_counted": found.squares_counted,
+             "geometry": feature["geometry"]}
+    async with _index_locks.setdefault(key, asyncio.Lock()):
+        record = await counted(s3, bucket, photo_key)
+        if record.get(name) == entry:
+            return
+        record[name] = entry
+        await s3.put_object(Bucket=bucket, Key=key, Body=json.dumps(record).encode(), ContentType="application/json")

@@ -12,24 +12,30 @@ Reads only: nothing is counted or measured here, so asking is cheap and never st
 from __future__ import annotations
 
 import asyncio
+import logging
 from dataclasses import asdict, dataclass
 from typing import Any, Optional
 
 from shapely.geometry import shape
+from shapely.validation import make_valid
 
 from src.services import count_check, drone_plots, field_taps, plant_finder
 
+logger = logging.getLogger(__name__)
+
 SAME_FIELD = 0.999  # shared area over joined area: a plot and a kept field this alike are one field. A plot set
 # stores each outline after a trip to the photo's coordinates and back, so the two are never equal to the last bit.
-MAX_FIELDS = 200  # past this many plots the per-field records are not read (one small read each)
-_AT_ONCE = 8
 
 
 def same_field(a: dict[str, Any], b: dict[str, Any]) -> bool:
-    """Whether two outlines (GeoJSON geometries) are the same field."""
-    one, other = shape(a), shape(b)
-    joined = one.union(other).area
-    return joined > 0 and one.intersection(other).area / joined >= SAME_FIELD
+    """Whether two outlines (GeoJSON geometries) are the same field. An outline that cannot be compared is not."""
+    try:
+        one, other = make_valid(shape(a)), make_valid(shape(b))
+        joined = one.union(other).area
+        return joined > 0 and one.intersection(other).area / joined >= SAME_FIELD
+    except Exception:  # a broken outline is no match; the field is then shown with its size alone
+        logger.warning("field facts: two outlines could not be compared", exc_info=True)
+        return False
 
 
 def outlined(plots: Any) -> bool:
@@ -38,13 +44,17 @@ def outlined(plots: Any) -> bool:
 
 
 def name(number: int, of_outlined: bool, own: Optional[str] = None) -> str:
-    """What a field is called everywhere: the reader's own name from their map, else "Field 7" for a field they
-    outlined and "Plot 7" for one Ingabe found."""
-    return own or f"{'Field' if of_outlined else 'Plot'} {number}"
+    """What a field is called everywhere: the reader's own name from their map with its number ("Maize A · plot 3":
+    the number is what they ask Sage by), else "Field 7" for a field they outlined and "Plot 7" for one Ingabe
+    found."""
+    return f"{own} · plot {number}" if own else f"{'Field' if of_outlined else 'Plot'} {number}"
 
 
 def area_said(area_ha: float) -> str:
-    """A field's size as it is said everywhere: hectares from 0.05 ha up, square metres below."""
+    """A field's size as it is said everywhere: whole hectares from 10 ha, a decimal from 1 ha, two from 0.05 ha,
+    and square metres below that (the frontend's `ha` in FieldTaps.tsx words an outline being drawn the same way)."""
+    if area_ha >= 10:
+        return f"{area_ha:.0f} ha"
     if area_ha >= 1:
         return f"{area_ha:.1f} ha"
     if area_ha >= 0.05:
@@ -64,8 +74,12 @@ def about(count: int) -> int:
     return int(round(count / step) * step)
 
 
-def plants_said(count: int) -> str:
-    return f"about {about(count):,} plant{'' if about(count) == 1 else 's'}"
+def plants_said(count: int, counted_share: Optional[float] = None) -> str:
+    """A plant count as it is said everywhere. When plants could be counted in a part of the field only, the count
+    never goes without that part: "about 280 plants in the 40% of it that can be counted"."""
+    part = (f" in the {counted_share:.0%} of it that can be counted"
+            if counted_share is not None and counted_share < 0.995 else "")
+    return f"about {about(count):,} plant{'' if about(count) == 1 else 's'}{part}"
 
 
 @dataclass(frozen=True)
@@ -92,38 +106,79 @@ def said(facts: FieldFacts) -> str:
     return " · ".join(part for part in parts if part)
 
 
+def _counted(entry: Optional[dict[str, Any]]) -> Optional[dict[str, Any]]:
+    """A count from the photo's record when plants could be counted in the plot at all."""
+    return entry if entry and entry.get("squares_counted", 0) > 0 and isinstance(entry.get("plants"), int) else None
+
+
+def _facts(number: int, label: str, area_ha: float, row: Optional[dict[str, Any]], cover: Optional[float],
+           count: Optional[dict[str, Any]], check: Optional[dict[str, Any]]) -> FieldFacts:
+    return FieldFacts(
+        number=number, name=label, area_ha=area_ha, area_said=area_said(area_ha),
+        kept_id=row["id"] if row is not None else None,
+        green_cover=cover, cover_said=f"green cover {round(cover * 100)}%" if cover is not None else None,
+        plants_about=about(count["plants"]) if count else None,
+        plants_said=plants_said(count["plants"], count.get("counted_share")) if count else None,
+        counted_share=count.get("counted_share") if count else None,
+        checked_said=check["said"] if check else None)
+
+
+async def _check(s3: Any, bucket: str, photo_key: str, layer_id: str, row: Optional[dict[str, Any]],
+                 count: Optional[dict[str, Any]]) -> Optional[dict[str, Any]]:
+    """A person's check of this field's count; one unreadable check loses that check, not the field."""
+    if row is None or count is None:
+        return None
+    try:
+        return await count_check.summary(s3, bucket, photo_key, layer_id, row)
+    except Exception:
+        logger.exception("field facts: the count check of field %s could not be read", row.get("number"))
+        return None
+
+
+async def _kept_and_counts(s3: Any, bucket: str, photo_key: str,
+                           layer_id: str) -> tuple[list[dict[str, Any]], bool, dict[str, dict[str, Any]]]:
+    """(the reader's kept fields, whether green cover may be said on this photo, the photo's record of counts):
+    three small reads, whatever the number of plots."""
+    rows = await field_taps.kept(s3, bucket, photo_key, layer_id) if field_taps.enabled() else []
+    covered = bool(rows) and await field_taps.cover_checked(s3, bucket, photo_key)
+    try:
+        counts = await plant_finder.counted(s3, bucket, photo_key)
+    except Exception:  # the fields are still said, without their counts
+        logger.exception("field facts: the photo's record of counts could not be read")
+        counts = {}
+    return rows, covered, counts
+
+
 async def of_plots(s3: Any, bucket: str, photo_key: str, layer_id: str, plots: Any) -> list[FieldFacts]:
     """The facts of every plot in a plot set, in the set's order. The reader's kept fields bring green cover and
     checks; a plot bears them only when it is that field (same number, same outline)."""
-    features = plots.geojson["features"]
+    rows, covered, counts = await _kept_and_counts(s3, bucket, photo_key, layer_id)
     of_outlined = outlined(plots)
-    rows = await field_taps.kept(s3, bucket, photo_key, layer_id) if field_taps.enabled() else []
-    covered = bool(rows) and await field_taps.cover_checked(s3, bucket, photo_key)
     by_number = {row["number"]: row for row in rows}
-    limit = asyncio.Semaphore(_AT_ONCE)
-    read = len(features) <= MAX_FIELDS
-
-    async def one(feature: dict[str, Any]) -> FieldFacts:
+    out: list[FieldFacts] = []
+    for feature in plots.geojson["features"]:
         props = feature["properties"]
         row = by_number.get(props["number"])
         if row is not None and not same_field(row["geometry"], feature["geometry"]):
             row = None
-        cover = field_taps.cover_share(row) if row is not None and covered else None
-        found = check = None
-        if read:
-            async with limit:
-                found = await plant_finder.load_found(s3, bucket, photo_key, feature)
-                if row is not None and found is not None:
-                    check = await count_check.summary(s3, bucket, photo_key, layer_id, row)
-        counted = found is not None and found.squares_counted > 0
-        return FieldFacts(
-            number=props["number"], name=name(props["number"], of_outlined, props.get("name")),
-            area_ha=props["area_ha"], area_said=area_said(props["area_ha"]),
-            kept_id=row["id"] if row is not None else None,
-            green_cover=cover, cover_said=f"green cover {round(cover * 100)}%" if cover is not None else None,
-            plants_about=about(found.plants) if found is not None and counted else None,
-            plants_said=plants_said(found.plants) if found is not None and counted else None,
-            counted_share=found.counted_share if found is not None and counted else None,
-            checked_said=check["said"] if check else None)
+        count = _counted(counts.get(plant_finder.answer_key(photo_key, feature)))
+        out.append(_facts(props["number"], name(props["number"], of_outlined, props.get("name")), props["area_ha"], row,
+                          field_taps.cover_share(row) if row is not None and covered else None, count,
+                          await _check(s3, bucket, photo_key, layer_id, row, count)))
+    return out
 
-    return list(await asyncio.gather(*(one(feature) for feature in features)))
+
+async def of_kept(s3: Any, bucket: str, photo_key: str, layer_id: str) -> dict[str, FieldFacts]:
+    """The facts of the reader's kept fields, by field id, for the field panel: read from the fields themselves and
+    the photo's record of counts, so nothing is measured and no plot set is built. A count is the field's when it
+    was made on the field's own outline (same number, same outline)."""
+    rows, covered, counts = await _kept_and_counts(s3, bucket, photo_key, layer_id)
+    out: dict[str, FieldFacts] = {}
+    for row in rows:
+        count = next((_counted(entry) for entry in counts.values()
+                      if entry.get("number") == row["number"] and isinstance(entry.get("geometry"), dict)
+                      and same_field(entry["geometry"], row["geometry"])), None)
+        out[row["id"]] = _facts(row["number"], name(row["number"], True), row.get("area_ha") or 0.0, row,
+                                field_taps.cover_share(row) if covered else None, count,
+                                await _check(s3, bucket, photo_key, layer_id, row, count))
+    return out
