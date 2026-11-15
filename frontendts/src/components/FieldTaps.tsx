@@ -20,6 +20,7 @@ import type { ServerError } from '@/lib/serverError';
 import { capped, nearestOnRing, type Pixel, pulled } from '@/lib/traceEdge';
 import type { MapLayer } from '@/lib/types';
 import { CountCheck } from './CountCheck';
+import { FieldRecords } from './FieldRecords';
 import { MyCrop } from './MyCrop';
 
 // Tap a field on a prepared drone photo: up to three outlines come back, the reader picks one, may correct it
@@ -561,6 +562,7 @@ export function FieldTaps({
           {!removing && (
             <div className="flex flex-col gap-2">
               {checked.data?.checked && <p className="m-0 text-[12.5px] text-fg-soft">{checked.data.checked.said}</p>}
+              {layerId && <FieldRecords layerId={layerId} field={selected} />}
               <div className="flex flex-wrap gap-2">
                 <button type="button" className={plain} onClick={() => setCropping(true)}>
                   Count my crop

@@ -14,7 +14,18 @@ from src.database.models import LAYER_TYPE_RASTER, MapLayer
 from src.dependencies.dag import edit_layer, get_layer
 from src.dependencies.session import UserContext, verify_session_required
 from src.routes.switched_routes import switched_route
-from src.services import count_check, field_facts, field_taps, industry, my_crop, photo_context, photo_plots, plant_finder
+from src.services import (
+    count_check,
+    farm_records,
+    field_facts,
+    field_taps,
+    industry,
+    my_crop,
+    photo_context,
+    photo_plots,
+    plant_finder,
+    record_links,
+)
 from src.structures import async_read_conn
 from src.utils import get_async_s3_client, get_bucket_name, get_s3_client
 
@@ -102,24 +113,81 @@ async def get_field_taps(layer: MapLayer = Depends(get_layer),
     # a link that outlasts the background job measuring green cover, as the other background photo readers use
     cog_url = await photo_context.cog_url(s3, bucket, layer.metadata_dict or {}, photo_context.LONG_URL_SECONDS)
     state = await field_taps.state(s3, bucket, key, layer.layer_id, cog_url)
-    state["kept"] = await _with_facts(state["kept"], s3, bucket, key, layer.layer_id)
+    state["kept"] = await _with_facts(state["kept"], s3, bucket, key, layer.layer_id, session.get_user_id())
     return state
 
 
-async def _with_facts(rows: list[dict[str, Any]], s3: Any, bucket: str, key: str, layer_id: str) -> list[dict[str, Any]]:
-    """Each kept field with what is known of it in the words every surface uses (field_facts): its size, and its
-    plant count and a person's check of it once Sage counted it. Reads only; a field whose facts cannot be read is
-    still shown."""
+async def _project(layer_id: str, user_id: str) -> Optional[str]:
+    async with async_read_conn("field_taps.project", user_id=user_id) as conn:
+        return await photo_context.project_of(conn, layer_id)
+
+
+async def _with_facts(rows: list[dict[str, Any]], s3: Any, bucket: str, key: str, layer_id: str,
+                      user_id: str) -> list[dict[str, Any]]:
+    """Each kept field with what is known of it in the words every surface uses (field_facts): its size, its
+    plant count and a person's check of it once Sage counted it, and the rows of the farm's documents linked to it
+    by place. Reads only; a field whose facts cannot be read is still shown."""
     if not rows:
         return rows
     known: dict[str, field_facts.FieldFacts] = {}
     try:
-        known = await field_facts.of_kept(s3, bucket, key, layer_id)
+        linked = await record_links.of_project(s3, bucket, await _project(layer_id, user_id),
+                                               record_links.kept_features(rows))
+        known = await field_facts.of_kept(s3, bucket, key, layer_id, record_links.by_field(linked))
     except Exception:
         logger.exception("field taps: the facts of the kept fields could not be read")
     return [{**row, "facts": {"area_said": known[row["id"]].area_said, "plants_said": known[row["id"]].plants_said,
-                              "checked_said": known[row["id"]].checked_said}} if row["id"] in known else row
+                              "checked_said": known[row["id"]].checked_said,
+                              "records_said": list(known[row["id"]].records_said)}} if row["id"] in known else row
             for row in rows]
+
+
+class LinkIn(BaseModel):
+    row: str = Field(min_length=3, max_length=80)
+    field_id: Optional[str] = Field(default=None, max_length=64)  # None: this row belongs to no field here
+
+
+async def _records_and_fields(layer: MapLayer, user_id: str) -> tuple[Any, str, str, list[dict[str, Any]]]:
+    key = await _photo_key(layer)
+    project_id = await _project(layer.layer_id, user_id)
+    if not project_id:
+        raise HTTPException(404, "This photo is not in a project")
+    s3, bucket = await get_async_s3_client(), get_bucket_name()
+    return s3, bucket, project_id, await field_taps.kept(s3, bucket, key, layer.layer_id)
+
+
+@router.get("/layer/{layer_id}/field-taps/records", operation_id="get_field_records")
+async def get_field_records(layer: MapLayer = Depends(get_layer),
+                            session: UserContext = Depends(verify_session_required)) -> dict[str, Any]:
+    """Every row of the farm's documents (lab samples, harvests) with the field it is linked to, if any. A row is
+    linked by the position its document prints or by a person, never by a matching name or number."""
+    s3, bucket, project_id, kept = await _records_and_fields(layer, session.get_user_id())
+    linked = await record_links.of_project(s3, bucket, project_id, record_links.kept_features(kept))
+    ids = {row["number"]: row["id"] for row in kept}
+    return {"rows": [{"key": item.row.key, "kind": item.row.kind, "label": item.row.label, "value": item.row.value,
+                      "document": item.row.document, "said": record_links.row_said(item),
+                      "field": item.number, "field_id": ids.get(item.number) if item.number is not None else None,
+                      "by": item.by, "suggest": item.suggest,
+                      "suggest_id": ids.get(item.suggest) if item.suggest is not None else None,
+                      "suggest_why": item.suggest_why, "note": item.note} for item in linked],
+            "not_linked": record_links.not_linked(linked)}
+
+
+@router.post("/layer/{layer_id}/field-taps/records/link", operation_id="link_field_record")
+async def link_field_record(body: LinkIn, layer: MapLayer = Depends(edit_layer),
+                            session: UserContext = Depends(verify_session_required)) -> dict[str, Any]:
+    """A person says which field a document row belongs to (or that it belongs to none). A point inside the field
+    is kept, so the link holds when fields are numbered differently later."""
+    s3, bucket, project_id, kept = await _records_and_fields(layer, session.get_user_id())
+    known = {row.key for row in record_links.rows(await farm_records.load_records(s3, bucket, project_id))}
+    if body.row not in known:
+        raise HTTPException(404, "No such row in this farm's documents")
+    field = next((row for row in kept if row["id"] == body.field_id), None) if body.field_id else None
+    if body.field_id and field is None:
+        raise HTTPException(404, "No such kept outline on this photo")
+    await record_links.keep(s3, bucket, project_id, body.row, field["geometry"] if field else None,
+                            field["number"] if field else None, session.get_user_id())
+    return {"row": body.row, "field": field["number"] if field else None}
 
 
 @router.post("/layer/{layer_id}/field-taps/outline", operation_id="outline_field_from_taps")

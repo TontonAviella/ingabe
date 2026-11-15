@@ -357,3 +357,40 @@ async def test_a_count_is_checked_square_by_square_by_people_who_may_edit(client
     assert (await client.post(f"{url}/square", json={})).status_code in (403, 404)
     body = {"square": [4, 2], "shown": mark, "wrong": [], "missed": []}
     assert (await client.post(url, json=body)).status_code in (403, 404)
+
+
+@pytest.mark.anyio
+async def test_a_document_row_is_linked_to_a_field_by_a_person_never_by_its_number(client, photo, taps_on, monkeypatch):
+    from src.services import farm_records
+
+    ids = await photo()
+    base = f"/api/layer/{ids['layer']}/field-taps"
+    _as(ids["owner"])
+    kept = (await client.post(f"{base}/kept", json=_json(_tap(60, 10), pick=0))).json()
+    # the lab called its sample by the same number the photo gave this field
+    doc = farm_records.FarmDocument(
+        id=f"d{uuid.uuid4().hex[:8]}", filename="lab.pdf", file_key="k", kind=farm_records.SOIL_REPORT, title=None,
+        source="Lab", date=None, added_at="x",
+        soil_samples=[farm_records.SoilSample(str(kept["number"]), None, None, 5.1, None, 0.1, 4.0, None, 0.2, None)])
+
+    async def records(s3, bucket, project_id):
+        return [doc]
+
+    monkeypatch.setattr(farm_records, "load_records", records)
+    (row,) = (await client.get(f"{base}/records")).json()["rows"]
+    assert row["field"] is None and row["suggest"] == kept["number"] and row["suggest_id"] == kept["id"]
+    assert "records_said" not in str((await client.get(base)).json()["kept"][0]["facts"]["records_said"] or "")
+    linked = await client.post(f"{base}/records/link", json={"row": row["key"], "field_id": kept["id"]})
+    assert linked.json() == {"row": row["key"], "field": kept["number"]}
+    (row,) = (await client.get(f"{base}/records")).json()["rows"]
+    assert (row["field"], row["field_id"], row["by"]) == (kept["number"], kept["id"], "person")
+    # the field's own facts now carry it, in the words every surface uses
+    assert (await client.get(base)).json()["kept"][0]["facts"]["records_said"] == [row["said"]]
+    assert (await client.post(f"{base}/records/link", json={"row": "nope:soil:0", "field_id": kept["id"]})).status_code == 404
+    assert (await client.post(f"{base}/records/link", json={"row": row["key"], "field_id": "nope"})).status_code == 404
+    _as(VIEWER)  # a viewer reads the links and cannot change them
+    assert (await client.get(f"{base}/records")).status_code == 200
+    assert (await client.post(f"{base}/records/link", json={"row": row["key"], "field_id": None})).status_code in (403, 404)
+    _as(ids["owner"])
+    await client.post(f"{base}/records/link", json={"row": row["key"], "field_id": None})
+    assert (await client.get(f"{base}/records")).json()["rows"][0]["field"] is None

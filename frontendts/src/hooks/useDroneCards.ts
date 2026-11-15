@@ -130,6 +130,9 @@ export function useChoosePlotSource(layerId: string | null) {
       await sendJson(href, 'PUT', { source });
     },
     onSuccess: () => {
+      // a new document's rows are offered on the field panel too, to be linked to their fields
+      queryClient.invalidateQueries({ queryKey: ['field-records', layerId] });
+      queryClient.invalidateQueries({ queryKey: ['field-taps', layerId] });
       queryClient.invalidateQueries({ queryKey: ['drone-cards', layerId] });
       queryClient.invalidateQueries({ queryKey: ['drone-card-answer', layerId] });
     },

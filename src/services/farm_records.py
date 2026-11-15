@@ -46,17 +46,17 @@ _SCHEMA = {
                 "nitrogen": _NUMBER, "nitrogen_unit": _TEXT,
                 "phosphorus": _NUMBER, "phosphorus_unit": _TEXT, "phosphorus_method": _TEXT,
                 "potassium": _NUMBER, "potassium_unit": _TEXT,
-                "texture": _TEXT,
+                "texture": _TEXT, "coordinates": _TEXT,
             },
             "required": ["sample", "place", "depth", "ph", "organic_carbon", "organic_carbon_unit", "nitrogen",
                          "nitrogen_unit", "phosphorus", "phosphorus_unit", "phosphorus_method", "potassium",
-                         "potassium_unit", "texture"],
+                         "potassium_unit", "texture", "coordinates"],
         }},
         "harvests": {"type": "array", "items": {
             "type": "object", "additionalProperties": False,
             "properties": {"plot": _TEXT, "farmer": _TEXT, "crop": _TEXT, "season": _TEXT, "date": _TEXT,
-                           "harvest_kg": _NUMBER, "area_ha": _NUMBER},
-            "required": ["plot", "farmer", "crop", "season", "date", "harvest_kg", "area_ha"],
+                           "harvest_kg": _NUMBER, "area_ha": _NUMBER, "coordinates": _TEXT},
+            "required": ["plot", "farmer", "crop", "season", "date", "harvest_kg", "area_ha", "coordinates"],
         }},
         "warnings": {"type": "array", "items": {"type": "string"}},
     },
@@ -68,7 +68,8 @@ _PROMPT = (
     "Copy what it says into the fields; do not calculate, convert or guess. Units exactly as printed "
     "(%, g/kg, mg/kg, ppm, cmol/kg, meq/100g). A value you cannot read is null. For harvest records, one row "
     "per entry, harvest in kg (if the page uses bags or tonnes, put that in warnings and leave harvest_kg null "
-    "unless it gives kg). Put anything unclear, crossed out or unreadable in warnings, in plain words."
+    "unless it gives kg). If the document prints a position for a sample or a plot (GPS latitude and longitude, "
+    "or a grid reference), copy it into coordinates exactly as printed; otherwise null. Put anything unclear, crossed out or unreadable in warnings, in plain words."
 )
 
 
@@ -84,6 +85,7 @@ class SoilSample:
     phosphorus_method: Optional[str]
     potassium_cmol_kg: Optional[float]
     texture: Optional[str]
+    coordinates: Optional[str] = None  # the sample's position as the document prints it (record_links reads it)
 
 
 @dataclass(frozen=True)
@@ -95,6 +97,7 @@ class Harvest:
     date: Optional[str]
     harvest_kg: Optional[float]
     area_ha: Optional[float]
+    coordinates: Optional[str] = None  # the plot's position as the document prints it
 
     @property
     def tonnes_per_ha(self) -> Optional[float]:
@@ -168,13 +171,14 @@ def _sample(raw: dict[str, Any]) -> SoilSample:
         phosphorus_mg_kg=phosphorus_mg_kg(raw.get("phosphorus"), raw.get("phosphorus_unit")),
         phosphorus_method=raw.get("phosphorus_method"),
         potassium_cmol_kg=potassium_cmol_kg(raw.get("potassium"), raw.get("potassium_unit")),
-        texture=raw.get("texture"),
+        texture=raw.get("texture"), coordinates=raw.get("coordinates"),
     )
 
 
 def _harvest(raw: dict[str, Any]) -> Harvest:
     return Harvest(plot=raw.get("plot"), farmer=raw.get("farmer"), crop=raw.get("crop"), season=raw.get("season"),
-                   date=raw.get("date"), harvest_kg=raw.get("harvest_kg"), area_ha=raw.get("area_ha"))
+                   date=raw.get("date"), harvest_kg=raw.get("harvest_kg"), area_ha=raw.get("area_ha"),
+                   coordinates=raw.get("coordinates"))
 
 
 # --- Reading a document -----------------------------------------------------------------------

@@ -25,6 +25,7 @@ from src.services import (
     photo_context,
     photo_plots,
     plant_finder,
+    record_links,
 )
 from src.structures import async_read_conn
 from src.tools.geojson_transport import geojson_layer_update
@@ -116,9 +117,14 @@ async def get_drone_photo_findings(args: DronePhotoArgs, meta: IngabeToolCallMet
         # each field's own facts, the same ones the cards and the field panel show, in the same words
         "fields": [{k: v for k, v in {"field": facts.name, "size": facts.area_said, "green_cover": facts.cover_said,
                                       "plants": facts.plants_said, "counted_share_of_field": facts.counted_share,
-                                      "checked_by_a_person": facts.checked_said}.items() if v is not None}
+                                      "checked_by_a_person": facts.checked_said,
+                                      # rows of the farm's documents that belong to this field, joined by place
+                                      "records": list(facts.records_said) or None}.items() if v is not None}
                    for facts in here.fields[:MAX_FIELDS_TOLD]],
         "fields_left_out": max(0, len(here.fields) - MAX_FIELDS_TOLD),
+        # document rows no one has linked to a field: they belong to the farm, not to any one field; a number in a
+        # document is not the photo's field number
+        "records_not_linked_to_a_field": record_links.not_linked(here.linked) if here.records else None,
         "findings": findings,
         "source": "Ingabe drone photo analysis (the question cards)",
     }
