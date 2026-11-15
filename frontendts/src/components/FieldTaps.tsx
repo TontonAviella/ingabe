@@ -504,10 +504,8 @@ export function FieldTaps({
           map={map}
           layerId={layerId}
           field={selected}
-          onClose={() => {
-            setChecking(false);
-            void client.invalidateQueries({ queryKey: ['field-count-check', layerId, selected.id] });
-          }}
+          onSaved={() => void client.invalidateQueries({ queryKey: ['field-count-check', layerId, selected.id] })}
+          onClose={() => setChecking(false)}
         />
       )}
       {selected && !counting && (

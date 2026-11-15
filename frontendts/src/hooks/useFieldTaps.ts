@@ -142,6 +142,8 @@ export interface SquareToCheck {
   /** Each plant as [longitude, latitude]; a ring that is not a plant is named by its place in this list. */
   plants: [number, number][];
   app: number;
+  /** Names this list of plants; sent back with the check, which is kept only against the list that was shown. */
+  plants_mark: string;
   /** The part of the square that lies in the field: plants are counted there and nowhere else. */
   part: GeoJSON.Polygon | GeoJSON.MultiPolygon;
   side_m: number;
@@ -169,9 +171,9 @@ export function useCountChecked(layerId: string | null, fieldId: string | null) 
   });
 }
 
-/** The next part of the field to check; `seen` are parts already shown and passed over. */
-export function squareToCheck(layerId: string, fieldId: string, seen: [number, number][]): Promise<SquareToCheck> {
-  return sendJson(`${checkUrl(layerId, fieldId)}/square`, 'POST', { seen });
+/** The part of the field to check next: the app's choice. It stays the same until its check is kept. */
+export function squareToCheck(layerId: string, fieldId: string): Promise<SquareToCheck> {
+  return sendJson(`${checkUrl(layerId, fieldId)}/square`, 'POST', {});
 }
 
 /** Keep the reader's check of one part: the rings that are not plants and the plants that got no ring. */
@@ -179,10 +181,11 @@ export function keepCountCheck(
   layerId: string,
   fieldId: string,
   square: [number, number],
+  shown: string,
   wrong: number[],
   missed: Place[],
 ): Promise<{ here: CheckedSquare; checked: CountChecked | null; measured: string }> {
-  return sendJson(checkUrl(layerId, fieldId), 'POST', { square, wrong, missed });
+  return sendJson(checkUrl(layerId, fieldId), 'POST', { square, shown, wrong, missed });
 }
 
 /** The kept fields changed: they are also the plots the question cards read, so those are asked again too. */

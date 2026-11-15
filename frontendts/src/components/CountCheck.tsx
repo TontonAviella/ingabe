@@ -29,8 +29,20 @@ const COLOURS = { app: '#FF4D1A', struck: '#9CA3AF', added: '#FFFFFF' };
 type Mark = { wrong: number } | { added: Place };
 type Stage = 'loading' | 'marking' | 'saving' | 'saved';
 
-function rings(part: SquareToCheck['part']): [number, number][][] {
-  return part.type === 'Polygon' ? [part.coordinates[0] as [number, number][]] : part.coordinates.map((p) => p[0] as [number, number][]);
+/** The polygons of the part, each as its rings (the outer line first, then any holes). */
+function polygons(part: SquareToCheck['part']): [number, number][][][] {
+  return (part.type === 'Polygon' ? [part.coordinates] : part.coordinates) as [number, number][][][];
+}
+
+/** Whether a place lies in the part: inside a polygon's outer line and outside its holes. */
+function within(part: SquareToCheck['part'], lon: number, lat: number): boolean {
+  const at = { x: lon, y: lat };
+  const holds = (ring: [number, number][]) =>
+    inside(
+      ring.map(([x, y]) => ({ x, y })),
+      at,
+    );
+  return polygons(part).some(([outer, ...holes]) => outer && holds(outer) && !holes.some(holds));
 }
 
 function drawn(shown: SquareToCheck | null, struck: Set<number>, added: Place[]): GeoJSON.FeatureCollection {
@@ -115,17 +127,19 @@ export function CountCheck({
   map,
   layerId,
   field,
+  onSaved,
   onClose,
 }: {
   map: MLMap | null;
   layerId: string;
   field: KeptOutline;
+  /** A check was kept on the server. */
+  onSaved: () => void;
   onClose: () => void;
 }) {
   const [stage, setStage] = useState<Stage>('loading');
   const [shown, setShown] = useState<SquareToCheck | null>(null);
   const [marks, setMarks] = useState<Mark[]>([]); // in the order tapped, so Undo takes the last one back
-  const [seen, setSeen] = useState<[number, number][]>([]);
   const [saved, setSaved] = useState<{ here: CheckedSquare; checked: CountChecked | null; measured: string } | null>(null);
   const [problem, setProblem] = useState<string | null>(null);
   const asking = useRef(0);
@@ -135,40 +149,38 @@ export function CountCheck({
   const data = useMemo(() => drawn(stage === 'loading' ? null : shown, struck, added), [stage, shown, struck, added]);
   useDrawn(map, data);
 
-  // Ask the server for a part of the field; `passed` are the parts already shown and not checked.
-  const ask = useCallback(
-    (passed: [number, number][]) => {
-      const mine = ++asking.current;
-      setStage('loading');
-      setProblem(null);
-      setMarks([]);
-      setSaved(null);
-      squareToCheck(layerId, field.id, passed)
-        .then((answer) => {
-          if (mine !== asking.current) return;
-          setShown(answer);
-          setStage('marking');
-        })
-        .catch((error: ServerError) => {
-          if (mine !== asking.current) return;
-          setProblem(error.message);
-          setStage(shown ? 'marking' : 'loading');
-        });
-    },
-    [layerId, field.id, shown],
-  );
-  // biome-ignore lint/correctness/useExhaustiveDependencies: asked once, when the check opens on a field
+  // Ask the server for the part to check next. There is no passing over a part: the next one comes when this
+  // one's check is kept.
+  const ask = useCallback(() => {
+    const mine = ++asking.current;
+    setProblem(null);
+    squareToCheck(layerId, field.id)
+      .then((answer) => {
+        if (mine !== asking.current) return;
+        setShown(answer);
+        setMarks([]);
+        setSaved(null);
+        setStage('marking');
+      })
+      .catch((error: ServerError) => {
+        if (mine === asking.current) setProblem(error.message); // what is on screen stays as it was
+      });
+  }, [layerId, field.id]);
   useEffect(() => {
-    ask([]);
+    setStage('loading');
+    setShown(null);
+    setMarks([]);
+    setSaved(null);
+    ask();
     return () => {
       asking.current += 1; // an answer still on its way belongs to a check that was closed
     };
-  }, [layerId, field.id]);
+  }, [ask]);
 
   // The map goes to the part shown, close enough to judge each ring.
   useEffect(() => {
     if (!map || !shown) return;
-    const all = rings(shown.part).flat();
+    const all = polygons(shown.part).flat(2);
     if (!all.length) return;
     const lons = all.map((c) => c[0]);
     const lats = all.map((c) => c[1]);
@@ -216,15 +228,7 @@ export function CountCheck({
         setMarks((before) => before.filter((m) => !('added' in m && m.added === p)));
         return;
       }
-      const here = { x: e.lngLat.lng, y: e.lngLat.lat };
-      if (
-        !rings(shown.part).some((ring) =>
-          inside(
-            ring.map(([x, y]) => ({ x, y })),
-            here,
-          ),
-        )
-      ) {
+      if (!within(shown.part, e.lngLat.lng, e.lngLat.lat)) {
         setProblem('That tap is outside the part being checked. Tap inside the dashed line.');
         return;
       }
@@ -240,29 +244,26 @@ export function CountCheck({
 
   const save = () => {
     if (!shown) return;
+    const mine = ++asking.current;
     setStage('saving');
     setProblem(null);
-    keepCountCheck(layerId, field.id, shown.square, [...struck], added)
+    keepCountCheck(layerId, field.id, shown.square, shown.plants_mark, [...struck], added)
       .then((answer) => {
+        onSaved(); // kept on the server, whatever happens to this panel
+        if (mine !== asking.current) return;
         setSaved(answer);
         setStage('saved');
       })
       .catch((error: ServerError) => {
+        if (mine !== asking.current) return;
         setProblem(error.message);
         setStage('marking'); // the marks stay: the reader can change one and save again
       });
-  };
-  const another = () => {
-    if (!shown) return;
-    const passed = [...seen, shown.square];
-    setSeen(passed);
-    ask(passed);
   };
 
   const button = 'min-h-11 px-3 rounded-[12px] text-[13px] font-semibold cursor-pointer disabled:opacity-50 sm:min-h-9';
   const plain = `${button} bg-panel-2 text-fg hover:bg-panel-3`;
   const strong = `${button} bg-caramel text-panel hover:bg-caramel-hi`;
-  const yours = shown ? shown.app - struck.size + added.length : 0;
 
   return (
     <div className="flex flex-col gap-2" data-count-check={stage}>
@@ -270,7 +271,7 @@ export function CountCheck({
         {stage === 'loading' && !problem && `Choosing a part of Field ${field.number} for you to check. This can take half a minute.`}
         {(stage === 'marking' || stage === 'saving') &&
           shown &&
-          `The app ringed ${plants(shown.app)} in this part of Field ${field.number}. Your count: ${count(yours)}.`}
+          `The app ringed ${plants(shown.app)} in this part of Field ${field.number}. Is every ring on a plant, and every plant in a ring?`}
         {stage === 'saved' &&
           saved &&
           `In this part the app counted ${plants(saved.here.app)} and you counted ${count(saved.here.you)}: ${count(saved.here.wrong)} of its rings ${
@@ -279,8 +280,8 @@ export function CountCheck({
       </p>
       {(stage === 'marking' || stage === 'saving') && shown && (
         <ul className="m-0 flex list-none flex-col gap-1 p-0 text-[13px] text-fg-soft">
-          <li>Tap a ring that is not on a plant of your crop: it goes grey, with a ×.</li>
-          <li>Tap a plant that has no ring: it gets a white ring, with a +.</li>
+          <li>Tap a ring that is not on a plant of your crop: it goes grey, with a ×. {count(struck.size)} marked.</li>
+          <li>Tap the middle of a plant that has no ring: it gets a white ring, with a +. {count(added.length)} added.</li>
           <li>Only inside the dashed line. The app chose this part, 1 of {shown.squares_in_field} in the field.</li>
         </ul>
       )}
@@ -315,14 +316,11 @@ export function CountCheck({
             >
               Undo
             </button>
-            <button type="button" className={plain} disabled={stage === 'saving'} onClick={another}>
-              Another part
-            </button>
           </>
         )}
         {stage === 'saved' && (
-          <button type="button" className={strong} onClick={another}>
-            Check another part
+          <button type="button" className={strong} onClick={ask}>
+            Check the next part
           </button>
         )}
         <button type="button" className={plain} onClick={onClose}>

@@ -53,6 +53,7 @@ def stand_ins(monkeypatch):
 
     monkeypatch.setattr(plant_finder, "load_models", lambda s3, bucket: None)
     monkeypatch.setattr(count_check, "_squares", type(count_check._squares)())
+    monkeypatch.setattr(count_check, "_refused", type(count_check._refused)())
     monkeypatch.setattr(count_check, "_locks", {})
     return refused, runs
 
@@ -108,74 +109,112 @@ def test_what_the_checks_say_together():
               {"app": 10, "wrong": 0, "missed": 0, "at": "2026-11-15T09:00:00+00:00"}]
     both = count_check.summed(checks, 13)
     assert (both["app"], both["you"], both["wrong"], both["missed"], both["parts"]) == (48, 51, 2, 5, 2)
-    assert both["said"] == ("In the 2 of 13 parts you checked, the app counted 48 plants and you counted 51. "
-                            "2 of its rings were not plants, and it missed 5.")
+    # said of the person who checked, not of whoever reads it: an insurer reading it checked nothing
+    assert both["said"] == ("In the 2 of 13 parts of this field checked by hand, the app counted 48 plants and the "
+                            "person checking counted 51. 2 of the app's rings were not plants, and it missed 5.")
     one = count_check.summed([{"app": 9, "wrong": 1, "missed": 0, "at": "x"}])
-    assert one["said"] == ("In the 1 part you checked, the app counted 9 plants and you counted 8. "
-                           "1 of its rings was not a plant, and it missed 0.")
+    assert one["said"] == ("In the 1 part of this field checked by hand, the app counted 9 plants and the person "
+                           "checking counted 8. 1 of the app's rings was not a plant, and it missed 0.")
+
+
+def test_a_plant_added_twice_or_on_a_ring_left_standing_is_one_plant():
+    lat = -1.95
+    metre = 1 / 111_320
+    standing = [[30.0, lat]]
+    taps = [(30.0 + 0.05 * metre, lat),  # on the ring: the plant it already counts
+            (30.0 + 2 * metre, lat), (30.0 + 2.05 * metre, lat),  # the same plant tapped twice
+            (30.0 + 4 * metre, lat)]
+    assert count_check.added_plants(taps, standing) == [taps[1], taps[3]]
+    assert count_check.added_plants(taps, []) == [taps[0], taps[1], taps[3]]  # the ring was struck: a plant may stand there
 
 
 @pytest.mark.anyio
-async def test_a_square_is_shown_with_the_counts_plants_and_the_readers_check_is_kept(tmp_path, finder):
+async def test_the_app_chooses_each_part_in_turn_and_the_readers_check_is_kept(tmp_path, finder):
     refused, runs = finder
     path, store, row = _marked(tmp_path, (2, 1)), Store(), _row()
-    shown = await count_check.square(path, store, None, "b", "photo", "L1", row, [])
+    shown = await count_check.square(path, store, None, "b", "photo", "L1", row)
     j, i = shown["square"]
     whole = plant_finder.find_plants(path, {"type": "Feature", "geometry": row["geometry"],
                                             "properties": {"number": 3, "area_ha": row["area_ha"]}}, None)
-    other = await count_check.square(path, store, None, "b", "photo", "L1", row, [shown["square"]])
-    assert other["square"] != shown["square"]
-    assert shown["app"] + other["app"] == whole.plants  # the plants shown are the count's, square by square
     assert shown["app"] == len(shown["plants"]) > 0 and shown["squares_in_field"] == 2 and shown["checked"] is None
-    assert shown["side_m"] == 12.5
-
+    assert shown["side_m"] == 12.5 and shown["part"]["type"] == "MultiPolygon"
+    lats = [p[1] for p in shown["plants"]]
+    assert lats[0] > lats[-1]  # top row first: an order that is not the model's
+    # asked again, it is the same part: there is no passing over, and it is not read twice
     before = len(runs)
+    assert (await count_check.square(path, store, None, "b", "photo", "L1", row))["square"] == shown["square"]
+    assert len(runs) == before
+
     missed = [_tap(j * N + 30 + STEP, 30), _tap(j * N + 30 + STEP, 30 + STEP)]  # two tufts in an odd column
-    kept = await count_check.keep(path, store, None, "b", "photo", "L1", row, (j, i), [0, 0, 3], missed, "u1")
-    assert len(runs) == before  # the square shown a moment ago is not read again
+    kept = await count_check.keep(path, store, None, "b", "photo", "L1", row, (j, i), shown["plants_mark"],
+                                  [0, 0, 3], missed + missed[:1], "u1")
+    assert len(runs) == before
     assert kept["here"] == {"app": shown["app"], "you": shown["app"], "wrong": 2, "missed": 2}
-    assert kept["checked"]["parts"] == 1 and "of 2 part" in kept["checked"]["said"]
+    assert kept["checked"]["parts"] == 1 and "1 of 2 part" in kept["checked"]["said"]
     record = json.loads(next(iter(store.kept.values())))
     assert record[0]["by"] == "u1" and record[0]["struck"] == [0, 3] and len(record[0]["added"]) == 2
 
-    # the checked square is passed over; checking it again replaces the first check
-    again = await count_check.square(path, store, None, "b", "photo", "L1", row, [])
-    assert again["square"] == other["square"] and again["checked"]["parts"] == 1
-    await count_check.keep(path, store, None, "b", "photo", "L1", row, (j, i), [], [], "u1")
-    assert (await count_check.summary(store, "b", "photo", "L1", row))["wrong"] == 0
-    with pytest.raises(count_check.CheckProblem, match="has been shown"):
-        await count_check.square(path, store, None, "b", "photo", "L1", row, [other["square"]])
+    # now the other part is the one to check; the first cannot be kept a second time
+    other = await count_check.square(path, store, None, "b", "photo", "L1", row)
+    assert other["square"] != shown["square"] and other["checked"]["parts"] == 1
+    assert shown["app"] + other["app"] == whole.plants  # the plants shown are the count's, part by part
+    with pytest.raises(count_check.CheckProblem, match="not the part to check now"):
+        await count_check.keep(path, store, None, "b", "photo", "L1", row, (j, i), shown["plants_mark"], [], [], "u2")
+    await count_check.keep(path, store, None, "b", "photo", "L1", row, tuple(other["square"]), other["plants_mark"],
+                           [], [], "u2")
+    both = await count_check.summary(store, "b", "photo", "L1", row)
+    assert both["parts"] == 2 and both["app"] == whole.plants
+    with pytest.raises(count_check.CheckProblem, match="every part"):
+        await count_check.square(path, store, None, "b", "photo", "L1", row)
 
     # a field whose line changed has no checks: they were made on another line
-    moved = _row(cols=1)
-    assert await count_check.summary(store, "b", "photo", "L1", moved) is None
+    assert await count_check.summary(store, "b", "photo", "L1", _row(cols=1)) is None
+    # a record written in an older shape is passed over, not a crash
+    store.kept[next(iter(store.kept))] = json.dumps([{"square": [0, 0]}, "nonsense"]).encode()
+    assert await count_check.summary(store, "b", "photo", "L1", row) is None
 
 
 @pytest.mark.anyio
 async def test_what_a_check_may_not_say(tmp_path, finder):
-    refused, _ = finder
     path, store, row = _marked(tmp_path, (2, 1)), Store(), _row()
-    shown = await count_check.square(path, store, None, "b", "photo", "L1", row, [])
+    shown = await count_check.square(path, store, None, "b", "photo", "L1", row)
     j, i = shown["square"]
+
+    async def keep(at, mark, wrong, missed):
+        return await count_check.keep(path, store, None, "b", "photo", "L1", row, at, mark, wrong, missed, "u1")
+
     with pytest.raises(count_check.CheckProblem, match="not in this part"):
-        await count_check.keep(path, store, None, "b", "photo", "L1", row, (j, i), [shown["app"]], [], "u1")
-    outside = _tap((1 - j) * N + 40, 40)  # in the field, but in the other square
+        await keep((j, i), shown["plants_mark"], [shown["app"]], [])
+    outside = _tap((1 - j) * N + 40, 40)  # in the field, but in the other part
     with pytest.raises(count_check.CheckProblem, match="outside this part"):
-        await count_check.keep(path, store, None, "b", "photo", "L1", row, (j, i), [], [outside], "u1")
-    with pytest.raises(count_check.CheckProblem, match="not in this field"):
-        await count_check.keep(path, store, None, "b", "photo", "L1", row, (5, 5), [], [], "u1")
+        await keep((j, i), shown["plants_mark"], [], [outside])
+    with pytest.raises(count_check.CheckProblem, match="not the part to check now"):  # a part the app did not offer
+        await keep((1 - j, i), shown["plants_mark"], [], [])
+    with pytest.raises(count_check.CheckProblem, match="not the part to check now"):  # not the plants that were shown
+        await keep((j, i), "0" * 16, [], [])
     assert not store.kept
-    refused.add((1 - j, i))
-    with pytest.raises(count_check.CheckProblem, match="not counted in that part"):
-        await count_check.keep(path, store, None, "b", "photo", "L1", row, (1 - j, i), [], [], "u1")
 
 
 @pytest.mark.anyio
-async def test_a_square_the_picture_check_refuses_is_never_offered(tmp_path, finder):
+async def test_a_part_the_picture_check_refuses_is_never_offered_and_is_read_once(tmp_path, finder):
     refused, _ = finder
     path, store, row = _marked(tmp_path, (2, 1)), Store(), _row()
-    refused.update({(0, 0), (1, 0)})
-    with pytest.raises(count_check.CheckProblem):
-        await count_check.square(path, store, None, "b", "photo", "L1", row, [])
-    refused.discard((1, 0))
-    assert (await count_check.square(path, store, None, "b", "photo", "L1", row, []))["square"] == [1, 0]
+    scored: list[int] = []
+    score = plant_finder.picture_score
+    plant_finder.picture_score = lambda models, rgb: (scored.append(1), score(models, rgb))[1]
+    try:
+        refused.update({(0, 0), (1, 0)})
+        for _ in range(2):
+            with pytest.raises(count_check.CheckProblem, match="every part"):
+                await count_check.square(path, store, None, "b", "photo", "L1", row)
+        assert len(scored) == 2  # each part judged once, not again on the second ask
+    finally:
+        plant_finder.picture_score = score
+
+
+@pytest.mark.anyio
+async def test_too_many_reads_at_once_are_told_to_come_back(tmp_path, finder, monkeypatch):
+    path, store, row = _marked(tmp_path, (2, 1)), Store(), _row()
+    monkeypatch.setattr(count_check, "_waiting", count_check.MAX_WAITING)
+    with pytest.raises(count_check.Busy):
+        await count_check.square(path, store, None, "b", "photo", "L1", row)

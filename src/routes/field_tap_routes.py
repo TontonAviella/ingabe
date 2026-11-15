@@ -63,13 +63,9 @@ class MyCropIn(BaseModel):
 Square = tuple[Annotated[int, Field(ge=0, le=100_000)], Annotated[int, Field(ge=0, le=100_000)]]
 
 
-class CheckSquareIn(BaseModel):
-    seen: list[Square] = Field(default=[], max_length=count_check.MAX_SEEN,
-                               description="squares already shown to the reader, as (column, row): passed over")
-
-
 class CheckIn(BaseModel):
     square: Square
+    shown: str = Field(min_length=16, max_length=16, description="the plants_mark of the part the reader was shown")
     wrong: list[Annotated[int, Field(ge=0, le=100_000)]] = Field(
         max_length=5000, description="the app's rings that are not plants, by their place in the square's list")
     missed: list[PlaceIn] = Field(max_length=count_check.MAX_MISSED, description="plants that got no ring")
@@ -212,16 +208,18 @@ async def get_field_count_checks(outline_id: str, layer: MapLayer = Depends(get_
 
 
 @router.post("/layer/{layer_id}/field-taps/kept/{outline_id}/count-check/square", operation_id="next_square_to_check")
-async def next_square_to_check(outline_id: str, body: CheckSquareIn, layer: MapLayer = Depends(edit_layer),
+async def next_square_to_check(outline_id: str, layer: MapLayer = Depends(edit_layer),
                                session: UserContext = Depends(verify_session_required)) -> dict[str, Any]:
-    """One square of a kept field, chosen by the app, with the plants the count holds there, for the reader to
-    check. For people who may edit the layer: it runs the plant finder."""
+    """The next part of a kept field to check, chosen by the app, with the plants the count holds there. For
+    people who may edit the layer: it runs the plant finder."""
     key, s3, bucket, row = await _kept_field(layer, outline_id)
-    url = await photo_context.cog_url(s3, bucket, layer.metadata_dict or {})
+    url = await photo_context.cog_url(s3, bucket, layer.metadata_dict or {}, photo_context.LONG_URL_SECONDS)
     try:
-        return await count_check.square(url, s3, get_s3_client(), bucket, key, layer.layer_id, row, body.seen)
+        return await count_check.square(url, s3, get_s3_client(), bucket, key, layer.layer_id, row)
     except (count_check.CheckProblem, plant_finder.CannotCount) as e:
         raise HTTPException(422, str(e)) from None
+    except count_check.Busy as e:
+        raise HTTPException(503, str(e)) from None
 
 
 @router.post("/layer/{layer_id}/field-taps/kept/{outline_id}/count-check", operation_id="keep_field_count_check")
@@ -229,9 +227,12 @@ async def keep_field_count_check(outline_id: str, body: CheckIn, layer: MapLayer
                                  session: UserContext = Depends(verify_session_required)) -> dict[str, Any]:
     """Keep the reader's check of one square: the rings that are not plants and the plants that got no ring."""
     key, s3, bucket, row = await _kept_field(layer, outline_id)
-    url = await photo_context.cog_url(s3, bucket, layer.metadata_dict or {})
+    url = await photo_context.cog_url(s3, bucket, layer.metadata_dict or {}, photo_context.LONG_URL_SECONDS)
     try:
         return await count_check.keep(url, s3, get_s3_client(), bucket, key, layer.layer_id, row, body.square,
-                                      body.wrong, [(p.lon, p.lat) for p in body.missed], session.get_user_id())
+                                      body.shown, body.wrong, [(p.lon, p.lat) for p in body.missed],
+                                      session.get_user_id())
     except (count_check.CheckProblem, plant_finder.CannotCount) as e:
         raise HTTPException(422, str(e)) from None
+    except count_check.Busy as e:
+        raise HTTPException(503, str(e)) from None

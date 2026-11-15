@@ -37,7 +37,7 @@ function fakeServer(prepared: boolean) {
   const cropAsked: { url: string; crop: { lon: number; lat: number }[]; other: { lon: number; lat: number }[] }[] = [];
   const cropAnswers: { status?: number; body: unknown }[] = [];
   // check a square: what was asked, and the checks kept
-  const checkAsked: { url: string; seen?: [number, number][]; square?: [number, number]; wrong?: number[]; missed?: unknown[] }[] = [];
+  const checkAsked: { url: string; square?: [number, number]; shown?: string; wrong?: number[]; missed?: unknown[] }[] = [];
   const checks: { app: number; you: number; wrong: number; missed: number }[] = [];
   const outlines = (taps: Tap[], pick: number | null) =>
     taps.length === 1
@@ -74,10 +74,11 @@ function fakeServer(prepared: boolean) {
     }
     if (url.endsWith('/count-check/square')) {
       checkAsked.push({ url, ...body });
-      // the fake's rule: one part to show; once it was passed over there is no other
-      if (body.seen.length) return json({ detail: 'Every part of this field where plants are counted has been shown.' }, 422);
+      // the fake's rule: the part after the ones kept; this field has two
+      if (checks.length >= 2) return json({ detail: 'You have checked every part of this field where plants are counted.' }, 422);
       return json({
-        square: [4, 2],
+        square: [4 + checks.length, 2],
+        plants_mark: `mark-of-part-${checks.length}`,
         plants: [
           [30.2, -1.5],
           [30.4, -1.5],
@@ -96,12 +97,12 @@ function fakeServer(prepared: boolean) {
       if (body.missed.length > 2) return json({ detail: 'A plant you added lies outside this part of the field.' }, 422);
       const here = { app: 3, wrong: body.wrong.length, missed: body.missed.length, you: 3 - body.wrong.length + body.missed.length };
       checks.push(here);
-      const said = `In the 1 of 13 parts you checked, the app counted 3 plants and you counted ${here.you}.`;
-      return json({ here, checked: { parts: 1, ...here, said }, measured: 'Your own count, on a part the app chose.' });
+      const said = `In the ${checks.length} of 13 parts checked by hand, the person checking counted ${here.you}.`;
+      return json({ here, checked: { parts: checks.length, ...here, said }, measured: 'Your own count, on a part the app chose.' });
     }
     if (url.endsWith('/count-check')) {
       const last = checks.at(-1);
-      return json({ checked: last ? { parts: 1, ...last, said: `You counted ${last.you} where the app counted 3.` } : null, measured: '' });
+      return json({ checked: last ? { parts: 1, ...last, said: `Checked by hand: ${checks.length} of 13 parts.` } : null, measured: '' });
     }
     if (url.endsWith('/turned-down')) {
       turnedDown.push(body);
@@ -568,10 +569,12 @@ describe('outlining a field by tapping it', () => {
     m.clickOn('a');
     await vi.waitFor(() => expect(byButton('Check the count')).not.toBeNull());
     click(byButton('Check the count') as HTMLButtonElement);
-    await vi.waitFor(() => expect(byText('The app ringed 3 plants in this part of Field 3. Your count: 3.')).not.toBeNull());
+    const asks = 'The app ringed 3 plants in this part of Field 3. Is every ring on a plant, and every plant in a ring?';
+    await vi.waitFor(() => expect(byText(asks)).not.toBeNull());
     expect(tapping.at(-1)).toBe(true);
     expect(m.fitted()).toBe(1); // the map goes to the part
-    expect(server.checkAsked[0]).toEqual({ url: `/api/layer/${LAYER}/field-taps/kept/a/count-check/square`, seen: [] });
+    expect(server.checkAsked[0]).toEqual({ url: `/api/layer/${LAYER}/field-taps/kept/a/count-check/square` });
+    expect(byButton('Another part')).toBeNull(); // a part cannot be passed over
     const signs = () =>
       m
         .checkDrawn()
@@ -591,7 +594,8 @@ describe('outlining a field by tapping it', () => {
     m.tap(35, -1.5);
     await vi.waitFor(() => expect(byText('That tap is outside the part being checked. Tap inside the dashed line.')).not.toBeNull());
     await vi.waitFor(() => expect(signs()).toEqual(['×', '', '', '+', '+']));
-    expect(byText('The app ringed 3 plants in this part of Field 3. Your count: 4.')).not.toBeNull();
+    expect(byText(/it goes grey, with a ×\. 1 marked\./)).not.toBeNull();
+    expect(byText(/with a \+\. 2 added\./)).not.toBeNull();
     // a tap on a plant the reader added takes it away, and Undo takes back the last mark
     m.tap(30.7, -1.21);
     await vi.waitFor(() => expect(signs()).toEqual(['×', '', '', '+']));
@@ -609,18 +613,25 @@ describe('outlining a field by tapping it', () => {
     expect(server.checkAsked[1]).toEqual({
       url: `/api/layer/${LAYER}/field-taps/kept/a/count-check`,
       square: [4, 2],
+      shown: 'mark-of-part-0',
       wrong: [0],
       missed: [{ lon: 30.5, lat: -1.2 }],
     });
     expect(byText('Your own count, on a part the app chose.')).not.toBeNull();
-    // there is no other part on this field: the server's words are shown
-    click(byButton('Check another part') as HTMLButtonElement);
-    await vi.waitFor(() => expect(byText('Every part of this field where plants are counted has been shown.')).not.toBeNull());
-    expect(server.checkAsked[2].seen).toEqual([[4, 2]]);
+    // the field's row is told at once, and the next part comes only now that this one is kept
+    click(byButton('Check the next part') as HTMLButtonElement);
+    await vi.waitFor(() => expect(byText(asks)).not.toBeNull());
+    expect(signs()).toEqual(['', '', '']); // the marks of the part before are gone
+    click(byButton('Save my count') as HTMLButtonElement);
+    await vi.waitFor(() => expect(byText('In the 2 of 13 parts checked by hand, the person checking counted 3.')).not.toBeNull());
+    expect(server.checkAsked[3]).toMatchObject({ square: [5, 2], shown: 'mark-of-part-1', wrong: [], missed: [] });
+    // there is no further part on this field: the server's words are shown and the saved answer stays
+    click(byButton('Check the next part') as HTMLButtonElement);
+    await vi.waitFor(() => expect(byText('You have checked every part of this field where plants are counted.')).not.toBeNull());
 
     // Close takes the rings off the map; the field now says what was checked
     click(byButton('Close') as HTMLButtonElement);
-    await vi.waitFor(() => expect(byText('You counted 3 where the app counted 3.')).not.toBeNull());
+    await vi.waitFor(() => expect(byText('Checked by hand: 2 of 13 parts.')).not.toBeNull());
     expect(m.checkDrawn()).toHaveLength(0);
     expect(tapping.at(-1)).toBe(false);
   });

@@ -323,30 +323,37 @@ async def test_a_count_is_checked_square_by_square_by_people_who_may_edit(client
     kept = (await client.post(f"{base}/kept", json=_json(_tap(60, 10), pick=0))).json()
     asked: list[tuple] = []
 
-    async def square(url, s3, sync_s3, bucket, key, layer_id, row, seen):
-        asked.append(("square", row["id"], layer_id, [tuple(s) for s in seen]))
-        if seen:
-            raise count_check.CheckProblem("Every part of this field where plants are counted has been shown.")
-        return {"square": [4, 2], "plants": [[30.1, -1.9]], "app": 1}
+    async def square(url, s3, sync_s3, bucket, key, layer_id, row):
+        asked.append(("square", row["id"], layer_id))
+        answer = next(answers)
+        if isinstance(answer, Exception):
+            raise answer
+        return answer
 
-    async def keep(url, s3, sync_s3, bucket, key, layer_id, row, at, wrong, missed, user_id):
-        asked.append(("keep", row["id"], tuple(at), list(wrong), list(missed), user_id))
+    async def keep(url, s3, sync_s3, bucket, key, layer_id, row, at, shown, wrong, missed, user_id):
+        asked.append(("keep", row["id"], tuple(at), shown, list(wrong), list(missed), user_id))
         return {"here": {"app": 1, "you": 2, "wrong": 0, "missed": 1}}
 
+    answers = iter([{"square": [4, 2], "plants": [[30.1, -1.9]], "app": 1},
+                    count_check.CheckProblem("You have checked every part of this field where plants are counted."),
+                    count_check.Busy("Other parts are being read right now. Try again in a minute.")])
     monkeypatch.setattr(count_check, "square", square)
     monkeypatch.setattr(count_check, "keep", keep)
     url = f"{base}/kept/{kept['id']}/count-check"
     assert (await client.get(url)).json()["checked"] is None
     assert (await client.post(f"{url}/square", json={})).json()["square"] == [4, 2]
-    shown_all = await client.post(f"{url}/square", json={"seen": [[4, 2]]})
-    assert shown_all.status_code == 422 and "has been shown" in shown_all.json()["detail"]
-    saved = await client.post(url, json={"square": [4, 2], "wrong": [], "missed": [{"lon": 30.1, "lat": -1.9}]})
+    shown_all = await client.post(f"{url}/square", json={})
+    assert shown_all.status_code == 422 and "every part" in shown_all.json()["detail"]
+    assert (await client.post(f"{url}/square", json={})).status_code == 503
+    mark = "0123456789abcdef"
+    saved = await client.post(url, json={"square": [4, 2], "shown": mark, "wrong": [], "missed": [{"lon": 30.1, "lat": -1.9}]})
     assert saved.json()["here"]["you"] == 2
-    assert asked[0] == ("square", kept["id"], ids["layer"], []) and asked[1][3] == [(4, 2)]
-    assert asked[2] == ("keep", kept["id"], (4, 2), [], [(30.1, -1.9)], ids["owner"])
-    assert (await client.post(url, json={"square": [-1, 2], "wrong": [], "missed": []})).status_code == 422
+    assert asked[0] == ("square", kept["id"], ids["layer"])
+    assert asked[-1] == ("keep", kept["id"], (4, 2), mark, [], [(30.1, -1.9)], ids["owner"])
+    assert (await client.post(url, json={"square": [-1, 2], "shown": mark, "wrong": [], "missed": []})).status_code == 422
     assert (await client.post(f"{base}/kept/nope/count-check/square", json={})).status_code == 404
     _as(VIEWER)  # a viewer may read what was checked, not run the finder or keep a check
     assert (await client.get(url)).status_code == 200
     assert (await client.post(f"{url}/square", json={})).status_code in (403, 404)
-    assert (await client.post(url, json={"square": [4, 2], "wrong": [], "missed": []})).status_code in (403, 404)
+    body = {"square": [4, 2], "shown": mark, "wrong": [], "missed": []}
+    assert (await client.post(url, json=body)).status_code in (403, 404)

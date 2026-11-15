@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import math
 import uuid
 from typing import Any, Optional
@@ -28,6 +29,8 @@ from src.structures import async_read_conn
 from src.tools.geojson_transport import geojson_layer_update
 from src.tools.pyd import IngabeToolCallMetaArgs
 from src.utils import get_async_s3_client, get_bucket_name, get_s3_client
+
+logger = logging.getLogger(__name__)
 
 # The cards Sage reads for an overview, in this order: plots, crops, problems, stage, weeds, bare ground.
 FINDING_CARDS = ("field_outlines", "crop_types", "plot_problems", "plot_stage", "weeds", "bare_ground", "plots_green")
@@ -236,11 +239,14 @@ async def _checked_by_a_person(s3: Any, bucket: str, photo_key: str, layer_id: s
     checked it as its line is now; else None."""
     if not field_taps.enabled():
         return None
-    outline = shape(feature["geometry"])
-    for row in await field_taps.kept(s3, bucket, photo_key, layer_id):
-        if row["number"] == feature["properties"]["number"] and shape(row["geometry"]).equals(outline):
-            summary = await count_check.summary(s3, bucket, photo_key, layer_id, row)
-            return summary["said"] if summary else None
+    try:
+        outline = shape(feature["geometry"])
+        for row in await field_taps.kept(s3, bucket, photo_key, layer_id):
+            if row["number"] == feature["properties"]["number"] and shape(row["geometry"]).equals(outline):
+                summary = await count_check.summary(s3, bucket, photo_key, layer_id, row)
+                return summary["said"] if summary else None
+    except Exception:  # the check is an extra: the count is still given when the check cannot be read
+        logger.exception("count check of plot %s could not be read", feature["properties"].get("number"))
     return None
 
 
