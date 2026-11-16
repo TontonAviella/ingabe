@@ -66,6 +66,8 @@ export interface DroneCardAnswer extends DroneCard, CardAnswerCore {
   ask_sage: AskSage[];
   /** A document the reader can add (soil lab report, harvest records) to answer with their own numbers. */
   upload: { label: string; href: string; accept: string } | null;
+  /** The farm's documents this card reads; `href` removes one for good (DELETE). */
+  documents?: { id: string; label: string; detail: string; href: string }[];
   /** Plots the reader can say the real crop of; href has a {number} slot. */
   field_check: {
     title: string;
@@ -154,6 +156,25 @@ export function useAddFarmRecord(layerId: string | null) {
       queryClient.invalidateQueries({ queryKey: ['field-taps', layerId] });
       queryClient.invalidateQueries({ queryKey: ['drone-cards', layerId] });
       queryClient.invalidateQueries({ queryKey: ['drone-card-answer', layerId] });
+    },
+  });
+}
+
+/** Remove an uploaded document for good; its rows leave the cards and the fields they were linked to. */
+export function useRemoveFarmRecord(layerId: string | null) {
+  const queryClient = useQueryClient();
+  return useMutation<{ removed: string; file_deleted: boolean }, ServerError, string>({
+    mutationFn: async (href) => {
+      const res = await apiFetch(href, { method: 'DELETE' });
+      // "no such document": it is already gone (a second tap, another tab), which is what was asked for
+      if (res.status === 404) return { removed: '', file_deleted: true };
+      if (!res.ok) throw await serverError(res);
+      return res.json();
+    },
+    // also after a refusal: "no such document" means the list on screen is old
+    onSettled: () => {
+      for (const key of ['field-records', 'field-taps', 'drone-cards', 'drone-card-answer'])
+        queryClient.invalidateQueries({ queryKey: [key, layerId] });
     },
   });
 }

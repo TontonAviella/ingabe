@@ -2149,3 +2149,28 @@ def answer_card(card_id: str, analysis: PhotoAnalysis, audience: Optional[str], 
               else _coming(card_id, analysis, reader, here))
     answer["ask_sage"] = _asks(card_id, analysis, here, answer["items"])
     return answer
+
+
+_DOCUMENT_CARDS = {"soil": farm_records.SOIL_REPORT, "history": farm_records.HARVEST_RECORDS}
+
+
+def documents(card_id: str, analysis: PhotoAnalysis, here: Here) -> list[dict[str, str]]:
+    """The farm's documents this card reads, each with where it is removed. A document that was neither a soil report
+    nor harvest records feeds no card; it is listed on both so it can still be taken out. Not part of a card's
+    answer: the route adds the list only for a reader who may remove a document (file names are the farm's own)."""
+    kind = _DOCUMENT_CARDS.get(card_id)
+    if kind is None:
+        return []
+    out = []
+    for doc in here.records:
+        if doc.kind not in (kind, "other"):
+            continue
+        rows = (f"{len(doc.soil_samples)} soil sample{'' if len(doc.soil_samples) == 1 else 's'}"
+                if doc.kind == farm_records.SOIL_REPORT
+                else f"{len(doc.harvests)} harvest{'' if len(doc.harvests) == 1 else 's'}"
+                if doc.kind == farm_records.HARVEST_RECORDS else "not a soil report or harvest records: no card uses it")
+        lab = (doc.source or doc.title or "").split(";")[0].strip()
+        out.append({"id": doc.id, "label": " · ".join(x for x in (doc.filename, lab, doc.date) if x),
+                    "detail": f"{rows} · added {doc.added_at[:10]}",
+                    "href": f"/api/layer/{analysis.layer_id}/records/{doc.id}"})
+    return out

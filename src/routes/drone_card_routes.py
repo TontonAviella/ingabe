@@ -31,6 +31,7 @@ from src.services import (
     photo_context,
     photo_plots,
     reader_roles,
+    record_links,
 )
 from src.services.insurance_engine import resolve_audience
 from src.structures import async_read_conn, get_async_db_connection
@@ -136,7 +137,29 @@ async def get_drone_card_answer(
     except KeyError:
         raise HTTPException(404, f"No card {card_id}") from None
     await card_memory.remember_opened(get_async_redis(), reader_id, layer.layer_id, card_id, answer.get("status"))
+    listed = drone_cards.documents(card_id, analysis, here)
+    if listed:  # only for someone who may remove a document; a viewer gets no file names and no Remove
+        try:
+            await _records_project(layer.layer_id, session.get_user_id())
+            answer["documents"] = listed
+        except HTTPException:
+            pass
     return answer
+
+
+async def _records_project(layer_id: str, user_id: str) -> str:
+    """The project whose records this photo reads, for someone who owns or edits that very project (edit_layer
+    passes for an editor of any project the layer is in); 404 or 403 otherwise. A deleted project is no one's."""
+    async with async_read_conn("farm_records", user_id=user_id) as conn:
+        project_id = await photo_context.project_of(conn, layer_id)
+        if not project_id:
+            raise HTTPException(404, "This photo is not in a project")
+        row = await conn.fetchrow("SELECT owner_uuid, editor_uuids FROM user_mundiai_projects "
+                                  "WHERE id = $1 AND soft_deleted_at IS NULL", project_id)
+    editors = [str(u) for u in (row["editor_uuids"] or [])] if row else []
+    if row is None or user_id not in [str(row["owner_uuid"]), *editors]:
+        raise HTTPException(403, "You do not have edit access to this farm's records")
+    return project_id
 
 
 class AskedQuestion(BaseModel):
@@ -300,6 +323,29 @@ async def add_farm_record(
         raise HTTPException(400, str(exc)) from None
     return {"id": document.id, "kind": document.kind, "title": document.title,
             "soil_samples": len(document.soil_samples), "harvests": len(document.harvests), "warnings": document.warnings}
+
+
+@router.delete("/layer/{layer_id}/records/{document_id}", operation_id="remove_farm_record")
+async def remove_farm_record(
+    document_id: str,
+    layer: MapLayer = Depends(edit_layer),
+    session: UserContext = Depends(verify_session_required),
+) -> dict[str, Any]:
+    """Take a soil lab report or harvest records out of the photo's project records, for good: its rows leave the
+    cards, Sage's findings and the fields they were linked to. Only an owner or editor of that project may."""
+    project_id = await _records_project(layer.layer_id, session.get_user_id())
+    s3, bucket = await get_async_s3_client(), get_bucket_name()
+    removed = await farm_records.remove_document(s3, bucket, project_id, document_id)
+    if removed is None:
+        raise HTTPException(404, "No such document in this farm's records")
+    gone, file_deleted = removed
+    try:
+        await record_links.forget(s3, bucket, project_id, gone)
+    except Exception:  # the rows are gone, so a link left behind points at nothing and is read by nothing
+        logger.exception("farm document %s: its links could not be dropped", document_id)
+    # file_deleted False: the document is out of every card, but its file is still in storage (logged for clean-up)
+    return {"removed": document_id, "soil_samples": len(gone.soil_samples), "harvests": len(gone.harvests),
+            "file_deleted": file_deleted}
 
 
 class FieldCheck(BaseModel):

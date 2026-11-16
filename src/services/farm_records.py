@@ -8,6 +8,7 @@ judged and compared here, in code. Records are kept per project in object storag
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import io
 import json
@@ -254,6 +255,13 @@ def to_document(raw: dict[str, Any], filename: str, file_key: str, model: str, d
 
 # --- Kept per project --------------------------------------------------------------------------
 
+_locks: dict[str, asyncio.Lock] = {}
+
+
+def _lock(project_id: str) -> asyncio.Lock:
+    return _locks.setdefault(project_id, asyncio.Lock())
+
+
 def _records_key(project_id: str) -> str:
     return f"{_STORE_PREFIX}/{project_id}/records.json"
 
@@ -270,13 +278,34 @@ def _from_dict(data: dict[str, Any]) -> FarmDocument:
                            "harvests": [Harvest(**_known(Harvest, h)) for h in data.get("harvests", [])]})
 
 
+def _removed_prefix(project_id: str) -> str:
+    return f"{_STORE_PREFIX}/{project_id}/removed/"
+
+
+async def _removed(s3: Any, bucket: str, project_id: str) -> set[str]:
+    """The ids of documents taken out of the project. A removal is its own small mark and never rewrites the list
+    of documents: the server runs several workers, and a rewrite racing an upload would lose the upload or bring
+    the removed document back."""
+    out: set[str] = set()
+    token: Optional[str] = None
+    while True:
+        more = {"ContinuationToken": token} if token else {}
+        page = await s3.list_objects_v2(Bucket=bucket, Prefix=_removed_prefix(project_id), **more)
+        out |= {o["Key"].rsplit("/", 1)[-1] for o in page.get("Contents", [])}
+        token = page.get("NextContinuationToken")
+        if not token:
+            return out
+
+
 async def load_records(s3: Any, bucket: str, project_id: str) -> list[FarmDocument]:
     try:
         response = await s3.get_object(Bucket=bucket, Key=_records_key(project_id))
     except s3.exceptions.NoSuchKey:
         return []
     async with response["Body"] as body:
-        return [_from_dict(d) for d in json.loads(await body.read())]
+        kept = [_from_dict(d) for d in json.loads(await body.read())]
+    gone = await _removed(s3, bucket, project_id)
+    return [d for d in kept if d.id not in gone]
 
 
 async def add_document(s3: Any, bucket: str, project_id: str, content: bytes, filename: str,
@@ -288,12 +317,35 @@ async def add_document(s3: Any, bucket: str, project_id: str, content: bytes, fi
     raw, model = await read_document(content, filename, content_type)
     document = to_document(raw, filename, file_key, model, doc_id)
     await s3.put_object(Bucket=bucket, Key=file_key, Body=content, ContentType=content_type or "application/octet-stream")
-    records = await load_records(s3, bucket, project_id) + [document]
-    await s3.put_object(Bucket=bucket, Key=_records_key(project_id), ContentType="application/json",
-                        Body=json.dumps([asdict(d) for d in records]).encode())
+    async with _lock(project_id):  # with remove_document: one change to the project's list at a time in this process
+        records = await load_records(s3, bucket, project_id) + [document]
+        await s3.put_object(Bucket=bucket, Key=_records_key(project_id), ContentType="application/json",
+                            Body=json.dumps([asdict(d) for d in records]).encode())
     logger.info("farm document %s read as %s: %d soil samples, %d harvests", doc_id, document.kind,
                 len(document.soil_samples), len(document.harvests))
     return document
+
+
+async def remove_document(s3: Any, bucket: str, project_id: str, doc_id: str) -> Optional[tuple[FarmDocument, bool]]:
+    """Take a document out of the project's records for good: (the document, whether its kept file was deleted),
+    or None when there is none with this id. Its rows leave every card with it. The mark goes first: a file left
+    behind is read by nothing."""
+    gone = next((d for d in await load_records(s3, bucket, project_id) if d.id == doc_id), None)
+    if gone is None:
+        return None
+    await s3.put_object(Bucket=bucket, Key=_removed_prefix(project_id) + doc_id, Body=b"", ContentType="text/plain")
+    file_deleted = False
+    # only ever a file this module kept for this project: the key comes from stored records, so it is checked
+    if gone.file_key.startswith(f"{_STORE_PREFIX}/{project_id}/files/"):
+        try:
+            await s3.delete_object(Bucket=bucket, Key=gone.file_key)
+            file_deleted = True
+        except Exception:
+            logger.exception("farm document %s: its file %s could not be deleted", doc_id, gone.file_key)
+    else:
+        logger.error("farm document %s: its file key %s is not this project's; left alone", doc_id, gone.file_key)
+    logger.info("farm document %s removed from project %s", doc_id, project_id)
+    return gone, file_deleted
 
 
 def soil_samples(records: list[FarmDocument]) -> list[tuple[FarmDocument, SoilSample]]:

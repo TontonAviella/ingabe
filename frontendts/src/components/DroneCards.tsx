@@ -27,6 +27,7 @@ import {
   useChoosePlotSource,
   useDroneCardAnswer,
   useDroneDeck,
+  useRemoveFarmRecord,
 } from '@/hooks/useDroneCards';
 import type { MapLayer } from '@/lib/types';
 
@@ -204,6 +205,89 @@ function AddDocument({ layerId, upload }: { layerId: string; upload: NonNullable
         </p>
       )}
       {add.error && <p className="m-0 text-[13px] text-caramel-hi">{add.error.message}</p>}
+    </div>
+  );
+}
+
+/** The documents a card reads, each with a way to take it out. Removing is for good, so it asks once. */
+function Documents({ layerId, documents }: { layerId: string; documents: NonNullable<DroneCardAnswer['documents']> }) {
+  const remove = useRemoveFarmRecord(layerId);
+  const [asking, setAsking] = useState<string | null>(null); // the document "Remove for good?" is showing for
+  const sending = useRef(false);
+  const small = 'inline-flex min-h-11 shrink-0 cursor-pointer items-center px-2 text-[13px] underline disabled:opacity-60 sm:min-h-9';
+  return (
+    <div className="flex flex-col gap-1.5">
+      <p className="m-0 text-[12px] font-semibold uppercase tracking-wide text-fg-muted">Your documents</p>
+      <ul className="m-0 flex list-none flex-col gap-1.5 p-0">
+        {documents.map((doc) => (
+          <li key={doc.id} className="rounded-[12px] border border-white/10 px-3 py-2">
+            <div className="flex items-start justify-between gap-2">
+              <span className="text-[13px] leading-snug">
+                <span className="font-semibold">{doc.label}</span>
+                <span className="block text-fg-soft">{doc.detail}</span>
+              </span>
+              {asking !== doc.id && (
+                <button
+                  type="button"
+                  className={`${small} text-fg-soft`}
+                  disabled={remove.isPending}
+                  onClick={() => {
+                    remove.reset();
+                    setAsking(doc.id);
+                  }}
+                >
+                  Remove
+                </button>
+              )}
+            </div>
+            {asking === doc.id && (
+              <div className="mt-1 flex flex-wrap items-center gap-2">
+                <span className="text-[13px]">
+                  Remove this document for good? Its rows leave the cards and the fields they were linked to.
+                </span>
+                <button
+                  type="button"
+                  className={`${small} font-semibold text-caramel-hi`}
+                  disabled={remove.isPending}
+                  onClick={() => {
+                    if (sending.current) return; // a second tap in the same instant sends nothing
+                    sending.current = true;
+                    remove.mutate(doc.href, {
+                      onSuccess: () => setAsking(null),
+                      onSettled: () => {
+                        sending.current = false;
+                      },
+                    });
+                  }}
+                >
+                  {remove.isPending ? 'Removing…' : 'Remove for good'}
+                </button>
+                <button
+                  type="button"
+                  className={`${small} text-fg-soft`}
+                  disabled={remove.isPending}
+                  onClick={() => {
+                    remove.reset();
+                    setAsking(null);
+                  }}
+                >
+                  Keep
+                </button>
+              </div>
+            )}
+          </li>
+        ))}
+      </ul>
+      {remove.data && !remove.data.file_deleted && (
+        <p className="m-0 text-[13px] text-fg-soft">
+          The document is out of the cards and the fields. Its file could not be deleted from storage just now; Ingabe has noted it.
+        </p>
+      )}
+      {remove.error && (
+        <p role="alert" className="m-0 text-[13px] text-caramel-hi">
+          {remove.error.message}
+        </p>
+      )}
     </div>
   );
 }
@@ -391,6 +475,7 @@ function AnswerView({
       {answer.field_check && <FieldCheck layerId={layerId} check={answer.field_check} onGoTo={onGoTo} />}
 
       {answer.upload && <AddDocument layerId={layerId} upload={answer.upload} />}
+      {answer.documents && answer.documents.length > 0 && <Documents layerId={layerId} documents={answer.documents} />}
 
       <AskSageChips asks={answer.ask_sage} onAsk={onAskSage} label="Ask Sage for more" />
 
