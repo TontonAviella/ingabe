@@ -998,3 +998,15 @@ def test_the_cards_say_a_field_as_the_field_panel_and_sage_do(photo):
         {"label": "Field 1", "value": "about 700 plants in the 86% of it that can be counted"},
         {"label": "Field 1, checked by hand",
          "value": "In the 1 part of this field checked by hand, the app counted 38."}]
+
+
+def test_the_soil_and_history_cards_list_their_documents_with_where_each_is_removed(photo, monkeypatch):
+    monkeypatch.setattr(isdasoil_service, "query_soil_point", lambda *a, **k: {"status": "error", "error": "offline"})
+    here = drone_cards.Here(plots=_plot_set(), records=_records())
+    soil = drone_cards.answer_card("soil", _analysis(photo), "farmer", here)["documents"]
+    assert soil == [{"id": "s", "label": "report.pdf · Example Soil Laboratory · 26/09/2026",
+                     "detail": "2 soil samples · added 2026-10-07", "href": "/api/layer/Ltest/records/s"}]
+    history = drone_cards.answer_card("history", _analysis(photo), "farmer", here)["documents"]
+    assert [(d["id"], d["detail"]) for d in history] == [("h", "2 harvests · added 2026-10-07")]
+    assert drone_cards.answer_card("plots_green", _analysis(photo), "farmer", here)["documents"] == []
+    assert drone_cards.answer_card("soil", _analysis(photo), "farmer", drone_cards.Here())["documents"] == []

@@ -31,6 +31,7 @@ from src.services import (
     photo_context,
     photo_plots,
     reader_roles,
+    record_links,
 )
 from src.services.insurance_engine import resolve_audience
 from src.structures import async_read_conn, get_async_db_connection
@@ -300,6 +301,36 @@ async def add_farm_record(
         raise HTTPException(400, str(exc)) from None
     return {"id": document.id, "kind": document.kind, "title": document.title,
             "soil_samples": len(document.soil_samples), "harvests": len(document.harvests), "warnings": document.warnings}
+
+
+@router.delete("/layer/{layer_id}/records/{document_id}", operation_id="remove_farm_record")
+async def remove_farm_record(
+    document_id: str,
+    layer: MapLayer = Depends(edit_layer),
+    session: UserContext = Depends(verify_session_required),
+) -> dict[str, Any]:
+    """Take a soil lab report or harvest records out of the photo's project records, for good: its rows leave the
+    cards, Sage's findings and the fields they were linked to. Only an owner or editor of that project may."""
+    user_id = session.get_user_id()
+    async with async_read_conn("farm_records", user_id=user_id) as conn:
+        project_id = await photo_context.project_of(conn, layer.layer_id)
+        if not project_id:
+            raise HTTPException(404, "This photo is not in a project")
+        row = await conn.fetchrow("SELECT owner_uuid, editor_uuids FROM user_mundiai_projects WHERE id = $1", project_id)
+    editors = [str(u) for u in (row["editor_uuids"] or [])] if row else []
+    if row is None or user_id not in [str(row["owner_uuid"]), *editors]:
+        raise HTTPException(403, "You do not have edit access to this farm's records")
+    s3, bucket = await get_async_s3_client(), get_bucket_name()
+    gone = await farm_records.remove_document(s3, bucket, project_id, document_id)
+    if gone is None:
+        raise HTTPException(404, "No such document in this farm's records")
+    try:
+        links = await record_links.forget(s3, bucket, project_id, gone)
+    except Exception:  # the rows are gone, so a link left behind points at nothing and is read by nothing
+        logger.exception("farm document %s: its links could not be dropped", document_id)
+        links = 0
+    return {"removed": document_id, "soil_samples": len(gone.soil_samples), "harvests": len(gone.harvests),
+            "links": links}
 
 
 class FieldCheck(BaseModel):

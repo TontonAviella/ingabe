@@ -192,6 +192,11 @@ with up to six more taps ("this part too" / "not this part"), and keep it with i
     of plots that are not the reader's kept fields can be linked by a printed position only. As before this
     rule, the farm's records are those of the project whose map with this photo was edited last.
 
+    An uploaded document can be removed for good from the soil and harvest cards ("Your documents", "Remove",
+    asked once; `DELETE /api/layer/{id}/records/{document_id}`, owner or editor of the records' project only).
+    Its rows leave the cards, Sage's findings and the fields they were linked to, the kept file is deleted and
+    what people said about its rows is dropped. A document that was neither a soil report nor harvest records
+    feeds no card and is listed on both so it can be taken out.
 27. A kept field can carry the farm's own name ("Block A"; `field_taps.name_field`, "Name" on the picked field).
     The field keeps its number: the name is said with it ("Block A · field 7", `field_facts.name`) on the panel,
     the cards' labels and to Sage, and the number stays the label on the photo and in the cards' sentences. A name

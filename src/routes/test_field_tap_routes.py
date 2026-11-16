@@ -438,3 +438,36 @@ async def test_a_field_is_given_the_farms_own_name_and_keeps_its_number(client, 
     cleared = await client.put(f"{base}/kept/{kept['id']}/name", json={"name": ""})
     assert cleared.status_code == 200 and "name" not in cleared.json()
     assert (await client.get(base)).json()["kept"][0]["facts"]["name"] == f"Field {kept['number']}"
+
+
+@pytest.mark.anyio
+async def test_an_uploaded_document_is_removed_for_good_with_its_links(client, photo, taps_on, monkeypatch):
+    from src.services import farm_records, record_links
+    from src.utils import get_async_s3_client
+
+    async def fake_read(content, filename, content_type):
+        return {"kind": farm_records.SOIL_REPORT, "title": "", "source": "Lab", "date": "", "harvests": [], "warnings": [],
+                "soil_samples": [{"sample": "S1", "place": "", "depth": "", "ph": 5.1, "coordinates": ""}]}, "m"
+
+    monkeypatch.setattr(farm_records, "read_document", fake_read)
+    ids = await photo()
+    base = f"/api/layer/{ids['layer']}"
+    _as(ids["owner"])
+    kept = (await client.post(f"{base}/field-taps/kept", json=_json(_tap(60, 10), pick=0))).json()
+    s3, bucket = await get_async_s3_client(), get_bucket_name()
+    doc = await farm_records.add_document(s3, bucket, ids["project"], b"a,b", "lab.csv", "text/csv")
+    (row,) = (await client.get(f"{base}/field-taps/records")).json()["rows"]
+    await client.post(f"{base}/field-taps/records/link", json={"row": row["key"], "field_id": kept["id"]})
+    assert row["key"] in await record_links.load(s3, bucket, ids["project"])
+    _as(VIEWER)  # a viewer cannot remove a document
+    assert (await client.delete(f"{base}/records/{doc.id}")).status_code in (403, 404)
+    _as(ids["owner"])
+    assert (await client.delete(f"{base}/records/nope")).status_code == 404
+    removed = await client.delete(f"{base}/records/{doc.id}")
+    assert removed.status_code == 200 and removed.json() == {"removed": doc.id, "soil_samples": 1, "harvests": 0, "links": 1}
+    assert (await client.get(f"{base}/field-taps/records")).json()["rows"] == []
+    assert row["key"] not in await record_links.load(s3, bucket, ids["project"])
+    assert (await client.get(f"{base}/field-taps")).json()["kept"][0]["facts"]["records_said"] == []
+    with pytest.raises(Exception):
+        await s3.get_object(Bucket=bucket, Key=doc.file_key)
+    assert (await client.delete(f"{base}/records/{doc.id}")).status_code == 404  # already gone

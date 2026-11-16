@@ -66,6 +66,8 @@ export interface DroneCardAnswer extends DroneCard, CardAnswerCore {
   ask_sage: AskSage[];
   /** A document the reader can add (soil lab report, harvest records) to answer with their own numbers. */
   upload: { label: string; href: string; accept: string } | null;
+  /** The farm's documents this card reads; `href` removes one for good (DELETE). */
+  documents?: { id: string; label: string; detail: string; href: string }[];
   /** Plots the reader can say the real crop of; href has a {number} slot. */
   field_check: {
     title: string;
@@ -154,6 +156,21 @@ export function useAddFarmRecord(layerId: string | null) {
       queryClient.invalidateQueries({ queryKey: ['field-taps', layerId] });
       queryClient.invalidateQueries({ queryKey: ['drone-cards', layerId] });
       queryClient.invalidateQueries({ queryKey: ['drone-card-answer', layerId] });
+    },
+  });
+}
+
+/** Remove an uploaded document for good; its rows leave the cards and the fields they were linked to. */
+export function useRemoveFarmRecord(layerId: string | null) {
+  const queryClient = useQueryClient();
+  return useMutation<void, ServerError, string>({
+    mutationFn: async (href) => {
+      const res = await apiFetch(href, { method: 'DELETE' });
+      if (!res.ok) throw await serverError(res);
+    },
+    onSuccess: () => {
+      for (const key of ['field-records', 'field-taps', 'drone-cards', 'drone-card-answer'])
+        queryClient.invalidateQueries({ queryKey: [key, layerId] });
     },
   });
 }

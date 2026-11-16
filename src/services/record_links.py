@@ -422,6 +422,15 @@ async def keep(s3: Any, bucket: str, project_id: str, row_key: str, geometry: di
                         Body=json.dumps(entry).encode())
 
 
+async def forget(s3: Any, bucket: str, project_id: str, document: farm_records.FarmDocument) -> int:
+    """Drop what people said about the rows of a document that is being removed; how many links went."""
+    kept = await load(s3, bucket, project_id)
+    keys = [row.key for row in rows([document]) if row.key in kept]
+    for row_key in keys:
+        await s3.delete_object(Bucket=bucket, Key=_key(project_id, row_key))
+    return len(keys)
+
+
 async def of_project(s3: Any, bucket: str, project_id: Optional[str],
                      features: Sequence[dict[str, Any]]) -> list[Linked]:
     """The project's document rows placed on these fields: the records, and one listing of the links."""

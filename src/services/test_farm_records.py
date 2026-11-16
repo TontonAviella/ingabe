@@ -131,3 +131,23 @@ def test_the_reading_schema_stays_within_the_models_limit_and_empty_text_is_not_
     doc = farm_records.to_document(raw, "f.csv", "k", "m", "d")
     assert doc.title is None and doc.source is None
     assert doc.soil_samples[0].place is None and doc.soil_samples[0].coordinates is None
+
+
+def test_a_document_is_removed_with_its_file_and_the_others_stay(monkeypatch):
+    async def fake_read(content, filename, content_type):
+        return SOIL_READING, "m"
+
+    async def delete_object(Bucket, Key):
+        del s3.objects[Key]
+
+    monkeypatch.setattr(farm_records, "read_document", fake_read)
+    s3 = _FakeS3()
+    s3.delete_object = delete_object
+    first = asyncio.run(farm_records.add_document(s3, "b", "P1", b"one", "one.pdf", "application/pdf"))
+    second = asyncio.run(farm_records.add_document(s3, "b", "P1", b"two", "two.pdf", "application/pdf"))
+    gone = asyncio.run(farm_records.remove_document(s3, "b", "P1", first.id))
+    assert gone is not None and gone.id == first.id and first.file_key not in s3.objects
+    assert [d.id for d in asyncio.run(farm_records.load_records(s3, "b", "P1"))] == [second.id]
+    assert s3.objects[second.file_key] == b"two"
+    assert asyncio.run(farm_records.remove_document(s3, "b", "P1", "nope")) is None  # nothing changes
+    assert [d.id for d in asyncio.run(farm_records.load_records(s3, "b", "P1"))] == [second.id]
