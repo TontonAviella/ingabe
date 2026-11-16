@@ -98,3 +98,42 @@ def test_a_failed_rewrite_says_so_without_the_command(tmp_path):
     with pytest.raises(OSError) as error:
         band_names.rewrite(str(tmp_path / "missing.tif"), str(tmp_path / "out.tif"), ["thermal"], None, str(tmp_path))
     assert "missing.tif" not in str(error.value)
+
+
+def test_everything_else_the_file_says_of_itself_is_kept(tmp_path):
+    # Whole-number reflectance with a stated scale, an empty value and the program's name, as a real file has them.
+    source = str(tmp_path / "scaled.tif")
+    with rasterio.open(source, "w", driver="GTiff", width=400, height=200, count=5, dtype="uint16", nodata=65535,
+                       crs="EPSG:32736", transform=from_origin(500000.0, 9800000.0, 0.5, 0.5)) as ds:
+        for i, value in enumerate([300, 600, 500, 2000, 4500], start=1):
+            data = np.full((200, 400), value, dtype="uint16")
+            data[:, 300:] = 65535  # the east quarter is empty
+            ds.write(data, i)
+        ds.scales = [0.0001] * 5
+        ds.update_tags(TIFFTAG_SOFTWARE="Agisoft Metashape Professional 2.1", FLIGHT="north block")
+    target = str(tmp_path / "named.tif")
+    band_names.rewrite(source, target, ["blue", "green", "red", "red_edge", "nir"], None, str(tmp_path))
+    with rasterio.open(target) as ds:
+        assert ds.nodata == 65535 and list(ds.scales) == [0.0001] * 5 and ds.dtypes[0] == "uint16"
+        assert ds.tags()["FLIGHT"] == "north block" and photo_bands.program(ds.tags()) == "Agisoft Metashape"
+        assert band_names.said_by_reader(ds) and str(ds.crs) == "EPSG:32736"
+        assert int(ds.read(5, masked=True).mask[:, 300:].sum()) == 200 * 100  # the empty quarter is still empty
+    result = field_health.measure(target, {"f0": _field(0), "f3": _field(3)})
+    assert result["reflectance"] is True and result["program"] == "Agisoft Metashape"
+    assert result["fields"]["f0"]["ndvi"] == pytest.approx(0.8, abs=1e-3) and result["fields"]["f3"]["ndvi"] is None
+
+
+def test_a_height_map_is_not_believed_to_be_thermal(tmp_path):
+    height = _unnamed(tmp_path / "dsm.tif", [1500.0])
+    warm = _unnamed(tmp_path / "warm.tif", [24.5])
+    with rasterio.open(height) as ds:
+        assert not band_names.thermal_is_believable(ds, ["thermal"])
+    with rasterio.open(warm) as ds:
+        assert band_names.thermal_is_believable(ds, ["thermal"])
+        assert band_names.thermal_is_believable(ds, ["other"])  # nothing is called thermal: nothing to doubt
+
+
+def test_no_order_is_offered_as_one_cameras():
+    for presets in band_names.PRESETS.values():
+        for preset in presets:
+            assert "(" not in preset["label"]  # no camera named beside an order: the order is the program's doing

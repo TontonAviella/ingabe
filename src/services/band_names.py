@@ -12,12 +12,15 @@ For a thermal band the reader may also say the unit, since degrees are said only
 
 from __future__ import annotations
 
+import logging
 import os
 import subprocess
 import xml.etree.ElementTree as ET
 from typing import Any, Optional
 
 from src.services import photo_bands
+
+logger = logging.getLogger(__name__)
 
 ROLES = ("blue", "green", "red", "red_edge", "nir", "thermal", "other")
 SAID = {"blue": "Blue", "green": "Green", "red": "Red", "red_edge": "Red edge", "nir": "Near-infrared",
@@ -27,17 +30,17 @@ DESCRIPTION = {"blue": "Blue", "green": "Green", "red": "Red", "red_edge": "RedE
 UNIT = {photo_bands.CELSIUS: "C", photo_bands.KELVIN: "K"}
 SAID_BY_TAG = "INGABE_BANDS_SAID_BY"  # on the app's copy: the band names came from a person, not from the file
 
-# The usual orders, offered by band count so the reader taps one instead of filling a form. The camera's maker
-# fixes the order; the processing program keeps it.
+# The orders met most often, offered by band count so the reader taps one instead of filling a form. No camera is
+# named beside them and none is chosen for the reader: the same camera's bands come out in one order from one
+# processing program and in another from the next (blue, green, red, then red edge and near-infrared either way
+# round), and a wrong order gives numbers that look right.
 PRESETS: dict[int, list[dict[str, Any]]] = {
     1: [{"label": "A thermal photo", "order": ["thermal"]}],
-    4: [{"label": "Green, Red, Red edge, Near-infrared (DJI Mavic 3 Multispectral, Parrot Sequoia)",
-         "order": ["green", "red", "red_edge", "nir"]},
+    4: [{"label": "Green, Red, Red edge, Near-infrared", "order": ["green", "red", "red_edge", "nir"]},
         {"label": "Blue, Green, Red, Near-infrared", "order": ["blue", "green", "red", "nir"]}],
-    5: [{"label": "Blue, Green, Red, Red edge, Near-infrared (MicaSense RedEdge, DJI Phantom 4 Multispectral)",
-         "order": ["blue", "green", "red", "red_edge", "nir"]},
+    5: [{"label": "Blue, Green, Red, Red edge, Near-infrared", "order": ["blue", "green", "red", "red_edge", "nir"]},
         {"label": "Blue, Green, Red, Near-infrared, Red edge", "order": ["blue", "green", "red", "nir", "red_edge"]}],
-    6: [{"label": "Blue, Green, Red, Red edge, Near-infrared, Thermal (MicaSense Altum)",
+    6: [{"label": "Blue, Green, Red, Red edge, Near-infrared, Thermal",
          "order": ["blue", "green", "red", "red_edge", "nir", "thermal"]},
         {"label": "Blue, Green, Red, Near-infrared, Red edge, Thermal",
          "order": ["blue", "green", "red", "nir", "red_edge", "thermal"]}],
@@ -67,7 +70,9 @@ def rewrite(source: str, target: str, order: list[str], thermal_unit: Optional[s
     copied as they are; only what the file says about its bands changes."""
     vrt = os.path.join(folder, "named.vrt")
     try:
-        subprocess.run(["gdalbuildvrt", "-q", vrt, source], check=True, capture_output=True, timeout=300)
+        # a virtual copy that keeps everything the file says of itself: its tags (the program that made it), each
+        # band's scale, offset, empty value and mask
+        subprocess.run(["gdal_translate", "-q", "-of", "VRT", source, vrt], check=True, capture_output=True, timeout=300)
         tree = ET.parse(vrt)
         root = tree.getroot()
         bands = root.findall("VRTRasterBand")
@@ -87,8 +92,22 @@ def rewrite(source: str, target: str, order: list[str], thermal_unit: Optional[s
         subprocess.run(["gdal_translate", "-q", "-of", "COG", "-co", "BIGTIFF=YES", "-co", "BLOCKSIZE=512",
                         "-co", "COMPRESS=DEFLATE", "-co", "OVERVIEWS=AUTO", "-co", "OVERVIEW_RESAMPLING=NEAREST",
                         vrt, target], check=True, capture_output=True, timeout=3600)
-    except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as error:
+        # the cause for the server's log, without the command: it can hold a link to the photo
+        logger.error("band names: the photo could not be rewritten: %s",
+                     (getattr(error, "stderr", b"") or b"").decode(errors="replace")[-400:])
         raise OSError("the photo could not be written again with its bands named") from None
+
+
+def thermal_is_believable(ds: Any, order: list[str]) -> bool:
+    """Whether the band the reader calls thermal holds values that could be temperatures (blocking: reads a small
+    view of it). A height map is one unnamed band too, and 1,500 metres must not come out as 1,500 degrees."""
+    if "thermal" not in order:
+        return True
+    number = order.index("thermal") + 1
+    step = max(1, max(ds.width, ds.height) // 512)
+    small = (max(1, ds.height // step), max(1, ds.width // step))
+    return bool(photo_bands.could_be_temperature(ds.read(number, out_shape=small, masked=True)))
 
 
 def said_by_reader(ds: Any) -> bool:

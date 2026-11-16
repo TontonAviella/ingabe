@@ -1,3 +1,4 @@
+import { useQueryClient } from '@tanstack/react-query';
 import { Check, ChevronDown, ChevronLeft, FileUp, LoaderCircle, Shuffle } from 'lucide-react';
 import { type ExpressionSpecification, type GeoJSONSource, type MapLayerMouseEvent, type Map as MLMap, Popup } from 'maplibre-gl';
 import { useEffect, useMemo, useRef, useState } from 'react';
@@ -798,6 +799,12 @@ export function DroneCards({
   // A photo the cards cannot read because its file does not name its bands: the reader is asked which is which.
   const bands = usePhotoBands(layerId, deck.error?.status === 422);
   const askBands = deck.error?.status === 422 && !!bands.data && (bands.data.needs_names || bands.data.working);
+  // Once the names are written the photo can be read: ask for its cards again (the deck is still holding its 422).
+  const bandsNamed = deck.error?.status === 422 && !!bands.data && !bands.data.needs_names && !bands.data.working;
+  const queryClient = useQueryClient();
+  useEffect(() => {
+    if (bandsNamed) queryClient.invalidateQueries({ queryKey: ['drone-cards', layerId] });
+  }, [bandsNamed, layerId, queryClient]);
 
   // A photo the cards cannot read for another reason (not a raster, too few bands) shows no panel.
   if (!layerId || (deck.error && [400, 404, 422].includes(deck.error.status) && !askBands)) return null;

@@ -5,10 +5,13 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+import hashlib
 import json
 import logging
 import os
+import shutil
 import tempfile
+from datetime import datetime, timedelta, timezone
 import re
 from typing import Any, Optional
 
@@ -22,7 +25,6 @@ from src.dependencies.redis_client import get_async_redis
 from src.dependencies.session import UserContext, verify_session_required
 from src.services import (
     band_names,
-    field_health,
     asked_questions,
     background_jobs,
     card_memory,
@@ -42,6 +44,7 @@ from src.services import (
 from src.services.insurance_engine import resolve_audience
 from src.structures import async_read_conn, get_async_db_connection
 from src.services.gdal_http import GDAL_HTTP_TIMEOUTS
+from src.tile_cache import tile_cache
 from src.utils import get_async_s3_client, get_bucket_name, get_s3_client
 
 logger = logging.getLogger(__name__)
@@ -407,18 +410,53 @@ class BandsIn(BaseModel):
     thermal_unit: Optional[str] = None  # "celsius" or "kelvin", for a thermal band
 
 
-def _band_names_job(metadata: dict[str, Any]) -> str:
-    return f"band-names:{metadata['cog_key']}"
+NAMING_HOURS = 2  # a rewrite that started longer ago than this has stopped: the reader may start another
+MAX_NAMED_BYTES = 8 * 1024 ** 3  # a larger photo is not rewritten by this route
 
 
-async def _bands_state(metadata: dict[str, Any]) -> dict[str, Any]:
-    url = await _cog_url(await get_async_s3_client(), metadata)
+async def _save_layer_details(layer_id: str, put: dict[str, Any], drop: tuple[str, ...] = ()) -> None:
+    """Change some of a layer's stored details. They are how every worker knows a rewrite is running or failed."""
+    async with get_async_db_connection() as conn:
+        row = await conn.fetchrow("SELECT metadata FROM map_layers WHERE layer_id = $1", layer_id)
+        metadata: dict[str, Any] = {}
+        if row and row["metadata"]:
+            metadata = json.loads(row["metadata"]) if isinstance(row["metadata"], str) else dict(row["metadata"])
+        metadata.update(put)
+        for key in drop:
+            metadata.pop(key, None)
+        await conn.execute("UPDATE map_layers SET metadata = $1, last_edited = CURRENT_TIMESTAMP WHERE layer_id = $2",
+                           json.dumps(metadata), layer_id)
+
+
+def _naming_now(metadata: dict[str, Any]) -> bool:
+    started = (metadata.get("bands_naming") or {}).get("at")
+    try:
+        return bool(started) and datetime.now(timezone.utc) - datetime.fromisoformat(started) < timedelta(hours=NAMING_HOURS)
+    except (TypeError, ValueError):
+        return False
+
+
+def _unnamed_key(metadata: dict[str, Any]) -> str:
+    """The photo as it was uploaded and processed, before any reader named its bands. It is never written over."""
+    return metadata.get("cog_key_before_names") or metadata["cog_key"]
+
+
+async def _bands_state(key: str, order: Optional[list[str]] = None) -> dict[str, Any]:
+    """What the stored photo at `key` says of its bands; with `order`, also whether a band the reader calls thermal
+    could hold temperatures."""
+    url = await _cog_url(await get_async_s3_client(), {"cog_key": key})
 
     def read() -> dict[str, Any]:
         with rasterio.Env(**GDAL_HTTP_TIMEOUTS), rasterio.open(url) as ds:
-            return band_names.state(ds)
+            state = band_names.state(ds)
+            if order is not None and len(order) == state["band_count"]:
+                state["thermal_believable"] = band_names.thermal_is_believable(ds, order)
+            return state
 
-    return await asyncio.wait_for(asyncio.to_thread(read), timeout=60)
+    try:
+        return await asyncio.wait_for(asyncio.to_thread(read), timeout=60)
+    except asyncio.TimeoutError:
+        raise HTTPException(503, "The photo could not be opened in time. Try again.") from None
 
 
 @router.get("/layer/{layer_id}/bands", operation_id="get_drone_photo_bands")
@@ -426,12 +464,17 @@ async def get_drone_photo_bands(
     layer: MapLayer = Depends(get_layer),
     session: UserContext = Depends(verify_session_required),
 ) -> dict[str, Any]:
-    """What the photo's file says of its bands, and whether the reader has to say which band is which."""
+    """What the photo's file says of its bands, whether the reader has to say which band is which, and what a
+    reader said before (which they may change: the photo as uploaded is kept)."""
     metadata = _photo_ready(layer)
-    state = await _bands_state(metadata)
-    job = background_jobs.status(_band_names_job(metadata))
-    state["working"] = job is not None and job.state == "running"
-    state["failed"] = job is not None and job.state == "failed"
+    state = await _bands_state(metadata["cog_key"])
+    said = metadata.get("bands_said") or None
+    state["said"] = {"order": said.get("order"), "thermal_unit": said.get("thermal_unit"), "at": said.get("at")} if said else None
+    state["can_change"] = bool(metadata.get("cog_key_before_names"))
+    if state["can_change"]:
+        state["presets"] = band_names.PRESETS.get(state["band_count"], [])
+    state["working"] = _naming_now(metadata)
+    state["failed"] = bool(metadata.get("bands_naming_failed")) and not state["working"]
     return state
 
 
@@ -441,32 +484,56 @@ async def say_drone_photo_bands(
     layer: MapLayer = Depends(edit_layer),
     session: UserContext = Depends(verify_session_required),
 ) -> dict[str, Any]:
-    """The reader says which band is which, for a photo whose file does not. The names are written into the app's
-    copy of the photo beside the request (minutes for a large photo); the cards read it once that is done."""
+    """The reader says which band is which, for a photo whose file does not. A copy of the photo is written with
+    those names beside the request (minutes for a large photo) and this layer is pointed at it. The photo as it
+    was uploaded is kept, so the reader can say otherwise later, and no other layer of that photo changes."""
     metadata = _photo_ready(layer)
-    state = await _bands_state(metadata)
+    if _naming_now(metadata):
+        raise HTTPException(409, "The band names are already being written for this photo")
+    source_key = _unnamed_key(metadata)
+    state = await _bands_state(source_key, body.order)
     if not state["needs_names"]:
         raise HTTPException(409, "This photo's file says which band is which itself")
     try:
         band_names.check(body.order, state["band_count"], body.thermal_unit)
     except ValueError as error:
         raise HTTPException(422, str(error)) from None
-    bucket, key = get_bucket_name(), metadata["cog_key"]
+    if not state.get("thermal_believable", True):
+        raise HTTPException(422, "The values of that band cannot be temperatures. A height map is one band too: "
+                                 "it is not a thermal photo.")
+    bucket, layer_id, user_id = get_bucket_name(), layer.layer_id, session.get_user_id()
+    size = int((await (await get_async_s3_client()).head_object(Bucket=bucket, Key=source_key)).get("ContentLength") or 0)
+    if size > MAX_NAMED_BYTES or shutil.disk_usage(tempfile.gettempdir()).free < 3 * size:
+        raise HTTPException(413, "This photo is too large to be written again with band names here")
+    now = datetime.now(timezone.utc).isoformat()
+    await _save_layer_details(layer_id, {"bands_naming": {"at": now, "by": user_id}}, drop=("bands_naming_failed",))
+    stamp = hashlib.sha256(f"{layer_id}|{'|'.join(body.order)}|{body.thermal_unit}|{now}".encode()).hexdigest()[:16]
+    named_key = f"{source_key}.named-{stamp}.tif"
 
     async def work(progress: background_jobs.Progress) -> None:
         def rewrite() -> None:
             client = get_s3_client()
             with tempfile.TemporaryDirectory() as folder:
                 source, target = os.path.join(folder, "photo.tif"), os.path.join(folder, "named.tif")
-                client.download_file(bucket, key, source)
+                client.download_file(bucket, source_key, source)
                 band_names.rewrite(source, target, body.order, body.thermal_unit, folder)
-                client.upload_file(target, bucket, key, ExtraArgs={"ContentType": "image/tiff"})
+                client.upload_file(target, bucket, named_key, ExtraArgs={"ContentType": "image/tiff"})
 
-        await asyncio.to_thread(rewrite)
-        # what was kept of this photo while its bands were unknown ("nothing to measure") no longer holds
-        await field_health.forget(await get_async_s3_client(), bucket, key)
+        try:
+            await asyncio.to_thread(rewrite)
+        except Exception:
+            await _save_layer_details(layer_id, {"bands_naming_failed": datetime.now(timezone.utc).isoformat()},
+                                      drop=("bands_naming",))
+            raise
+        # only this layer now reads the named copy; everything kept by photo starts afresh under its new key
+        await _save_layer_details(
+            layer_id,
+            {"cog_key": named_key, "cog_key_before_names": source_key,
+             "bands_said": {"order": body.order, "thermal_unit": body.thermal_unit, "by": user_id, "at": now}},
+            drop=("bands_naming",))
+        await tile_cache.invalidate_layer(layer_id)
 
-    background_jobs.start(_band_names_job(metadata), work)
+    background_jobs.start(f"band-names:{layer_id}", work)
     return {"working": True}
 
 

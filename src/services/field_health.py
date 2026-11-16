@@ -521,15 +521,6 @@ async def _asked(s3: Any, bucket: str, photo_key: str, cog_url: str, features: l
                  bool(record.get("reflectance")), record.get("thermal_unit")), not missing)
 
 
-async def forget(s3: Any, bucket: str, photo_key: str) -> None:
-    """Drop what is kept of a photo's measurements, so it is measured afresh: for when what the photo says of its
-    bands has changed (band_names)."""
-    for named in (False, True):
-        store_key = _store_key(photo_key, named)
-        await s3.delete_object(Bucket=bucket, Key=store_key)
-        _failed_at.pop(store_key, None)
-
-
 async def settled(photo_key: str, named_thermal: bool = False) -> None:
     """Wait for this photo's measurement beside the request, if one is running (tests; a job that wants it now)."""
     task = _tasks.get(_store_key(photo_key, named_thermal))

@@ -13,6 +13,9 @@ export interface PhotoBands {
   choices: { id: string; label: string }[];
   working: boolean;
   failed: boolean;
+  /** What a reader said before, and whether they may say otherwise (the photo as uploaded is kept). */
+  said: { order: string[]; thermal_unit: string | null; at: string } | null;
+  can_change: boolean;
 }
 
 const WORKING_REFRESH_MS = 10_000;
