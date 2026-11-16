@@ -10,12 +10,14 @@ const SECTIONS = ["read", "where", "accuracy", "how", "access"] as const;
 // "?lang=" tells the middleware this is the reader's own choice, so it remembers it (see middleware.ts).
 const SWITCH_HREF: Record<Locale, string> = { en: "/fr?lang=fr", fr: "/?lang=en" };
 
-/** EN · FR: the other language is a link, the current one is plain text. */
+/** EN · FR: the other language is a link, the current one is plain text. Language codes are not words: a
+ * browser translating the French page read "EN" as the French word "en" and showed "IN", so they are marked as
+ * not to be translated. */
 export function LanguageSwitch({ className = "" }: { className?: string }) {
   const { locale, t } = useLocale();
   const other: Locale = locale === "en" ? "fr" : "en";
   return (
-    <span className={`inline-flex items-center gap-1.5 font-mono text-[11.5px] uppercase tracking-[0.12em] ${className}`}>
+    <span translate="no" className={`inline-flex items-center gap-1.5 font-mono text-[11.5px] uppercase tracking-[0.12em] ${className}`}>
       <span aria-current="page" className="text-bitter">
         {locale}
       </span>
@@ -32,7 +34,7 @@ export function LanguageSwitch({ className = "" }: { className?: string }) {
 /** The mark: the name, a small caramel point (the place we read), and "labs" in a lighter weight. */
 export function Wordmark({ light = false }: { light?: boolean }) {
   return (
-    <span className={`inline-flex items-baseline text-[19px] tracking-[-0.03em] ${light ? "text-sand" : "text-bitter"}`}>
+    <span translate="no" className={`inline-flex items-baseline text-[19px] tracking-[-0.03em] ${light ? "text-sand" : "text-bitter"}`}>
       <span className="font-semibold">noza</span>
       <span aria-hidden className="mx-[3px] inline-block h-[5px] w-[5px] translate-y-[-1px] rounded-full bg-caramel" />
       <span className={`font-normal ${light ? "text-latte" : "text-mocha"}`}>labs</span>
