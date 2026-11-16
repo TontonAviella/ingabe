@@ -208,7 +208,7 @@ class Here:
     fingerprinted: Optional[int] = None
     fingerprint_job: Optional[background_jobs.Job] = None
     # zones inside the fields from a photo with a near-infrared band (photo_context): {"geojson", "zoned", "even",
-    # "by"}; None while not measured, or on a colour photo
+    # "by", "bare_m2"}; None while not measured, on a colour photo, or on raw camera values
     zones: Optional[dict[str, Any]] = None
     seed: int = 0  # picks the wording of each question and shuffles the deck; 0 keeps both fixed
     role: Optional[str] = None  # the reader's role (reader_roles): the questions are worded for it
@@ -1813,18 +1813,21 @@ def _fertilizer(analysis: PhotoAnalysis, audience: str, here: Here) -> dict[str,
     what = (f"{zoned} field{'s are' if zoned != 1 else ' is'} split into three zones each, by {by}."
             if zoned else "No field on this photo is both large and uneven enough to split into zones.")
     if even:
-        what += f" {even} field{'s are' if even != 1 else ' is'} even: one rate fits {'each' if even != 1 else 'it'}."
+        what += f" {even} field{'s are' if even != 1 else ' is'} too even to split."
+    if zones.get("bare_m2"):
+        what += (f" About {_ha(zones['bare_m2'] / 10_000)} inside the fields reads as bare ground, shadow or road and "
+                 "is left out of the zones.")
     facts = [{"label": f"{field_health.ZONE_SAID[zone].capitalize()} of the index, all fields",
               "value": _ha(totals[zone] / 10_000)} for zone in field_health.ZONES if totals[zone]]
     return _answer(
         "fertilizer", analysis, here, what=what,
-        why="Each part of the field gets what it needs: no shortage where the crop is weak, no waste where it is strong.",
+        why="The zones show where the leaves hold less and where more, so your agronomist can decide what each part needs.",
         todo=("Give the zones file to your agronomist: the rate for each zone is theirs. Ingabe gives no rate. A zone "
               "shows where the leaves hold less, not why: it can be nitrogen, water, a pest, or thinner soil. Look at "
               "a lower zone on foot before spending on it."),
         how_sure=_how_sure("medium", ["Worked out from the photo's own bands, field by field",
-                                      "The zones are thirds of each field's own index: a choice, not yet tested "
-                                      "against yield"],
+                                      "The zones are thirds of each field's own index, and ground under an index "
+                                      f"of {field_health.SOIL_NDVI} is taken as bare: choices, not yet tested against yield"],
                            "Soil tests in each zone, and one strip of the field left at the old rate to compare."),
         terms=["near_infrared"], audience=audience, facts=facts,
         downloads=[{"label": "Zones (GeoJSON)", "href": f"/api/layer/{analysis.layer_id}/zones.geojson"}] if zoned else [],

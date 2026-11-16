@@ -12,9 +12,10 @@ The health indices the extra bands allow are here too, one formula each:
 NDVI = (NIR - Red) / (NIR + Red), NDRE = (NIR - RedEdge) / (NIR + RedEdge).
 
 A thermal band is different in kind: it does not record sunlight thrown back but the heat the surface itself
-gives off (8 to 14 micrometres), which a radiometric camera turns into a temperature. Its values come in three
-scales that cannot be mistaken for each other on the ground: degrees Celsius, kelvin, and hundredths of a kelvin
-(`celsius`). A thermal picture saved as colours (a palette image) holds no temperature and is not a thermal band.
+gives off (8 to 14 micrometres), which a radiometric camera turns into a temperature. Cameras store it in
+different scales (degrees, kelvin, tenths or hundredths of either), and the values alone do not say which, so a
+temperature is said in degrees only when the file states its unit (`thermal_unit`); otherwise only which field is
+warmer. A thermal picture saved as 8-bit colours holds no temperature and is not measured.
 """
 
 from __future__ import annotations
@@ -191,25 +192,33 @@ def ndre(nir: Any, red_edge: Any) -> Any:
     return index(nir, red_edge)
 
 
-CELSIUS, KELVIN, CENTIKELVIN = "degrees Celsius", "kelvin", "hundredths of a kelvin"
-# Where the middle value of a thermal band over land can lie, per scale. The three ranges do not touch, so the
-# scale is read from the values, and values in none of them are in no scale we know.
-_SCALES = ((CELSIUS, -40.0, 90.0), (KELVIN, 230.0, 365.0), (CENTIKELVIN, 23000.0, 36500.0))
+CELSIUS, KELVIN = "celsius", "kelvin"
+_CELSIUS_WORDS = re.compile(r"celsius|centigrade|deg(?:rees?)?\s*c\b|°\s*c\b")
 
 
-def celsius(band: Any) -> tuple[Optional[Any], Optional[str]]:
-    """(the band in degrees Celsius as a float array with NaN where empty, the scale it was stored in), or
-    (None, None) when its values are in no temperature scale we know: such a band has no temperature to say."""
+def thermal_unit(unit: Optional[str], description: Optional[str]) -> Optional[str]:
+    """The temperature unit a thermal band states for itself (its unit field or its description), or None. It is
+    never read from the values: a stored 300 is 300 kelvin for one camera and 30.0 degrees for another."""
+    stated = (unit or "").strip().lower()
+    text = f"{stated} {(description or '').lower()}"
+    if stated in ("c", "°c", "degc") or _CELSIUS_WORDS.search(text):
+        return CELSIUS
+    if stated == "k" or "kelvin" in text:
+        return KELVIN
+    return None
+
+
+def temperature(band: Any, unit: Optional[str], scale: float = 1.0, offset: float = 0.0,
+                whole_numbers: bool = False) -> Any:
+    """A thermal band as a float array with NaN where empty: degrees Celsius when `unit` is known, else the stored
+    values as they are (only their order means anything then). The file's own scale and offset are applied. A zero
+    in a band of whole numbers is an empty pixel, not a temperature."""
     data = np.ma.filled(np.ma.asarray(band, dtype="float32"), np.nan)
-    values = data[np.isfinite(data)]
-    if values.size == 0:
-        return None, None
-    middle = float(np.median(values))
-    for scale, low, high in _SCALES:
-        if low <= middle <= high:
-            if scale == KELVIN:
-                data = data - 273.15
-            elif scale == CENTIKELVIN:
-                data = data / 100.0 - 273.15
-            return np.where((data < -60) | (data > 120), np.nan, data), scale  # a dead pixel is no temperature
-    return None, None
+    if whole_numbers:
+        data = np.where(data == 0, np.nan, data)
+    data = data * float(scale or 1.0) + float(offset or 0.0)
+    if unit == KELVIN:
+        data = data - 273.15
+    if unit is not None:
+        data = np.where((data < -60) | (data > 120), np.nan, data)  # no land surface is outside this
+    return np.where(np.isfinite(data), data, np.nan)

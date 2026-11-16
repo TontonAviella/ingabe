@@ -22,19 +22,24 @@ def _field(col: int) -> dict:
     return mapping(reproject(TO_WGS84, box(left, NORTH - 45, left + 40, NORTH - 5)))
 
 
-def _photo(path, nir_by_column, dtype="float32", names=("Green", "Red", "RedEdge", "NIR"), scale=1.0, thermal=None):
+def _photo(path, nir_by_column, dtype="float32", names=("Green", "Red", "RedEdge", "NIR"), scale=1.0, thermal=None,
+           thermal_unit=None, thermal_scale=None, thermal_name="LWIR"):
     """200 m x 100 m: green 0.08, red 0.05, red edge 0.20, and near-infrared as given per 50 m column."""
     nir = np.repeat(np.array(nir_by_column, dtype="float64"), 100)[None, :].repeat(200, axis=0)
     layers = [np.full((200, 400), 0.08), np.full((200, 400), 0.05), np.full((200, 400), 0.20), nir]
     if thermal is not None:  # a fifth band, as given per 50 m column
         layers.append(np.repeat(np.array(thermal, dtype="float64"), 100)[None, :].repeat(200, axis=0))
-        names = (*names, "LWIR")
+        names = (*names, thermal_name)
     with rasterio.open(path, "w", driver="GTiff", width=400, height=200, count=len(layers), dtype=dtype,
                        crs="EPSG:32736", transform=from_origin(WEST, NORTH, PIXEL, PIXEL)) as ds:
         for i, layer in enumerate(layers, start=1):
             ds.write((layer * scale).astype(dtype), i)
             if names:
                 ds.set_band_description(i, names[i - 1])
+        if thermal_unit:
+            ds.units = [""] * (len(layers) - 1) + [thermal_unit]
+        if thermal_scale:
+            ds.scales = [1.0] * (len(layers) - 1) + [thermal_scale]
     return str(path)
 
 
@@ -51,7 +56,8 @@ def test_each_field_is_measured_from_the_named_bands(tmp_path):
 
 def test_colour_photo_has_no_health(tmp_path):
     path = _photo(tmp_path / "rgb.tif", [60, 60, 60, 60], dtype="uint8", names=None, scale=1.0)
-    assert field_health.measure(path, {"f0": _field(0)}) == {"nir": False, "reflectance": False, "fields": {}}
+    assert field_health.measure(path, {"f0": _field(0)}) == {"nir": False, "reflectance": False, "thermal_unit": None,
+                                                              "fields": {}}
 
 
 def test_field_off_the_photo_is_not_measured(tmp_path):
@@ -211,27 +217,42 @@ def test_a_field_says_its_health_in_its_one_line():
     assert field_facts._facts(7, "Field 7", 0.18, None, None, None, None).health_said is None
 
 
-def test_surface_temperature_per_field_from_hundredths_of_a_kelvin(tmp_path):
-    # 24.0, 26.0, 31.5 and 31.5 degrees Celsius stored the way a multispectral camera with a thermal band stores them.
+def test_surface_temperature_in_degrees_when_the_file_states_its_unit(tmp_path):
+    # 24.0, 26.0, 31.5 and 31.5 degrees Celsius stored as hundredths of a kelvin, with the unit and scale stated.
     path = _photo(tmp_path / "thermal.tif", [3000, 3000, 3000, 3000], dtype="uint16",
-                  thermal=[29715, 29915, 30465, 30465], scale=1.0)
-    outlines = {f"f{c}": _field(c) for c in range(3)}
-    result = field_health.measure(path, outlines)
-    assert [result["fields"][f"f{c}"]["temp_c"] for c in range(3)] == pytest.approx([24.0, 26.0, 31.5], abs=0.05)
-    out = field_health.said(result["fields"], result["reflectance"])
+                  thermal=[29715, 29915, 30465, 30465], thermal_unit="K", thermal_scale=0.01)
+    result = field_health.measure(path, {f"f{c}": _field(c) for c in range(3)})
+    assert result["thermal_unit"] == "kelvin"
+    assert [result["fields"][f"f{c}"]["temp"] for c in range(3)] == pytest.approx([24.0, 26.0, 31.5], abs=0.05)
+    out = field_health.said(result["fields"], result["reflectance"], result["thermal_unit"])
     assert out["f0"].temperature_said == "surface 24.0 °C, 2.0 °C cooler than the middle of 3 fields"
     assert out["f1"].temperature_said == "surface 26.0 °C, level with the middle of 3 fields"
     assert out["f2"].temperature_said == "surface 31.5 °C, 5.5 °C warmer than the middle of 3 fields"
 
 
-def test_thermal_values_in_no_scale_say_no_temperature(tmp_path):
-    path = _photo(tmp_path / "palette.tif", [3000] * 4, dtype="uint16", thermal=[120, 150, 200, 220])
-    assert field_health.measure(path, {"f0": _field(0)})["fields"]["f0"]["temp_c"] is None
+def test_no_stated_unit_means_no_degrees_only_which_field_is_warmer(tmp_path):
+    # The same stored values with no unit: 297.15 could be kelvin, or 29.7 degrees in tenths. No number is said.
+    path = _photo(tmp_path / "thermal.tif", [3000, 3000, 3000, 3000], dtype="uint16",
+                  thermal=[29715, 29915, 30465, 30465])
+    result = field_health.measure(path, {f"f{c}": _field(c) for c in range(3)})
+    assert result["thermal_unit"] is None
+    out = field_health.said(result["fields"], result["reflectance"], result["thermal_unit"])
+    assert out["f0"].temperature_said == "surface temperature: coolest of 3 fields"
+    assert out["f2"].temperature_said == "surface temperature: warmest of 3 fields"
+    assert out["f0"].temp_c is None and "°C" not in out["f1"].temperature_said
+
+
+def test_an_eight_bit_thermal_picture_holds_no_temperature(tmp_path):
+    path = _photo(tmp_path / "preview.tif", [200, 200, 200, 200], dtype="uint8", scale=1.0, thermal=[120, 150, 200, 220],
+                  names=("Green", "Red", "RedEdge", "NIR"))
+    fields = field_health.measure(path, {"f0": _field(0)})["fields"]
+    assert fields["f0"]["temp"] is None
 
 
 def test_temperature_without_a_place_for_two_fields():
-    out = field_health.said({"a": {"ndvi": None, "temp_c": 24.0}, "b": {"ndvi": None, "temp_c": 30.0}}, False)
-    assert out["a"].temperature_said == "surface 24.0 °C" and out["a"].said is None
+    two = {"a": {"ndvi": None, "temp": 24.0}, "b": {"ndvi": None, "temp": 30.0}}
+    assert field_health.said(two, False, "celsius")["a"].temperature_said == "surface 24.0 °C"
+    assert field_health.said(two, False, None)["a"].temperature_said is None  # no unit and too few fields: nothing
 
 
 def _gradient_photo(path):
@@ -265,15 +286,67 @@ def test_an_even_field_is_one_zone_and_a_small_field_none(tmp_path):
     path = _photo(tmp_path / "ms.tif", [0.20, 0.30, 0.45, 0.45])
     small = mapping(reproject(TO_WGS84, box(WEST + 5, NORTH - 25, WEST + 25, NORTH - 5)))  # 400 m2
     fields = field_health.measure(path, {"even": _field(0), "small": small})["fields"]
-    assert fields["even"]["zones"] == [] and fields["small"]["zones"] is None
+    assert fields["even"]["zones"] == [] and fields["small"]["zones"] is None and fields["even"]["bare_m2"] == 0
     assert fields["small"]["ndvi"] is not None  # too small to zone, still measured
 
 
-def test_zones_file_has_a_field_a_size_and_an_empty_rate(tmp_path):
+def test_bare_ground_is_left_out_of_the_zones(tmp_path):
+    # The west half of the field is bare (near-infrared barely above red); the east half is an uneven crop.
+    ramp = np.concatenate([np.full(50, 0.06), np.linspace(0.25, 0.60, 50)])
+    row = np.tile(ramp, 4)[None, :].repeat(200, axis=0)
+    path = str(tmp_path / "half.tif")
+    with rasterio.open(path, "w", driver="GTiff", width=400, height=200, count=4, dtype="float32",
+                       crs="EPSG:32736", transform=from_origin(WEST, NORTH, PIXEL, PIXEL)) as ds:
+        for i, (layer, name) in enumerate(zip([np.full((200, 400), 0.08), np.full((200, 400), 0.05),
+                                               np.full((200, 400), 0.04), row], ("Green", "Red", "RedEdge", "NIR")), 1):
+            ds.write(layer.astype("float32"), i)
+            ds.set_band_description(i, name)
+    wide = mapping(reproject(TO_WGS84, box(WEST, NORTH - 95, WEST + 50, NORTH - 5)))  # 50 m x 90 m, half bare
+    field = field_health.measure(path, {"f": wide})["fields"]["f"]
+    assert field["bare_m2"] == pytest.approx(2250, rel=0.06)
+    assert sum(z["area_m2"] for z in field["zones"]) == pytest.approx(2250, rel=0.08)  # the crop half only
+    assert min(shape_centroid_x(z["geometry"]) for z in field["zones"]) > shape_centroid_x(wide)  # all in the east
+
+
+def test_no_zones_on_raw_camera_values(tmp_path):
+    ramp = np.tile(np.linspace(2500, 6000, 100), 4)[None, :].repeat(200, axis=0)
+    path = str(tmp_path / "raw.tif")
+    with rasterio.open(path, "w", driver="GTiff", width=400, height=200, count=4, dtype="uint16",
+                       crs="EPSG:32736", transform=from_origin(WEST, NORTH, PIXEL, PIXEL)) as ds:
+        for i, (layer, name) in enumerate(zip([np.full((200, 400), 800), np.full((200, 400), 500),
+                                               np.full((200, 400), 2000), ramp], ("Green", "Red", "RedEdge", "NIR")), 1):
+            ds.write(layer.astype("uint16"), i)
+            ds.set_band_description(i, name)
+    result = field_health.measure(path, {"f0": _field(0)})
+    assert not result["reflectance"] and result["fields"]["f0"]["ndvi"] is not None
+    assert result["fields"]["f0"]["zones"] is None  # a spread on raw values means nothing
+
+
+def test_a_photo_that_fails_midway_keeps_what_was_measured(tmp_path, monkeypatch):
+    path = _photo(tmp_path / "ms.tif", [0.20, 0.30, 0.45, 0.45])
+    store, real, calls = _Store(), field_health.measure, []
+    features = [{"geometry": _field(c)} for c in range(4)]
+    monkeypatch.setattr(field_health, "BATCH", 2)
+
+    def second_batch_fails(url, outlines):
+        calls.append(len(outlines))
+        if len(calls) == 2:
+            raise OSError("the link to the photo ran out")
+        return real(url, outlines)
+
+    monkeypatch.setattr(field_health, "measure", second_batch_fails)
+    _ask(store, "photo-5", path, features)
+    monkeypatch.setattr(field_health, "measure", real)
+    field_health._failed_at.pop("photo-5", None)
+    assert len(_ask(store, "photo-5", path, features)) == 2  # the first batch was kept, the rest is not marked done
+    assert len(_ask(store, "photo-5", path, features)) == 4
+
+
+def test_zones_file_has_a_field_and_a_size_and_no_rate(tmp_path):
     result = field_health.measure(_gradient_photo(tmp_path / "ramp.tif"), {"f0": _field(0), "f1": _field(1)})
     said = field_health.said(result["fields"], result["reflectance"])
     file = field_health.zone_features([(7, "Block A · field 7", said["f0"]), (8, "Field 8", said["f1"])])
     assert len(file["features"]) == 6
     first = file["features"][0]["properties"]
-    assert first["field"] == "Block A · field 7" and first["zone"] == "low" and first["rate"] is None
+    assert first["field"] == "Block A · field 7" and first["zone"] == "low" and "rate" not in first
     assert first["index"] == "NDRE" and first["group"] == "least_green" and first["area_m2"] > 0

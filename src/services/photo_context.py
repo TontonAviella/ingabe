@@ -227,8 +227,10 @@ async def load(s3: Any, bucket: str, *, layer_id: str, name: str, bounds: Any, m
             health = {}
             if analysis.look.bands.nir is not None or analysis.look.bands.thermal is not None:  # else nothing to measure
                 try:
-                    health = await field_health.of_features(s3, bucket, photo_plots.photo_key(metadata), url,
-                                                            plots.geojson["features"])
+                    health = await field_health.of_features(
+                        s3, bucket, photo_plots.photo_key(metadata),
+                        await cog_url(s3, bucket, metadata, LONG_URL_SECONDS),  # measured beside the request
+                        plots.geojson["features"])
                 except Exception:  # the fields are still said, without their health index
                     logger.exception("photo context: the fields' health could not be measured for layer %s", layer_id)
             fields = await field_facts.of_plots(s3, bucket, photo_plots.photo_key(metadata), layer_id, plots,
@@ -240,6 +242,7 @@ async def load(s3: Any, bucket: str, *, layer_id: str, name: str, bounds: Any, m
                      for f in plots.geojson["features"] if field_health.key_of(f["geometry"]) in health]
             if any(h.zones is not None for _, _, h in zoned):
                 zones = {"geojson": field_health.zone_features(zoned),
+                         "bare_m2": sum(h.bare_m2 or 0 for _, _, h in zoned),
                          "even": sum(1 for _, _, h in zoned if h.zones == ()),
                          "zoned": sum(1 for _, _, h in zoned if h.zones),
                          "by": next((h.zone_index for _, _, h in zoned if h.zone_index), None)}

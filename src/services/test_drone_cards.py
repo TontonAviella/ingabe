@@ -1026,7 +1026,7 @@ def test_fertilizer_card_shows_zones_and_gives_no_rate(photo):
         for zone in ("low", "middle", "high")]}}
     answer = drone_cards.answer_card("fertilizer", analysis, "farmer", drone_cards.Here(photos=1, zones=zones))
     assert answer["status"] == drone_cards.PARTLY
-    assert "1 field is split into three zones" in answer["what"] and "2 fields are even" in answer["what"]
+    assert "1 field is split into three zones" in answer["what"] and "2 fields are too even to split" in answer["what"]
     assert "Ingabe gives no rate" in answer["todo"] and answer["overlay"]["kind"] == "plot_groups"
     assert answer["downloads"][0]["href"].endswith("/zones.geojson")
     assert "rate" not in " ".join(f["label"] + f["value"] for f in answer["facts"])

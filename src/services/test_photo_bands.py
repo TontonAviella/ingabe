@@ -206,13 +206,19 @@ def test_colour_photo_with_a_described_thermal_band():
     assert photo_bands.roles(["Thermal", None, None], [], 3).thermal is None  # one of the picture's own three
 
 
-@pytest.mark.parametrize("stored, scale", [([24.0, 31.5], photo_bands.CELSIUS), ([297.15, 304.65], photo_bands.KELVIN),
-                                           ([29715, 30465], photo_bands.CENTIKELVIN)])
-def test_temperature_scale_is_read_from_the_values(stored, scale):
-    degrees, how = photo_bands.celsius(np.array(stored, dtype="float32"))
-    assert how == scale and degrees == pytest.approx([24.0, 31.5], abs=0.01)
+@pytest.mark.parametrize("unit, description, expected", [
+    ("K", "LWIR", photo_bands.KELVIN), ("kelvin", None, photo_bands.KELVIN), ("C", "Thermal", photo_bands.CELSIUS),
+    ("°C", None, photo_bands.CELSIUS), (None, "Temperature (degrees Celsius)", photo_bands.CELSIUS),
+    (None, "LWIR", None), ("", "Thermal", None), ("cK", "LWIR", None), ("DN", "Thermal counts", None)])
+def test_thermal_unit_is_only_what_the_file_states(unit, description, expected):
+    assert photo_bands.thermal_unit(unit, description) == expected
 
 
-def test_values_in_no_temperature_scale_say_nothing():
-    assert photo_bands.celsius(np.array([120, 200], dtype="uint8")) == (None, None)  # a picture of colours
-    assert photo_bands.celsius(np.ma.masked_all((2, 2))) == (None, None)
+def test_temperature_in_degrees_only_with_a_stated_unit():
+    kelvin = photo_bands.temperature(np.array([29715, 30465, 0], dtype="uint16"), photo_bands.KELVIN, scale=0.01,
+                                     whole_numbers=True)
+    assert kelvin[:2] == pytest.approx([24.0, 31.5], abs=0.01) and np.isnan(kelvin[2])  # a zero is an empty pixel
+    assert photo_bands.temperature(np.array([24.0, 31.5]), photo_bands.CELSIUS) == pytest.approx([24.0, 31.5])
+    raw = photo_bands.temperature(np.array([300, 315], dtype="uint16"), None, whole_numbers=True)
+    assert list(raw) == [300.0, 315.0]  # no unit stated: the stored values, good for their order only
+    assert np.isnan(photo_bands.temperature(np.array([400.0]), photo_bands.CELSIUS)[0])  # no land surface is 400 degrees
