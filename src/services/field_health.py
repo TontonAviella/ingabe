@@ -22,6 +22,12 @@ younger crop, another crop, or bare ground. So a field gets its index and its pl
 on a photo of raw camera values (not reflectance) only its place: that order does not depend on calibration, the
 number does (photo_bands.looks_like_reflectance).
 
+A thermal photo is often its own file: one band, flown with another camera than the colour photo the fields were
+outlined on. Such a file of the same place in the same project gives the fields their temperature (`with_thermal`).
+It is taken as thermal when the file says so (a band described as thermal, or a temperature unit), or when the
+reader named the layer so ("thermal", "LWIR", "TIR", "temperature"); then, as always, degrees are said only if the
+file states its unit.
+
 Measured once per outline and kept beside the photo; an outline that changes is a new outline.
 """
 
@@ -32,8 +38,9 @@ import dataclasses
 import hashlib
 import json
 import logging
+import re
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import Any, Awaitable, Callable, Optional
 
 import numpy as np
 import rasterio
@@ -76,6 +83,7 @@ class FieldHealth:
     gndvi: Optional[float] = None
     temperature_said: Optional[str] = None  # from a thermal band whose values are a temperature
     temp_c: Optional[float] = None
+    temperature_from: Optional[str] = None  # the thermal photo it was measured on, when not this photo itself
     # zones inside the field (None: too small to zone, or not measured; (): even, one rate fits it)
     bare_m2: Optional[int] = None  # ground inside the field that reads as bare, left out of its zones
     zones: Optional[tuple[dict[str, Any], ...]] = None
@@ -101,8 +109,10 @@ def key_of(geometry: dict[str, Any]) -> str:
     return hashlib.sha256(text.encode()).hexdigest()[:24]
 
 
-def _store_key(photo_key: str) -> str:
-    return f"{STORE_PREFIX}/{hashlib.sha256(photo_key.encode()).hexdigest()[:32]}.json"
+def _store_key(photo_key: str, named_thermal: bool = False) -> str:
+    """Where a photo's measurements are kept; a one-band file read as thermal on the reader's naming is kept apart
+    from the same file read on its own statements."""
+    return f"{STORE_PREFIX}/{hashlib.sha256(photo_key.encode()).hexdigest()[:32]}{'-named' if named_thermal else ''}.json"
 
 
 OVERVIEW_LONG_SIDE = 512  # the whole photo is looked at once, this small, to tell reflectance from raw values
@@ -216,6 +226,16 @@ def _one(ds: Any, bands: photo_bands.Bands, outline: Any, to_wgs84: Any, photo: 
     return out
 
 
+def thermal_band(ds: Any, bands: photo_bands.Bands, named_thermal: bool = False) -> Optional[int]:
+    """The photo's thermal band: one it describes as thermal; or, in a file of one band, that band when the file
+    states a temperature unit for it or the reader named the layer as thermal."""
+    if bands.thermal is not None:
+        return bands.thermal
+    if int(ds.count) == 1 and (named_thermal or photo_bands.thermal_unit(ds.units[0], ds.descriptions[0])):
+        return 1
+    return None
+
+
 def _photo_facts(ds: Any, bands: photo_bands.Bands) -> dict[str, Any]:
     """What is true of the whole photo, judged on the whole photo once: whether an index can be measured, whether
     its values are reflectance, and what its thermal band is in."""
@@ -235,13 +255,14 @@ def _photo_facts(ds: Any, bands: photo_bands.Bands) -> dict[str, Any]:
             "thermal_whole": bool(thermal and np.dtype(ds.dtypes[t - 1]).kind in "iu")}
 
 
-def measure(cog_url: str, outlines: dict[str, dict[str, Any]]) -> dict[str, Any]:
+def measure(cog_url: str, outlines: dict[str, dict[str, Any]], named_thermal: bool = False) -> dict[str, Any]:
     """{"nir": whether the photo has a band to measure from (a near-infrared band it names, or a thermal one),
     "reflectance", "thermal_unit", "fields": {key: {"ndvi", "ndre", "gndvi", "temp", "zones", "bare_m2",
     "zone_index"}}} for outlines in WGS84 (blocking). An outline that is no shape is kept as not measured; a photo
     that cannot be read raises, so nothing wrong is kept and it is tried again."""
     with rasterio.Env(**GDAL_HTTP_TIMEOUTS), rasterio.open(cog_url) as ds:
         bands = photo_bands.of(ds)
+        bands = dataclasses.replace(bands, thermal=thermal_band(ds, bands, named_thermal))
         photo = _photo_facts(ds, bands)
         if not photo["index"] and not photo["thermal"]:
             return {"nir": False, "reflectance": False, "thermal_unit": None, "fields": {}}
@@ -327,80 +348,126 @@ _pending: dict[str, dict[str, Any]] = {}  # outlines waiting for that measuremen
 _failed_at: dict[str, float] = {}
 
 
-async def _record(s3: Any, bucket: str, photo_key: str) -> dict[str, Any]:
-    record = await stored_files.load_json(s3, bucket, _store_key(photo_key))
+async def _record(s3: Any, bucket: str, store_key: str) -> dict[str, Any]:
+    record = await stored_files.load_json(s3, bucket, store_key)
     if not isinstance(record, dict) or record.get("method") != METHOD or not isinstance(record.get("fields"), dict):
         return {"method": METHOD, "fields": {}}
     return record
 
 
-async def _measure_missing(s3: Any, bucket: str, photo_key: str, cog_url: str) -> None:
+async def _measure_missing(s3: Any, bucket: str, store_key: str, cog_url: str, named_thermal: bool) -> None:
     """Measure the outlines waiting for this photo and keep them, a batch at a time. Runs beside the request:
     nobody waits for a photo to be read. A photo that cannot be read keeps what was measured before the failure."""
     try:
-        while _pending.get(photo_key):
-            record = await _record(s3, bucket, photo_key)
+        while _pending.get(store_key):
+            record = await _record(s3, bucket, store_key)
             if record.get("nir") is False:
                 break
-            waiting = _pending[photo_key]
+            waiting = _pending[store_key]
             batch = {key: waiting[key] for key in list(waiting)[:BATCH]}
             todo = {key: geometry for key, geometry in batch.items() if key not in record["fields"]}
-            measured = await asyncio.to_thread(measure, cog_url, todo) if todo else None
+            measured = await asyncio.to_thread(measure, cog_url, todo, named_thermal) if todo else None
             if measured is not None:
-                record = await _record(s3, bucket, photo_key)  # another worker may have kept more meanwhile
+                record = await _record(s3, bucket, store_key)  # another worker may have kept more meanwhile
                 fields = {**record["fields"], **measured["fields"]}
                 kept = {"method": METHOD, "nir": measured["nir"],
                         # facts of the whole photo, judged on the whole photo: set once, the same for every reader
                         "reflectance": record.get("reflectance", measured["reflectance"]),
                         "thermal_unit": record.get("thermal_unit", measured["thermal_unit"]),
                         "fields": dict(list(fields.items())[-MAX_KEPT:])}
-                await s3.put_object(Bucket=bucket, Key=_store_key(photo_key), Body=json.dumps(kept).encode(),
+                await s3.put_object(Bucket=bucket, Key=store_key, Body=json.dumps(kept).encode(),
                                     ContentType="application/json")
             for key in batch:
                 waiting.pop(key, None)
-        _failed_at.pop(photo_key, None)
+        _failed_at.pop(store_key, None)
     except Exception:  # said nowhere: the fields are shown without a health index, and it is tried again later
-        _failed_at[photo_key] = asyncio.get_running_loop().time()
-        logger.exception("field health: the photo %s could not be measured", photo_key)
+        _failed_at[store_key] = asyncio.get_running_loop().time()
+        logger.exception("field health: the photo kept at %s could not be measured", store_key)
     finally:
-        _pending.pop(photo_key, None)
-        _tasks.pop(photo_key, None)
+        _pending.pop(store_key, None)
+        _tasks.pop(store_key, None)
 
 
-async def of_features(s3: Any, bucket: str, photo_key: str, cog_url: str,
-                      features: list[dict[str, Any]]) -> dict[str, FieldHealth]:
+async def of_features(s3: Any, bucket: str, photo_key: str, cog_url: str, features: list[dict[str, Any]],
+                      named_thermal: bool = False) -> dict[str, FieldHealth]:
     """The health of each feature's outline, by key_of(geometry), from what is kept: {} for a photo with nothing
     to measure from. Never reads the photo itself: outlines not measured yet are measured beside the request and
-    are there the next time this is asked, so no screen waits for it."""
+    are there the next time this is asked, so no screen waits for it. `named_thermal`: the reader named this
+    one-band layer as a thermal photo (`thermal_band`)."""
     outlines = {key_of(f["geometry"]): f["geometry"] for f in features if isinstance(f.get("geometry"), dict)}
     if not outlines:
         return {}
-    record = await _record(s3, bucket, photo_key)
+    store_key = _store_key(photo_key, named_thermal)
+    record = await _record(s3, bucket, store_key)
     if record.get("nir") is False:
         return {}
     missing = {key: geometry for key, geometry in outlines.items() if key not in record["fields"]}
     loop = asyncio.get_running_loop()
-    if missing and loop.time() - _failed_at.get(photo_key, -RETRY_SECONDS) >= RETRY_SECONDS:
-        task = _tasks.get(photo_key)
+    if missing and loop.time() - _failed_at.get(store_key, -RETRY_SECONDS) >= RETRY_SECONDS:
+        task = _tasks.get(store_key)
         if task is not None and not task.done() and task.get_loop() is loop:
-            _pending.setdefault(photo_key, {}).update(missing)  # the running measurement takes these too
+            _pending.setdefault(store_key, {}).update(missing)  # the running measurement takes these too
         else:
-            _pending[photo_key] = dict(missing)
-            _tasks[photo_key] = loop.create_task(_measure_missing(s3, bucket, photo_key, cog_url))
+            _pending[store_key] = dict(missing)
+            _tasks[store_key] = loop.create_task(_measure_missing(s3, bucket, store_key, cog_url, named_thermal))
     return said({key: record["fields"][key] for key in outlines if key in record["fields"]},
                 bool(record.get("reflectance")), record.get("thermal_unit"))
 
 
-async def settled(photo_key: str) -> None:
+async def settled(photo_key: str, named_thermal: bool = False) -> None:
     """Wait for this photo's measurement beside the request, if one is running (tests; a job that wants it now)."""
-    task = _tasks.get(photo_key)
+    task = _tasks.get(_store_key(photo_key, named_thermal))
     if task is not None and not task.done() and task.get_loop() is asyncio.get_running_loop():
         await task
+
+
+_THERMAL_NAME = re.compile(r"(?<![a-z])(thermal|thermique|lwir|tir|temperature)(?![a-z])", re.IGNORECASE)
+MAX_COMPANIONS = 3  # other one-band photos of the place that are looked at for a temperature, newest first
+
+
+def named_thermal(name: Optional[str], metadata: dict[str, Any]) -> bool:
+    """Whether the reader named this layer as a thermal photo: the word stands on its own in the layer's name or
+    its file's name ("Kabarama_thermal.tif", "LWIR ortho"), not inside another word."""
+    return any(_THERMAL_NAME.search(str(text)) for text in (name, metadata.get("original_filename")) if text)
+
+
+async def with_thermal(s3: Any, bucket: str, health: dict[str, FieldHealth], features: list[dict[str, Any]],
+                       companions: list[dict[str, Any]],
+                       url_of: Callable[[dict[str, Any]], Awaitable[str]]) -> dict[str, FieldHealth]:
+    """`health` with each field's temperature from a thermal photo of the same place that is its own file.
+    `companions`: the project's other one-band photos overlapping this one ({"name", "metadata"}), newest first.
+    The first that gives a temperature is used, and every field says which photo that was. Fields that already
+    have a temperature from their own photo keep it. Nothing is read here: see `of_features`."""
+    if not features or any(h.temperature_said for h in health.values()):
+        return health
+    for companion in companions[:MAX_COMPANIONS]:
+        metadata = companion["metadata"]
+        if not metadata.get("cog_key"):
+            continue
+        try:
+            found = await of_features(s3, bucket, metadata["cog_key"], await url_of(metadata), features,
+                                      named_thermal(companion.get("name"), metadata))
+        except Exception:  # this companion only: the fields are still said
+            logger.exception("field health: a thermal photo of the place could not be asked")
+            continue
+        warm = {key: h for key, h in found.items() if h.temperature_said}
+        if warm:
+            out = dict(health)
+            for key, h in warm.items():
+                out[key] = dataclasses.replace(out.get(key, FieldHealth(said=None)), temperature_said=h.temperature_said,
+                                               temp_c=h.temp_c, temperature_from=companion.get("name") or "a thermal photo")
+            return out
+    return health
 
 
 TEMPERATURE_NOTE = ("A warmer field can be bare soil, a thinner crop, or a crop short of water. Sun, wind and the "
                     "hour change every field, so compare fields from one flight only. The temperature is the "
                     "camera's reading of the surface, soil and leaves together, not checked with a thermometer.")
+def temperature_note(source: Optional[str]) -> str:
+    """The caveat every surface gives with a temperature, naming the thermal photo when it is another file."""
+    return TEMPERATURE_NOTE + (f" Measured on the thermal photo \"{source}\"." if source else "")
+
+
 SHORT_NOTE = "A lower index can be a younger crop, another crop, or bare ground. No cut-off has been tested."
 NOTE = ("The health index (NDVI) comes from the photo's own red and near-infrared bands. It is given with no verdict: "
         "no cut-off between healthy and stressed has been tested, and a lower index can be a younger crop, another "

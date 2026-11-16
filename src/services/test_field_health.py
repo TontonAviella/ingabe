@@ -176,7 +176,8 @@ def test_only_new_outlines_are_measured(tmp_path, monkeypatch):
     _ask(store, "photo-2", path, features[:3])
     asked = []
     real = field_health.measure
-    monkeypatch.setattr(field_health, "measure", lambda url, outlines: asked.append(len(outlines)) or real(url, outlines))
+    monkeypatch.setattr(field_health, "measure",
+                        lambda url, outlines, *rest: asked.append(len(outlines)) or real(url, outlines, *rest))
     assert len(_ask(store, "photo-2", path, features)) == 3  # the three kept; the fourth is being measured
     assert asked == [1] and len(_ask(store, "photo-2", path, features)) == 4
 
@@ -207,7 +208,7 @@ def test_a_photo_that_cannot_be_read_is_not_tried_on_every_ask(tmp_path, monkeyp
 
     asyncio.run(run())
     assert calls == [1] and store.puts == 0  # nothing wrong is kept, and it waits before trying again
-    field_health._failed_at.pop("photo-4", None)
+    field_health._failed_at.clear()
 
 
 def test_a_field_says_its_health_in_its_one_line():
@@ -328,16 +329,16 @@ def test_a_photo_that_fails_midway_keeps_what_was_measured(tmp_path, monkeypatch
     features = [{"geometry": _field(c)} for c in range(4)]
     monkeypatch.setattr(field_health, "BATCH", 2)
 
-    def second_batch_fails(url, outlines):
+    def second_batch_fails(url, outlines, *rest):
         calls.append(len(outlines))
         if len(calls) == 2:
             raise OSError("the link to the photo ran out")
-        return real(url, outlines)
+        return real(url, outlines, *rest)
 
     monkeypatch.setattr(field_health, "measure", second_batch_fails)
     _ask(store, "photo-5", path, features)
     monkeypatch.setattr(field_health, "measure", real)
-    field_health._failed_at.pop("photo-5", None)
+    field_health._failed_at.clear()
     assert len(_ask(store, "photo-5", path, features)) == 2  # the first batch was kept, the rest is not marked done
     assert len(_ask(store, "photo-5", path, features)) == 4
 
@@ -350,3 +351,68 @@ def test_zones_file_has_a_field_and_a_size_and_no_rate(tmp_path):
     first = file["features"][0]["properties"]
     assert first["field"] == "Block A · field 7" and first["zone"] == "low" and "rate" not in first
     assert first["index"] == "NDRE" and first["group"] == "least_green" and first["area_m2"] > 0
+
+
+def _thermal_only(path, by_column, dtype="float32", unit=None):
+    """A thermal photo flown as its own file: one band, 200 m x 100 m, a value per 50 m column."""
+    data = np.repeat(np.array(by_column, dtype="float64"), 100)[None, :].repeat(200, axis=0)
+    with rasterio.open(path, "w", driver="GTiff", width=400, height=200, count=1, dtype=dtype,
+                       crs="EPSG:32736", transform=from_origin(WEST, NORTH, PIXEL, PIXEL)) as ds:
+        ds.write(data.astype(dtype), 1)
+        if unit:
+            ds.units = [unit]
+    return str(path)
+
+
+def _with_thermal(store, health, features, companions):
+    async def url_of(metadata):
+        return metadata["path"]
+
+    async def run():
+        out = await field_health.with_thermal(store, "b", health, features, companions, url_of)
+        for companion in companions:
+            await field_health.settled(companion["metadata"]["cog_key"], field_health.named_thermal(
+                companion["name"], companion["metadata"]))
+        return out
+    return asyncio.run(run())
+
+
+def test_a_thermal_photo_of_its_own_gives_the_fields_their_temperature(tmp_path):
+    path = _thermal_only(tmp_path / "t.tif", [24.0, 26.0, 31.5, 31.5], unit="C")
+    features = [{"geometry": _field(c)} for c in range(3)]
+    companions = [{"name": "Morning flight", "metadata": {"cog_key": "cog/t1", "path": path}}]  # the file says it
+    store = _Store()
+    assert _with_thermal(store, {}, features, companions) == {}  # measured beside the ask
+    out = _with_thermal(store, {}, features, companions)
+    first = out[field_health.key_of(features[0]["geometry"])]
+    assert first.temperature_said == "surface 24.0 °C, 2.0 °C cooler than the middle of 3 fields"
+    assert first.temperature_from == "Morning flight" and first.said is None
+    assert "Morning flight" in field_health.temperature_note(first.temperature_from)
+
+
+def test_a_one_band_photo_is_thermal_only_if_the_file_or_its_name_says_so(tmp_path):
+    path = _thermal_only(tmp_path / "x.tif", [300, 310, 320, 320], dtype="uint16")  # no unit, no description
+    features = [{"geometry": _field(c)} for c in range(3)]
+    store = _Store()
+    plain = [{"name": "Kabarama_DSM", "metadata": {"cog_key": "cog/x", "path": path}}]
+    _with_thermal(store, {}, features, plain)
+    assert _with_thermal(store, {}, features, plain) == {}  # a height map is not a temperature
+    named = [{"name": "Kabarama_thermal", "metadata": {"cog_key": "cog/x", "path": path}}]
+    _with_thermal(store, {}, features, named)
+    out = _with_thermal(store, {}, features, named)
+    said = out[field_health.key_of(features[2]["geometry"])].temperature_said
+    assert said == "surface temperature: warmest of 3 fields"  # named thermal, but no unit: no degrees
+
+
+@pytest.mark.parametrize("name, filename, expected", [
+    ("Kabarama_thermal", None, True), ("LWIR ortho", None, True), ("Field 3", "flight_TIR.tif", True),
+    ("Temperature 14 Nov", None, True), ("Kabarama_Orthophoto3", "ortho.tif", False), ("Stirling farm", None, False),
+    ("Hyperthermal", None, False)])
+def test_named_thermal_is_a_word_on_its_own(name, filename, expected):
+    assert field_health.named_thermal(name, {"original_filename": filename}) is expected
+
+
+def test_a_field_keeps_the_temperature_of_its_own_photo(tmp_path):
+    own = {"k": field_health.FieldHealth(said=None, temperature_said="surface 30.0 °C", temp_c=30.0)}
+    assert _with_thermal(_Store(), own, [{"geometry": _field(0)}], [{"name": "thermal", "metadata": {
+        "cog_key": "cog/none", "path": "missing.tif"}}]) == own
