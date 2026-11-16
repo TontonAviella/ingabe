@@ -283,6 +283,10 @@ async def load(s3: Any, bucket: str, *, layer_id: str, name: str, bounds: Any, m
                         plots.geojson["features"])
                 except Exception:  # the fields are still said, without their health index
                     logger.exception("photo context: the fields' health could not be measured for layer %s", layer_id)
+            if thermal_photos:  # the bands of a flight uploaded one band a file
+                health = await field_health.with_bands(
+                    s3, bucket, health, plots.geojson["features"], thermal_photos,
+                    lambda companion: long_cog_url(s3, bucket, companion))
             if thermal_photos:  # a thermal photo of this place flown as its own file
                 health = await field_health.with_thermal(
                     s3, bucket, health, plots.geojson["features"], thermal_photos,

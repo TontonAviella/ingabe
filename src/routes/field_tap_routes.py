@@ -160,6 +160,8 @@ async def _with_facts(rows: list[dict[str, Any]], s3: Any, bucket: str, key: str
         except Exception:
             logger.exception("field taps: the health of the kept fields could not be measured")
     if thermal_photos:
+        health = await field_health.with_bands(s3, bucket, health, rows, thermal_photos,
+                                               lambda companion: photo_context.long_cog_url(s3, bucket, companion))
         health = await field_health.with_thermal(s3, bucket, health, rows, thermal_photos,
                                                  lambda companion: photo_context.long_cog_url(s3, bucket, companion))
     try:
@@ -169,7 +171,8 @@ async def _with_facts(rows: list[dict[str, Any]], s3: Any, bucket: str, key: str
     return [{**row, "facts": {"name": known[row["id"]].name, "area_said": known[row["id"]].area_said, "plants_said": known[row["id"]].plants_said,
                               "checked_said": known[row["id"]].checked_said,
                               "health_said": known[row["id"]].health_said,
-                              "health_note": field_health.SHORT_NOTE if known[row["id"]].health_said else None,
+                              "health_note": (field_health.health_note(known[row["id"]].health_from)
+                                              if known[row["id"]].health_said else None),
                               "temperature_said": known[row["id"]].temperature_said,
                               "temperature_note": (field_health.temperature_note(known[row["id"]].temperature_from)
                                                    if known[row["id"]].temperature_said else None),

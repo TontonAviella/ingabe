@@ -28,6 +28,11 @@ It is taken as thermal when the file says so (a band described as thermal, or a 
 reader named the layer so ("thermal", "LWIR", "TIR", "temperature"); then, as always, degrees are said only if the
 file states its unit.
 
+The bands of one flight often come as one file each ("result_Red.tif", "result_NIR.tif": how DJI Terra and
+others deliver). Uploaded into the project of the colour photo the fields were outlined on, such files of the same
+place are read together as one photo (`with_bands`): each file's band is the word its name ends with, the files
+are laid over each other as they are, and everything above is then measured as from one file.
+
 Measured once per outline and kept beside the photo; an outline that changes is a new outline.
 """
 
@@ -38,7 +43,11 @@ import dataclasses
 import hashlib
 import json
 import logging
+import os
 import re
+import subprocess
+import tempfile
+import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, Optional
 
@@ -72,6 +81,8 @@ MIN_ZONE_PATCH_M2 = 100.0  # a patch smaller than this joins the zone around it
 EVEN_SPREAD = 0.05  # a field whose index varies less than this (10th to 90th percentile) is too even to split.
 # These four are choices made from how a spreader works, not measured against yield.
 ZONES = ("low", "middle", "high")
+LEVEL_INDEX = 0.05  # fields whose index lies within this of each other are said to be level: on the first real
+# photo (sunflower at full cover, 2026-11-16) nine squares of one even field differed by 0.01. A choice, not tested.
 MIN_RANKED = 3  # a field's place among fewer fields than this is not said
 
 
@@ -84,6 +95,7 @@ class FieldHealth:
     temperature_said: Optional[str] = None  # from a thermal band whose values are a temperature
     temp_c: Optional[float] = None
     temperature_from: Optional[str] = None  # the thermal photo it was measured on, when not this photo itself
+    index_from: Optional[str] = None  # the band files the index was measured on, when not this photo itself
     # zones inside the field (None: too small to zone, or not measured; (): even, one rate fits it)
     bare_m2: Optional[int] = None  # ground inside the field that reads as bare, left out of its zones
     zones: Optional[tuple[dict[str, Any], ...]] = None
@@ -266,7 +278,38 @@ def _photo_facts(ds: Any, bands: photo_bands.Bands) -> dict[str, Any]:
             "thermal_scale": t_scale, "thermal_offset": t_offset, "thermal_whole": whole}
 
 
-def measure(cog_url: str, outlines: dict[str, dict[str, Any]], named_thermal: bool = False) -> dict[str, Any]:
+BAND_DESCRIPTIONS = {"blue": "Blue", "green": "Green", "red": "Red", "red_edge": "RedEdge", "nir": "NIR"}
+
+
+def _stack(band_urls: dict[str, str], folder: str) -> str:
+    """One virtual photo of several one-band files (role -> link or path), each band described by its role, so the
+    file says which band is which like any multispectral photo. Nothing is copied: the bands are read where they
+    are. Files on different grids are laid over each other by position."""
+    roles = [role for role in BAND_DESCRIPTIONS if role in band_urls]
+    path = os.path.join(folder, "bands.vrt")
+    sources = [f"/vsicurl/{band_urls[role]}" if band_urls[role].startswith("http") else band_urls[role] for role in roles]
+    subprocess.run(["gdalbuildvrt", "-q", "-separate", path, *sources], check=True, capture_output=True, timeout=180,
+                   env={**os.environ, **GDAL_HTTP_TIMEOUTS})
+    tree = ET.parse(path)
+    made = tree.getroot().findall("VRTRasterBand")
+    if len(made) != len(roles):
+        raise OSError("the band files could not be laid over each other")
+    for band, role in zip(made, roles):
+        ET.SubElement(band, "Description").text = BAND_DESCRIPTIONS[role]
+    tree.write(path)
+    return path
+
+
+def measure(cog_url: str, outlines: dict[str, dict[str, Any]], named_thermal: bool = False,
+            band_urls: Optional[dict[str, str]] = None) -> dict[str, Any]:
+    """`_measure` on one photo, or on several one-band files read together as one (`band_urls`: role -> link)."""
+    if not band_urls:
+        return _measure(cog_url, outlines, named_thermal)
+    with tempfile.TemporaryDirectory() as folder:
+        return _measure(_stack(band_urls, folder), outlines, named_thermal)
+
+
+def _measure(cog_url: str, outlines: dict[str, dict[str, Any]], named_thermal: bool = False) -> dict[str, Any]:
     """{"nir": whether the photo has a band to measure from (a near-infrared band it names, or a thermal one),
     "reflectance", "thermal_unit", "fields": {key: {"ndvi", "ndre", "gndvi", "temp", "zones", "bare_m2",
     "zone_index"}}} for outlines in WGS84 (blocking). An outline that is no shape is kept as not measured; a photo
@@ -303,10 +346,15 @@ def _place(below: int, above: int, tied: bool, total: int, low: str = "lowest", 
     return f"{words}, level with another" if tied else words
 
 
-def _places(shown: dict[str, float], low: str = "lowest", high: str = "highest") -> dict[str, str]:
-    """Each field's place among the given values; {} for fewer than MIN_RANKED fields; no place where all are level."""
+def _places(shown: dict[str, float], low: str = "lowest", high: str = "highest",
+            level_within: Optional[float] = None) -> dict[str, str]:
+    """Each field's place among the given values; {} for fewer than MIN_RANKED fields; no place where all are level.
+    `level_within`: when the highest and lowest are closer than this, no field is called highest or lowest: each
+    is said to be level with the others."""
     if len(shown) < MIN_RANKED:
         return {}
+    if level_within is not None and max(shown.values()) - min(shown.values()) < level_within:
+        return {key: f"level with the other {len(shown) - 1} fields" for key in shown}
     out = {}
     for key, value in shown.items():
         below = sum(1 for other in shown.values() if other < value)
@@ -321,7 +369,7 @@ def said(fields: dict[str, dict[str, Any]], reflectance: bool,
     """Each measured field as it is said everywhere. Pure. A place is among the fields given (the fields the
     reader is looking at), on the value as it is shown, so fields that show the same share a place."""
     shown = {key: round(values["ndvi"], 2) for key, values in fields.items() if values.get("ndvi") is not None}
-    places = _places(shown)
+    places = _places(shown, level_within=LEVEL_INDEX)
     out: dict[str, FieldHealth] = {}
     for key, value in shown.items():
         values, place = fields[key], places.get(key)
@@ -366,7 +414,8 @@ async def _record(s3: Any, bucket: str, store_key: str) -> dict[str, Any]:
     return record
 
 
-async def _measure_missing(s3: Any, bucket: str, store_key: str, cog_url: str, named_thermal: bool) -> None:
+async def _measure_missing(s3: Any, bucket: str, store_key: str, cog_url: str, named_thermal: bool,
+                           band_urls: Optional[dict[str, str]] = None) -> None:
     """Measure the outlines waiting for this photo and keep them, a batch at a time. Runs beside the request:
     nobody waits for a photo to be read. A photo that cannot be read keeps what was measured before the failure."""
     try:
@@ -377,7 +426,8 @@ async def _measure_missing(s3: Any, bucket: str, store_key: str, cog_url: str, n
             waiting = _pending[store_key]
             batch = {key: waiting[key] for key in list(waiting)[:BATCH]}
             todo = {key: geometry for key, geometry in batch.items() if key not in record["fields"]}
-            measured = await asyncio.to_thread(measure, cog_url, todo, named_thermal) if todo else None
+            measured = (await asyncio.to_thread(measure, cog_url, todo, named_thermal, band_urls)
+                        if todo else None)
             if measured is not None:
                 record = await _record(s3, bucket, store_key)  # another worker may have kept more meanwhile
                 fields = {**record["fields"], **measured["fields"]}
@@ -405,7 +455,8 @@ async def of_features(s3: Any, bucket: str, photo_key: str, cog_url: str, featur
 
 
 async def _asked(s3: Any, bucket: str, photo_key: str, cog_url: str, features: list[dict[str, Any]],
-                 named_thermal: bool = False) -> tuple[dict[str, FieldHealth], bool]:
+                 named_thermal: bool = False,
+                 band_urls: Optional[dict[str, str]] = None) -> tuple[dict[str, FieldHealth], bool]:
     """(The health of each feature's outline, by key_of(geometry), from what is kept; whether every outline asked
     is kept, so the answer will not change): {} for a photo with nothing to measure from. Never reads the photo
     itself: outlines not measured yet are measured beside the request and are there the next time this is asked,
@@ -425,7 +476,8 @@ async def _asked(s3: Any, bucket: str, photo_key: str, cog_url: str, features: l
             _pending.setdefault(store_key, {}).update(missing)  # the running measurement takes these too
         else:
             _pending[store_key] = dict(missing)
-            _tasks[store_key] = loop.create_task(_measure_missing(s3, bucket, store_key, cog_url, named_thermal))
+            _tasks[store_key] = loop.create_task(
+                _measure_missing(s3, bucket, store_key, cog_url, named_thermal, band_urls))
     return (said({key: record["fields"][key] for key in outlines if key in record["fields"]},
                  bool(record.get("reflectance")), record.get("thermal_unit")), not missing)
 
@@ -483,6 +535,78 @@ async def with_thermal(s3: Any, bucket: str, health: dict[str, FieldHealth], fea
                                                temp_c=h.temp_c, temperature_from=source)
             return out
     return health
+
+
+# A file's band is the word its name ends with, after a break ("result_RedEdge", "flight 3 NIR", "field-red").
+_BAND_AT_END = re.compile(r"^(?:(?P<pre>.*)[^A-Za-z])?(?P<band>red[ _-]?edge|nir|green|blue|red)$", re.IGNORECASE)
+_BAND_ROLE = {"rededge": "red_edge", "nir": "nir", "green": "green", "blue": "blue", "red": "red"}
+
+
+def band_named(name: Optional[str], metadata: dict[str, Any]) -> Optional[tuple[str, str]]:
+    """(the band a one-band layer is, the rest of its name) from the file's name, else the layer's: "result_NIR.tif"
+    is ("nir", "result"). None when the name does not end with a band's word standing on its own."""
+    for text in (metadata.get("original_filename"), name):
+        if not text:
+            continue
+        stem = re.sub(r"\.(tiff?|vrt)$", "", str(text).strip(), flags=re.IGNORECASE)
+        match = _BAND_AT_END.match(stem)
+        if match:
+            role = _BAND_ROLE[re.sub(r"[^a-z]", "", match.group("band").lower())]
+            return role, (match.group("pre") or "").strip(" _-").lower()
+    return None
+
+
+def band_set(companions: list[dict[str, Any]]) -> Optional[dict[str, Any]]:
+    """The newest set of one-band layers that are the bands of one flight: same name but for the band's word, with at
+    least red and near-infrared. {"key", "name", "members": {role: metadata}}; None when there is none.
+    `companions`: one-band photos of the place ({"name", "metadata"}), newest first."""
+    groups: dict[str, dict[str, dict[str, Any]]] = {}
+    for companion in companions:
+        metadata = companion.get("metadata") or {}
+        named = band_named(companion.get("name"), metadata)
+        if named and metadata.get("cog_key"):
+            groups.setdefault(named[1], {}).setdefault(named[0], metadata)  # the newest file of each band
+    for prefix, members in groups.items():
+        if "red" in members and "nir" in members:
+            joined = "|".join(f"{role}={members[role]['cog_key']}" for role in sorted(members))
+            return {"key": "bands:" + hashlib.sha256(joined.encode()).hexdigest()[:32],
+                    "name": plain_name(prefix or "band files"), "members": members}
+    return None
+
+
+async def with_bands(s3: Any, bucket: str, health: dict[str, FieldHealth], features: list[dict[str, Any]],
+                     companions: list[dict[str, Any]],
+                     url_of: Callable[[dict[str, Any]], Awaitable[str]]) -> dict[str, FieldHealth]:
+    """`health` with each field's index and zones from the band files of the same place that were uploaded one band
+    a file. Fields that already have an index from their own photo keep it. Nothing is said while the set is still
+    being measured, or when it reaches fewer than MIN_COMPANION_COVER of the fields. Nothing is read here."""
+    asked = len({key_of(f["geometry"]) for f in features if isinstance(f.get("geometry"), dict)})
+    if not asked or any(h.said or h.zones is not None for h in health.values()):
+        return health
+    found_set = band_set(companions)
+    if found_set is None:
+        return health
+    try:
+        urls = {role: await url_of(metadata) for role, metadata in found_set["members"].items()}
+        found, complete = await _asked(s3, bucket, found_set["key"], "", features, band_urls=urls)
+    except Exception:  # the fields are still said, without an index from the band files
+        logger.exception("field health: the band files of the place could not be asked")
+        return health
+    measured = {key: h for key, h in found.items() if h.said or h.zones is not None or h.ndvi is not None}
+    if not complete or len(measured) < MIN_COMPANION_COVER * asked:
+        return health
+    out = dict(health)
+    for key, h in measured.items():
+        kept = out.get(key, FieldHealth(said=None))
+        out[key] = dataclasses.replace(h, temperature_said=kept.temperature_said, temp_c=kept.temp_c,
+                                       temperature_from=kept.temperature_from, index_from=found_set["name"])
+    return out
+
+
+def health_note(source: Optional[str]) -> str:
+    """The caveat every surface gives with a health index, saying when it comes from separate band files."""
+    return SHORT_NOTE + (f" Measured on the band files {source}, which may be from another day than this photo."
+                         if source else "")
 
 
 TEMPERATURE_NOTE = ("A warmer field can be bare soil, a thinner crop, or a crop short of water. Sun, wind and the "

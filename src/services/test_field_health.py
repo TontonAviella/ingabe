@@ -108,7 +108,8 @@ def test_fields_that_show_the_same_index_share_a_place():
     assert out["a"].said == out["b"].said == "health index (NDVI) 0.60, lowest of 4 fields, level with another"
     assert out["c"].said == "health index (NDVI) 0.71, 3rd lowest of 4 fields"
     same = field_health.said({k: {"ndvi": 0.5} for k in "abc"}, reflectance=False)
-    assert same["a"].said is None  # every field level: no place to say, and no number on raw values
+    # every field level: said so, with no number on raw values (before 2026-11-16 nothing was said)
+    assert same["a"].said == "health index (NDVI): level with the other 2 fields"
 
 
 @pytest.mark.parametrize("below, above, total, words", [(0, 14, 15, "lowest of 15 fields"), (2, 12, 15, "3rd lowest of 15 fields"),
@@ -474,3 +475,78 @@ def test_a_layer_name_stays_a_name():
     assert '"' not in name and "\n" not in name and "{" not in name and len(name) <= 60
     assert field_health.plain_name("Kabarama_thermal 14-Nov.tif") == "Kabarama_thermal 14-Nov.tif"
     assert field_health.plain_name("") == "a thermal photo"
+
+
+@pytest.mark.parametrize("filename, layer, expected", [
+    ("result_NIR.tif", None, ("nir", "result")), ("result_RedEdge.tif", None, ("red_edge", "result")),
+    ("result_Red.tif", None, ("red", "result")), ("farm 3 red-edge.TIF", None, ("red_edge", "farm 3")),
+    ("flight_red_edge.tiff", None, ("red_edge", "flight")), (None, "Kabarama Green", ("green", "kabarama")),
+    ("NIR.tif", None, ("nir", "")), ("hundred.tif", None, None), ("result.tif", None, None),
+    ("result_NDVI.tif", None, None), ("infrared.tif", None, None), ("result_Blue_copy.tif", None, None)])
+def test_a_band_file_is_named_by_the_word_its_name_ends_with(filename, layer, expected):
+    assert field_health.band_named(layer, {"original_filename": filename}) == expected
+
+
+def _band_files(folder, prefix="result", nir=(0.20, 0.30, 0.45, 0.45), skip=()):
+    """One 200 m x 100 m file per band, named the way DJI Terra names them; companions newest first."""
+    values = {"Blue": [0.04] * 4, "Green": [0.08] * 4, "Red": [0.05] * 4, "RedEdge": [0.20] * 4, "NIR": list(nir)}
+    companions = []
+    for band, by_column in values.items():
+        if band in skip:
+            continue
+        path = _thermal_only(folder / f"{prefix}_{band}.tif", by_column)
+        companions.append({"name": f"{prefix}_{band}", "metadata": {
+            "cog_key": f"cog/{prefix}/{band}", "original_filename": f"{prefix}_{band}.tif", "path": path}})
+    return companions
+
+
+def _with_bands(store, health, features, companions):
+    async def url_of(metadata):
+        return metadata["path"]
+
+    async def run():
+        out = await field_health.with_bands(store, "b", health, features, companions, url_of)
+        found = field_health.band_set(companions)
+        if found:
+            await field_health.settled(found["key"])
+        return out
+    return asyncio.run(run())
+
+
+def test_band_files_of_one_flight_are_read_as_one_photo(tmp_path):
+    companions = _band_files(tmp_path)
+    features = [{"geometry": _field(c)} for c in range(3)]
+    store = _Store()
+    assert _with_bands(store, {}, features, companions) == {}  # measured beside the ask
+    out = _with_bands(store, {}, features, companions)
+    stacked = field_health.said(field_health.measure(_photo(tmp_path / "ms.tif", [0.20, 0.30, 0.45, 0.45]),
+                                                     {field_health.key_of(f["geometry"]): f["geometry"] for f in features})["fields"], True)
+    for key, health in out.items():
+        assert health.said == stacked[key].said and health.ndre == pytest.approx(stacked[key].ndre, abs=1e-4)
+        assert health.index_from == "result"
+    assert "band files result" in field_health.health_note("result")
+
+
+def test_the_newest_whole_set_is_used_and_a_set_without_near_infrared_is_not(tmp_path):
+    (tmp_path / "old").mkdir()
+    (tmp_path / "new").mkdir()
+    old = _band_files(tmp_path / "old", prefix="april")
+    new_without_nir = _band_files(tmp_path / "new", prefix="july", skip=("NIR",))
+    found = field_health.band_set([*new_without_nir, *old])
+    assert found["name"] == "april" and set(found["members"]) == {"blue", "green", "red", "red_edge", "nir"}
+    assert field_health.band_set(new_without_nir) is None
+    assert field_health.band_set([{"name": "Kabarama_DSM", "metadata": {"cog_key": "cog/dsm"}}]) is None
+
+
+def test_a_field_keeps_the_index_of_its_own_photo(tmp_path):
+    own = {"k": field_health.FieldHealth(said="health index (NDVI) 0.60", ndvi=0.6)}
+    assert _with_bands(_Store(), own, [{"geometry": _field(0)}], _band_files(tmp_path)) == own
+
+
+def test_fields_a_hair_apart_are_level_not_highest_and_lowest():
+    # What the first real photo showed: nine squares of one even sunflower field at 0.79 and 0.80.
+    fields = {f"s{i}": {"ndvi": v} for i, v in enumerate([0.7939, 0.8019, 0.8011, 0.8032, 0.8039, 0.8015, 0.7908])}
+    for reflectance in (True, False):
+        said = [h.said for h in field_health.said(fields, reflectance).values()]
+        assert all("level with the other 6 fields" in words for words in said)
+        assert not any("lowest" in words or "highest" in words for words in said)
