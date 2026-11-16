@@ -48,10 +48,13 @@ SELECT count(DISTINCT COALESCE(l.metadata->>'upload_etag', l.layer_id))
           AND m.project_id IN (SELECT m2.project_id FROM user_mundiai_maps m2 WHERE $1 = ANY(m2.layers)))
 """
 
-# Other one-band photos in the layer's projects (their shown maps only) whose outline overlaps this layer's,
-# newest first: where a thermal photo flown as its own file is looked for (field_health.with_thermal).
+# Other photos in the layer's projects (their shown maps only) whose outline overlaps this layer's, newest first:
+# where a thermal photo, band files or a multispectral file uploaded beside a colour photo are looked for
+# (field_health.with_thermal, with_bands, with_spectral). Each says how many bands it has.
 _ONE_BAND_PHOTOS_HERE_SQL = f"""
-SELECT l.layer_id, l.name, l.metadata, l.bounds, l.created_on
+SELECT l.layer_id, l.name, l.metadata, l.bounds, l.created_on,
+       ABS(EXTRACT(EPOCH FROM (l.created_on - (SELECT o.created_on FROM map_layers o WHERE o.layer_id = $1)))) / 3600
+           AS hours_from_photo
   FROM map_layers l
  WHERE l.type = 'raster'
    AND l.layer_id <> $1
@@ -60,12 +63,14 @@ SELECT l.layer_id, l.name, l.metadata, l.bounds, l.created_on
    AND l.metadata->>'cog_key' IS NOT NULL
    AND l.metadata->>'cog_status' = 'ready'
    AND COALESCE(l.metadata->>'crs_missing', 'false') <> 'true'
-   AND (l.metadata->>'band_count') = '1'
+   AND CASE WHEN (l.metadata->>'band_count') ~ '^[0-9]+$'
+            THEN (l.metadata->>'band_count')::int = 1 OR (l.metadata->>'band_count')::int >= 4
+            ELSE false END
    AND l.layer_id IN (
        SELECT unnest(s.layers) FROM ({SHOWN_MAPS_SQL}) s
         WHERE s.project_id IN (SELECT s2.project_id FROM ({SHOWN_MAPS_SQL}) s2 WHERE $1 = ANY(s2.layers)))
  ORDER BY l.created_on DESC
- LIMIT 30
+ LIMIT 60
 """
 
 _PROJECT_SQL = """
@@ -106,23 +111,30 @@ def is_georeferenced(metadata: dict[str, Any], bounds: Any) -> bool:
     return True
 
 
-async def one_band_photos_here(conn: Any, layer_id: str, bounds: Any) -> list[dict[str, Any]]:
-    """The project's other one-band photos over this layer's place ({"name", "metadata", "bounds", "uploaded"}),
-    newest first, as `conn` may see them. [] when the layer has no bounds."""
+async def one_band_photos_here(conn: Any, layer_id: str, bounds: Any,
+                               own_cog_key: Optional[str] = None) -> list[dict[str, Any]]:
+    """The project's other photos over this layer's place ({"name", "metadata", "bounds", "uploaded", "bands"}),
+    newest first, as `conn` may see them: one-band files (a thermal photo, band files) and files of four bands or
+    more (a multispectral photo beside the colour one). Ordinary three-band pictures are left out. [] when the
+    layer has no bounds."""
     if not bounds or len(bounds) != 4:
         return []
     west, south, east, north = bounds
     rows = await conn.fetch(_ONE_BAND_PHOTOS_HERE_SQL, layer_id, west, south, east, north)
     out: list[dict[str, Any]] = []
-    seen: set[str] = set()
+    seen: set[Any] = {own_cog_key}  # a copy of this very photo under another layer is not another photo
     for row in rows:
         metadata = row["metadata"]
         metadata = json.loads(metadata) if isinstance(metadata, str) else dict(metadata or {})
         if metadata.get("cog_key") in seen:  # copies of one layer are one photo
             continue
         seen.add(metadata.get("cog_key"))
-        out.append({"name": row["name"], "metadata": metadata, "bounds": list(row["bounds"] or []),
-                    "uploaded": row["created_on"]})
+        bands = int(metadata.get("band_count") or 0)
+        if bands == 1 or bands >= 4:
+            out.append({"name": row["name"], "metadata": metadata, "bounds": list(row["bounds"] or []),
+                        "uploaded": row["created_on"], "bands": bands,
+                        "hours_from_photo": (float(row["hours_from_photo"])
+                                             if row["hours_from_photo"] is not None else None)})
     return out
 
 
@@ -247,7 +259,7 @@ async def load(s3: Any, bucket: str, *, layer_id: str, name: str, bounds: Any, m
         project_id = await project_of(conn, layer_id)
         thermal_photos: list[dict[str, Any]] = []
         try:
-            thermal_photos = await one_band_photos_here(conn, layer_id, analysis.bounds)
+            thermal_photos = await one_band_photos_here(conn, layer_id, analysis.bounds, metadata.get("cog_key"))
         except Exception:  # the cards still answer, without a temperature from another photo
             logger.exception("photo context: the thermal photos of layer %s's place could not be listed", layer_id)
     records = await farm_records.load_records(s3, bucket, project_id) if project_id else []
@@ -288,6 +300,12 @@ async def load(s3: Any, bucket: str, *, layer_id: str, name: str, bounds: Any, m
                 health = await field_health.with_bands(
                     s3, bucket, health, plots.geojson["features"], thermal_photos,
                     lambda companion: long_cog_url(s3, bucket, companion))
+                health = await field_health.with_spectral(
+                    s3, bucket, health, plots.geojson["features"], thermal_photos,
+                    lambda companion: long_cog_url(s3, bucket, companion),
+                    # a colour photo is known to have no bands of its own to wait for
+                    photo_plots.photo_key(metadata)
+                    if analysis.look.bands.nir is not None or analysis.look.bands.thermal is not None else None)
             if thermal_photos:  # a thermal photo of this place flown as its own file
                 health = await field_health.with_thermal(
                     s3, bucket, health, plots.geojson["features"], thermal_photos,

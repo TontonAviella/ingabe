@@ -85,6 +85,60 @@ class Bands:
         return [self.red, self.green]
 
 
+# Where each band of the cameras in use is centred (nm). When a file describes two bands by wavelengths that are
+# the same kind of light (880 nm and 900 nm are both near-infrared), the one nearer the usual centre takes the role.
+# ... in a file of a few bands. A camera of dozens of narrow bands has several in each range, and which one an
+# index should use is the camera maker's choice, not ours: such a file stays unknown.
+MAX_BANDS_CHOSEN_BY_WAVELENGTH = 6
+_CENTRE_NM = {"blue": 475.0, "green": 560.0, "red": 668.0, "red_edge": 717.0, "nir": 842.0}
+
+
+def _wavelength_nm(description: Optional[str]) -> Optional[float]:
+    """The wavelength a band's description gives in nanometres of visible or near-infrared light, if it gives one."""
+    found = _NM.search(description.lower()) if description else None
+    return float(found.group(1)) if found else None
+
+
+_PROGRAMS = (("pix4dfields", "Pix4Dfields"), ("pix4dmapper", "Pix4Dmapper"), ("pix4d", "Pix4D"),
+             ("odm", "OpenDroneMap"), ("opendronemap", "OpenDroneMap"), ("webodm", "OpenDroneMap"),
+             ("agisoft", "Agisoft Metashape"), ("metashape", "Agisoft Metashape"), ("photoscan", "Agisoft Metashape"),
+             ("dji terra", "DJI Terra"), ("djiterra", "DJI Terra"), ("drone2map", "ArcGIS Drone2Map"),
+             ("dronedeploy", "DroneDeploy"), ("correlator3d", "Correlator3D"))
+
+
+def program(tags: Any) -> Optional[str]:
+    """The program that made a photo, when the file says so (its software tag); None otherwise. Many programs
+    (Agisoft Metashape, DJI Terra) write nothing, so a photo without one is not from "no program"."""
+    said = str((tags or {}).get("TIFFTAG_SOFTWARE") or "").strip().lower()
+    for start, name in _PROGRAMS:
+        if said.startswith(start):
+            return name
+    return None
+
+
+def on_its_scale(ds: Any, number: int, values: Any) -> Any:
+    """A band's values with the scale and offset the file states for it applied (reflectance kept as whole numbers
+    with "scale 0.0001" becomes 0 to 1). A file that states neither is returned as it is."""
+    scale, offset = float(ds.scales[number - 1] or 1.0), float(ds.offsets[number - 1] or 0.0)
+    if scale == 1.0 and offset == 0.0:
+        return values
+    return np.ma.asarray(values, dtype="float32") * scale + offset
+
+
+REFLECTANCE_SCALE = 0.0001  # the one stated scale taken as "these whole numbers are reflectance": 10,000 = all light
+
+
+def scale_is_trusted(ds: Any, number: int) -> bool:
+    """Whether a band's stated scale may make its values count as reflectance. A scale is a tag anyone can write,
+    and with no offset it does not change an index at all: it would only flip the judgement "calibrated". So only
+    the convention processing programs use is believed: whole numbers, scale 0.0001, no offset. A band that states
+    no scale is judged on its values alone."""
+    scale, offset = float(ds.scales[number - 1] or 1.0), float(ds.offsets[number - 1] or 0.0)
+    if scale == 1.0 and offset == 0.0:
+        return True
+    return offset == 0.0 and abs(scale - REFLECTANCE_SCALE) < 1e-9 and np.dtype(ds.dtypes[number - 1]).kind in "iu"
+
+
 def _role_of_name(description: Optional[str]) -> Optional[str]:
     if not description:
         return None
@@ -117,6 +171,7 @@ def roles(descriptions: Any, interps: Any, count: int, dtypes: Any = ()) -> Band
     three bands of a stack that is in another order."""
     said: dict[str, int] = {}  # from descriptions
     stamped: dict[str, int] = {}  # from colour interpretation
+    said_nm: dict[str, float] = {}  # the wavelength behind a description, where it gave one
     clash = False
     for number in range(1, count + 1):
         interp = interps[number - 1] if number <= len(interps) else None
@@ -127,8 +182,20 @@ def roles(descriptions: Any, interps: Any, count: int, dtypes: Any = ()) -> Band
         if by_name and by_stamp and by_name != by_stamp:
             clash = True
         if by_name:
+            nm = _wavelength_nm(descriptions[number - 1])
+            if (by_name in said and nm is not None and by_name in said_nm and by_name in _CENTRE_NM
+                    and count <= MAX_BANDS_CHOSEN_BY_WAVELENGTH):
+                # two bands of one kind of light, each described by its wavelength: the nearer the usual centre
+                near, kept = abs(nm - _CENTRE_NM[by_name]), abs(said_nm[by_name] - _CENTRE_NM[by_name])
+                if near == kept:  # the same wavelength twice, or two equally far: nothing to choose by
+                    clash = True
+                elif near < kept:
+                    said[by_name], said_nm[by_name] = number, nm
+                continue
             clash = clash or by_name in said
             said[by_name] = number
+            if nm is not None:
+                said_nm[by_name] = nm
         if by_stamp and by_stamp not in stamped:
             stamped[by_stamp] = number
 
