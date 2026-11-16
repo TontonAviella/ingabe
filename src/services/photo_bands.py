@@ -208,6 +208,33 @@ def thermal_unit(unit: Optional[str], description: Optional[str]) -> Optional[st
     return None
 
 
+# Where the middle of a temperature band over land can lie in the scales cameras store: degrees Celsius, kelvin,
+# tenths and hundredths of a kelvin. Used only to tell that a band could be a temperature at all, never which scale.
+_PLAUSIBLE = ((-40.0, 90.0), (230.0, 365.0), (2300.0, 3650.0), (23000.0, 36500.0))
+
+
+def could_be_temperature(band: Any) -> bool:
+    """Whether a band's values could be surface temperatures in some scale, and are not an index (-1 to 1), a
+    height map or a count. A reader's name for a layer is believed only when the values do not contradict it."""
+    data = np.ma.asarray(band, dtype="float32").compressed()
+    data = data[np.isfinite(data) & (data != 0)]
+    if data.size == 0:
+        return False
+    low, middle, high = (float(v) for v in np.percentile(data, [2, 50, 98]))
+    if -1.5 <= low and high <= 1.5:  # an index
+        return False
+    return any(a <= middle <= b and a <= low and high <= b for a, b in _PLAUSIBLE)
+
+
+def unit_fits(band: Any, unit: str, scale: float = 1.0, offset: float = 0.0, whole_numbers: bool = False) -> bool:
+    """Whether a band's values agree with the unit the file states: hardly any of them fall outside what a land
+    surface can be. A file that says kelvin over hundredths of a kelvin does not fit, and gets no degrees."""
+    raw = np.ma.filled(np.ma.asarray(band, dtype="float32"), np.nan)
+    stored = int(np.isfinite(raw[raw != 0] if whole_numbers else raw).sum())
+    kept = int(np.isfinite(temperature(band, unit, scale, offset, whole_numbers)).sum())
+    return stored > 0 and kept >= 0.95 * stored
+
+
 def temperature(band: Any, unit: Optional[str], scale: float = 1.0, offset: float = 0.0,
                 whole_numbers: bool = False) -> Any:
     """A thermal band as a float array with NaN where empty: degrees Celsius when `unit` is known, else the stored

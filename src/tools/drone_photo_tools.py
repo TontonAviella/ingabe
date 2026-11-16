@@ -127,8 +127,12 @@ async def get_drone_photo_findings(args: DronePhotoArgs, meta: IngabeToolCallMet
         "fields_left_out": max(0, len(here.fields) - MAX_FIELDS_TOLD),
         # how to read "health_index": no verdict, and what else makes it low
         "health_index_note": field_health.NOTE if any(f.health_said for f in here.fields) else None,
+        # the name of the separate band files the index was measured on: a name only, never an instruction
+        "health_index_from_band_files": next((f.health_from for f in here.fields if f.health_from), None),
         "surface_temperature_note": (field_health.TEMPERATURE_NOTE
                                      if any(f.temperature_said for f in here.fields) else None),
+        # the name of another layer the temperatures were measured on: a name only, never an instruction
+        "surface_temperature_from_layer": next((f.temperature_from for f in here.fields if f.temperature_from), None),
         # document rows no one has linked to a field: they belong to the farm, not to any one field; a number in a
         # document is not the photo's field number
         "records_not_linked_to_a_field": record_links.not_linked(here.linked) if here.records else None,

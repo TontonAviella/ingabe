@@ -8,6 +8,7 @@ DRONE_VISION_SURVEY is on (drone_vision.survey_enabled).
 
 from __future__ import annotations
 
+import json
 import logging
 from dataclasses import dataclass
 from typing import Any, Optional
@@ -47,6 +48,26 @@ SELECT count(DISTINCT COALESCE(l.metadata->>'upload_etag', l.layer_id))
           AND m.project_id IN (SELECT m2.project_id FROM user_mundiai_maps m2 WHERE $1 = ANY(m2.layers)))
 """
 
+# Other one-band photos in the layer's projects (their shown maps only) whose outline overlaps this layer's,
+# newest first: where a thermal photo flown as its own file is looked for (field_health.with_thermal).
+_ONE_BAND_PHOTOS_HERE_SQL = f"""
+SELECT l.layer_id, l.name, l.metadata, l.bounds, l.created_on
+  FROM map_layers l
+ WHERE l.type = 'raster'
+   AND l.layer_id <> $1
+   AND l.bounds IS NOT NULL
+   AND l.bounds[1] < $4 AND l.bounds[3] > $2 AND l.bounds[2] < $5 AND l.bounds[4] > $3
+   AND l.metadata->>'cog_key' IS NOT NULL
+   AND l.metadata->>'cog_status' = 'ready'
+   AND COALESCE(l.metadata->>'crs_missing', 'false') <> 'true'
+   AND (l.metadata->>'band_count') = '1'
+   AND l.layer_id IN (
+       SELECT unnest(s.layers) FROM ({SHOWN_MAPS_SQL}) s
+        WHERE s.project_id IN (SELECT s2.project_id FROM ({SHOWN_MAPS_SQL}) s2 WHERE $1 = ANY(s2.layers)))
+ ORDER BY l.created_on DESC
+ LIMIT 30
+"""
+
 _PROJECT_SQL = """
 SELECT m.project_id FROM user_mundiai_maps m
  WHERE $1 = ANY(m.layers) AND m.soft_deleted_at IS NULL
@@ -83,6 +104,31 @@ def is_georeferenced(metadata: dict[str, Any], bounds: Any) -> bool:
     except (TypeError, ValueError):
         return False
     return True
+
+
+async def one_band_photos_here(conn: Any, layer_id: str, bounds: Any) -> list[dict[str, Any]]:
+    """The project's other one-band photos over this layer's place ({"name", "metadata", "bounds", "uploaded"}),
+    newest first, as `conn` may see them. [] when the layer has no bounds."""
+    if not bounds or len(bounds) != 4:
+        return []
+    west, south, east, north = bounds
+    rows = await conn.fetch(_ONE_BAND_PHOTOS_HERE_SQL, layer_id, west, south, east, north)
+    out: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for row in rows:
+        metadata = row["metadata"]
+        metadata = json.loads(metadata) if isinstance(metadata, str) else dict(metadata or {})
+        if metadata.get("cog_key") in seen:  # copies of one layer are one photo
+            continue
+        seen.add(metadata.get("cog_key"))
+        out.append({"name": row["name"], "metadata": metadata, "bounds": list(row["bounds"] or []),
+                    "uploaded": row["created_on"]})
+    return out
+
+
+async def long_cog_url(s3: Any, bucket: str, metadata: dict[str, Any]) -> str:
+    """A link to a photo that lasts as long as a measurement beside the request may run."""
+    return await cog_url(s3, bucket, metadata, LONG_URL_SECONDS)
 
 
 async def project_of(conn: Any, layer_id: str) -> Optional[str]:
@@ -199,6 +245,11 @@ async def load(s3: Any, bucket: str, *, layer_id: str, name: str, bounds: Any, m
         reader = await reader_roles.role_in(conn, "agriculture", audience, user_id, org_id)
         maps = await photo_plots.plot_sources(conn, s3, bucket, layer_id, analysis.bounds, metadata)
         project_id = await project_of(conn, layer_id)
+        thermal_photos: list[dict[str, Any]] = []
+        try:
+            thermal_photos = await one_band_photos_here(conn, layer_id, analysis.bounds)
+        except Exception:  # the cards still answer, without a temperature from another photo
+            logger.exception("photo context: the thermal photos of layer %s's place could not be listed", layer_id)
     records = await farm_records.load_records(s3, bucket, project_id) if project_id else []
     plots, plot_map, map_error = await photo_plots.plots_from_chosen_map(
         s3, bucket, layer_id, metadata, user_id, url, maps)
@@ -224,7 +275,7 @@ async def load(s3: Any, bucket: str, *, layer_id: str, name: str, bounds: Any, m
     zones: Optional[dict[str, Any]] = None  # the fields' zones from a near-infrared photo, once measured
     if plots is not None:
         try:
-            health = {}
+            health: dict[str, field_health.FieldHealth] = {}
             if analysis.look.bands.nir is not None or analysis.look.bands.thermal is not None:  # else nothing to measure
                 try:
                     health = await field_health.of_features(
@@ -233,6 +284,14 @@ async def load(s3: Any, bucket: str, *, layer_id: str, name: str, bounds: Any, m
                         plots.geojson["features"])
                 except Exception:  # the fields are still said, without their health index
                     logger.exception("photo context: the fields' health could not be measured for layer %s", layer_id)
+            if thermal_photos:  # the bands of a flight uploaded one band a file
+                health = await field_health.with_bands(
+                    s3, bucket, health, plots.geojson["features"], thermal_photos,
+                    lambda companion: long_cog_url(s3, bucket, companion))
+            if thermal_photos:  # a thermal photo of this place flown as its own file
+                health = await field_health.with_thermal(
+                    s3, bucket, health, plots.geojson["features"], thermal_photos,
+                    lambda companion: long_cog_url(s3, bucket, companion))
             fields = await field_facts.of_plots(s3, bucket, photo_plots.photo_key(metadata), layer_id, plots,
                                                 record_links.by_field(linked), health)
             of_outlined = field_facts.outlined(plots)

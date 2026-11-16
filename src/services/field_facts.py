@@ -110,6 +110,8 @@ class FieldFacts:
     ndvi: Optional[float] = None
     ndre: Optional[float] = None
     temperature_said: Optional[str] = None  # from a thermal band, beside the middle of the fields shown with it
+    temperature_from: Optional[str] = None  # the thermal photo it was measured on, when not this photo itself
+    health_from: Optional[str] = None  # the band files the index was measured on, when not this photo itself
 
     def shown(self) -> dict[str, Any]:
         return asdict(self)
@@ -134,6 +136,8 @@ def _facts(number: int, label: str, area_ha: float, row: Optional[dict[str, Any]
     return FieldFacts(
         health_said=health.said if health else None, ndvi=health.ndvi if health else None,
         ndre=health.ndre if health else None, temperature_said=health.temperature_said if health else None,
+        temperature_from=health.temperature_from if health else None,
+        health_from=health.index_from if health else None,
         number=number, name=label, area_ha=area_ha, area_said=area_said(area_ha),
         kept_id=row["id"] if row is not None else None,
         green_cover=cover, cover_said=f"green cover {round(cover * 100)}%" if cover is not None else None,
