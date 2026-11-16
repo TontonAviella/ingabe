@@ -140,8 +140,9 @@ def _facts(number: int, label: str, area_ha: float, row: Optional[dict[str, Any]
     cover_said = f"green cover {round(cover * 100)}%" if cover is not None else None
     counted = plants_said(count["plants"], count.get("counted_share")) if count else None
     own = (field_flights.line(this_photo.get("name"), this_photo.get("metadata") or {}, this_photo.get("uploaded"),
-                              [cover_said, counted, health.said if health else None,
-                               health.temperature_said if health else None],
+                              [cover_said, counted,
+                               *field_flights.facts_of(health, health.index_from if health else None,
+                                                       health.temperature_from if health else None)],
                               this=True, nothing="nothing measured on this photo yet")
            if flights and this_photo else None)
     return FieldFacts(

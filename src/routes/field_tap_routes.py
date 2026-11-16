@@ -128,9 +128,12 @@ async def get_field_taps(layer: MapLayer = Depends(get_layer),
             added, other_flights = await photo_context.flights_here(conn, layer.layer_id, layer.bounds, key)
     except Exception:  # the fields are still shown, each on this photo alone
         logger.exception("field taps: the other flights of this place could not be listed")
+    this_photo = {"name": layer.name, "metadata": layer.metadata_dict or {}, "uploaded": added}
+    apart, unsure = field_flights.other_flights(this_photo, other_flights)
     state["kept"] = await _with_facts(state["kept"], s3, bucket, key, layer.layer_id, session.get_user_id(), cog_url,
-                                      thermal_photos, other_flights,
-                                      {"name": layer.name, "metadata": layer.metadata_dict or {}, "uploaded": added})
+                                      thermal_photos, apart, this_photo)
+    # photos of this place added the same day with no flight day given: not known to be other flights
+    state["photos_not_told_apart"] = unsure
     given = field_flights.flown_on(layer.metadata_dict or {})
     state["flown_on"] = given.isoformat() if given else None
     state["flights_note"] = field_flights.NOTE
@@ -150,15 +153,18 @@ async def say_photo_flight_day(body: FlownIn, layer: MapLayer = Depends(edit_lay
     a photo is said by the day it was added."""
     await _photo_key(layer)
     if body.day is None:
-        sql, args = "UPDATE map_layers SET metadata = metadata - $2::text WHERE layer_id = $1", (layer.layer_id, field_flights.FLOWN_ON)
+        sql = "UPDATE map_layers SET metadata = (metadata - $2::text) - $3::text WHERE layer_id = $1"
+        args: tuple[Any, ...] = (layer.layer_id, field_flights.FLOWN_ON, field_flights.FLOWN_ON_BY)
     else:
         try:  # a day ahead of the server's clock by a time zone is still today somewhere
             field_flights.check_day(body.day, datetime.now(timezone.utc).date() + timedelta(days=1))
         except ValueError as why:
             raise HTTPException(422, str(why)) from why
-        sql = ("UPDATE map_layers SET metadata = COALESCE(metadata, '{}'::jsonb) || jsonb_build_object($2::text, $3::text) "
-               "WHERE layer_id = $1")
-        args = (layer.layer_id, field_flights.FLOWN_ON, body.day.isoformat())
+        # who gave the day and when is kept with it: it is a person's word, not a fact read from the file
+        sql = ("UPDATE map_layers SET metadata = COALESCE(metadata, '{}'::jsonb) || jsonb_build_object("
+               "$2::text, $3::text, $4::text, jsonb_build_object('by', $5::text, 'at', $6::text)) WHERE layer_id = $1")
+        args = (layer.layer_id, field_flights.FLOWN_ON, body.day.isoformat(), field_flights.FLOWN_ON_BY,
+                session.get_user_id(), datetime.now(timezone.utc).isoformat(timespec="seconds"))
     async with get_async_db_connection() as conn:
         await conn.execute(sql, *args)
     return {"flown_on": body.day.isoformat() if body.day else None}
@@ -211,8 +217,7 @@ async def _with_facts(rows: list[dict[str, Any]], s3: Any, bucket: str, key: str
     if other_flights:
         try:  # the same outlines on the other flights of this place
             flights = await field_flights.of_features(
-                s3, bucket, rows, other_flights, lambda companion: photo_context.long_cog_url(s3, bucket, companion),
-                next((h.index_from for h in health.values() if h.index_from), None))
+                s3, bucket, rows, other_flights, lambda companion: photo_context.long_cog_url(s3, bucket, companion))
         except Exception:
             logger.exception("field taps: the other flights of the kept fields could not be read")
     try:

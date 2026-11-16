@@ -499,7 +499,7 @@ async def test_a_field_is_followed_on_the_other_flights_of_its_place_by_the_day_
     assert (await client.put(f"{base}/flown-on", json={"day": "soon"})).status_code == 422
     assert (await client.put(f"{base}/flown-on", json={"day": "2026-04-02"})).json() == {"flown_on": "2026-04-02"}
     _as(VIEWER)
-    assert (await client.put(f"{base}/flown-on", json={"day": "2026-04-03"})).status_code in (403, 404)
+    assert (await client.put(f"{base}/flown-on", json={"day": "2026-04-03"})).status_code == 403
     _as(ids["owner"])
     # another flight of the same ground in the project, and one of another place
     ring = kept["geometry"]["coordinates"][0]
@@ -520,20 +520,24 @@ async def test_a_field_is_followed_on_the_other_flights_of_its_place_by_the_day_
 
         async def asked(s3, bucket, photo_key, cog_url, features):
             assert photo_key == f"test/field_taps/{other}.tif"  # the other place is never opened
-            return {field_health.key_of(f["geometry"]): field_health.FieldHealth(said="health index (NDVI) 0.45", ndvi=0.45)
-                    for f in features}, True
+            return {field_health.key_of(f["geometry"]): field_health.FieldHealth(
+                said="health index (NDVI) 0.45, lowest of 3 fields", ndvi=0.45, share=1.0) for f in features}, True
 
         monkeypatch.setattr(field_health, "asked", asked)
         state = (await client.get(base)).json()
         assert state["flown_on"] == "2026-04-02" and state["flights_measuring"] is False and state["flights_note"]
+        assert state["photos_not_told_apart"] == 0
         flights = state["kept"][0]["facts"]["flights"]
         assert [(f["day_said"], f["this"], f["photo"]) for f in flights] == [
             ("14 March 2026", False, "march flight"), ("2 April 2026", True, "farm photo")]
         assert flights[0]["said"] == "health index (NDVI) 0.45"
         # taking the day off: this photo goes by the day it was added, and says so
         assert (await client.put(f"{base}/flown-on", json={"day": None})).json() == {"flown_on": None}
-        own = next(f for f in (await client.get(base)).json()["kept"][0]["facts"]["flights"] if f["this"])
-        assert own["day_said"].startswith("added ") and own["flown"] is False
+        # ... and the other photo, added the same day, is no longer known to be another flight
+        after = (await client.get(base)).json()
+        assert after["kept"][0]["facts"]["flights"] == [] and after["photos_not_told_apart"] == 1
+        given = await conn.fetchval("SELECT metadata FROM map_layers WHERE layer_id = $1", ids["layer"])
+        assert "flown_on" not in json.loads(given) and "flown_on_by" not in json.loads(given)
     finally:
         await conn.execute("DELETE FROM map_layers WHERE layer_id = ANY($1::text[])", [other, far])
         await conn.close()

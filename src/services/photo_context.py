@@ -169,14 +169,19 @@ async def flights_here(conn: Any, layer_id: str, bounds: Any,
     west, south, east, north = bounds
     own = await conn.fetchval("SELECT created_on FROM map_layers WHERE layer_id = $1", layer_id)
     out: list[dict[str, Any]] = []
-    seen: set[Any] = {own_cog_key}
+    own_metadata = await conn.fetchval("SELECT metadata FROM map_layers WHERE layer_id = $1", layer_id)
+    own_metadata = json.loads(own_metadata) if isinstance(own_metadata, str) else dict(own_metadata or {})
+    # this photo, and the file a named-bands copy of it was made from, are not other flights
+    seen: set[Any] = {k for k in (own_cog_key, own_metadata.get("cog_key"), own_metadata.get("cog_key_before_names"),
+                                  own_metadata.get("upload_etag")) if k}
     for row in await conn.fetch(_FLIGHTS_HERE_SQL, layer_id, west, south, east, north):
         metadata = row["metadata"]
         metadata = json.loads(metadata) if isinstance(metadata, str) else dict(metadata or {})
         # a copy the reader named the bands of is still the same flight as the file it was made from
-        if metadata.get("cog_key") in seen or metadata.get("cog_key_before_names") in seen:
+        marks = [k for k in (metadata.get("cog_key"), metadata.get("cog_key_before_names"), metadata.get("upload_etag")) if k]
+        if not metadata.get("cog_key") or any(mark in seen for mark in marks):  # the same file added twice is one photo
             continue
-        seen.update(k for k in (metadata.get("cog_key"), metadata.get("cog_key_before_names")) if k)
+        seen.update(marks)
         out.append({"name": row["name"], "metadata": metadata, "bounds": list(row["bounds"] or []),
                     "uploaded": row["created_on"], "bands": int(metadata.get("band_count") or 0)})
     return own, out
@@ -360,17 +365,17 @@ async def load(s3: Any, bucket: str, *, layer_id: str, name: str, bounds: Any, m
                     s3, bucket, health, plots.geojson["features"], thermal_photos,
                     lambda companion: long_cog_url(s3, bucket, companion))
             flights: dict[str, list[dict[str, Any]]] = {}
-            if other_flights:  # the same outlines on the other flights of this place
+            this_photo = {"name": name, "metadata": metadata, "uploaded": added}
+            apart, _ = field_flights.other_flights(this_photo, other_flights)
+            if apart:  # the same outlines on the other flights of this place
                 try:
                     flights = await field_flights.of_features(
-                        s3, bucket, plots.geojson["features"], other_flights,
-                        lambda companion: long_cog_url(s3, bucket, companion),
-                        next((h.index_from for h in health.values() if h.index_from), None))
+                        s3, bucket, plots.geojson["features"], apart,
+                        lambda companion: long_cog_url(s3, bucket, companion))
                 except Exception:
                     logger.exception("photo context: the other flights could not be read for layer %s", layer_id)
             fields = await field_facts.of_plots(s3, bucket, photo_plots.photo_key(metadata), layer_id, plots,
-                                                record_links.by_field(linked), health, flights,
-                                                {"name": name, "metadata": metadata, "uploaded": added})
+                                                record_links.by_field(linked), health, flights, this_photo)
             of_outlined = field_facts.outlined(plots)
             zoned = [(f["properties"]["number"],
                       field_facts.name(f["properties"]["number"], of_outlined, field_facts.own_name(f["properties"])),

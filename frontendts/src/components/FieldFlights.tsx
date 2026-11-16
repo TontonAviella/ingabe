@@ -11,16 +11,21 @@ export function FieldFlights({
   flights,
   flownOn,
   note,
+  notToldApart = 0,
 }: {
   layerId: string;
   flights: FieldFlight[];
   flownOn: string | null;
   note?: string;
+  /** Photos of this place added the same day with no flight day: the reader is told how to set them apart. */
+  notToldApart?: number;
 }) {
   const say = useSayFlownOn(layerId);
   const [given, setGiven] = useState<string | null>(null);
   const value = given ?? flownOn ?? '';
-  const today = new Date().toISOString().slice(0, 10);
+  // the reader's own day, not the server's: just after midnight in Kigali it is still yesterday in UTC
+  const now = new Date();
+  const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
   return (
     <div className="flex flex-col gap-1 border-white/10 border-t pt-2">
       {flights.length > 0 && (
@@ -29,9 +34,9 @@ export function FieldFlights({
             This field on each flight
           </span>
           <ul className="m-0 flex list-none flex-col gap-0.5 p-0">
-            {flights.map((flight) => (
+            {flights.map((flight, index) => (
               <li
-                key={`${flight.day}|${flight.photo}|${flight.this}`}
+                key={`${index}|${flight.day}|${flight.photo}`}
                 className={`text-[12.5px] leading-snug ${flight.this ? 'text-fg' : 'text-fg-soft'}`}
                 title={flight.photo}
               >
@@ -45,6 +50,12 @@ export function FieldFlights({
           </ul>
           {note && <span className="text-[12px] text-fg-muted">{note}</span>}
         </>
+      )}
+      {notToldApart > 0 && (
+        <span className="text-[12px] text-fg-muted">
+          {notToldApart === 1 ? '1 other photo of this place was' : `${notToldApart} other photos of this place were`} added the same day.
+          If they are other flights, give each photo its flight day and they are set side by side here.
+        </span>
       )}
       <form
         className="flex flex-wrap items-center gap-2"

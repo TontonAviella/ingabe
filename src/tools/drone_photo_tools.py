@@ -39,6 +39,7 @@ logger = logging.getLogger(__name__)
 # The cards Sage reads for an overview, in this order: plots, crops, problems, stage, weeds, bare ground.
 FINDING_CARDS = ("field_outlines", "crop_types", "plot_problems", "plot_stage", "weeds", "bare_ground", "plots_green")
 RECORD_CARDS = ("soil", "history")  # added when the project has a lab report or harvest records
+MAX_FIELDS_ACROSS_FLIGHTS = 10  # fields whose other flights are listed too: each adds several lines to the answer
 MAX_FIELDS_TOLD = 60  # fields listed one by one in Sage's findings; more are counted, not listed
 SPOT_COLOUR = "#FF4D1A"  # the cards' colour for things found inside plots
 OTHER_GREEN_COLOUR = "#2F80ED"  # green that is not a crop plant: weed, grass or bush
@@ -126,10 +127,13 @@ async def get_drone_photo_findings(args: DronePhotoArgs, meta: IngabeToolCallMet
                                       "health_index": facts.health_said,
                                       "surface_temperature": facts.temperature_said,
                                       # the same outline on the project's other flights of this place, oldest first
-                                      "across_flights": field_flights.told(facts.flights),
+                                      "across_flights": (field_flights.told(facts.flights)
+                                                         if n < MAX_FIELDS_ACROSS_FLIGHTS else None),
                                       # rows of the farm's documents that belong to this field, joined by place
                                       "records": list(facts.records_said) or None}.items() if v is not None}
-                   for facts in here.fields[:MAX_FIELDS_TOLD]],
+                   for n, facts in enumerate(here.fields[:MAX_FIELDS_TOLD])],
+        # how many more fields have other flights that are not listed here, to keep the answer short
+        "fields_with_flights_not_listed": sum(1 for f in here.fields[MAX_FIELDS_ACROSS_FLIGHTS:] if f.flights) or None,
         "fields_left_out": max(0, len(here.fields) - MAX_FIELDS_TOLD),
         # how to read "health_index": no verdict, and what else makes it low
         "health_index_note": field_health.NOTE if any(f.health_said for f in here.fields) else None,

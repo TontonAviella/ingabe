@@ -102,6 +102,8 @@ export interface FieldTapState {
   flown_on?: string | null;
   /** How the flights of a field are to be read, written by the server. */
   flights_note?: string;
+  /** Photos of this place added the same day as this one, with no flight day given: not known to be other flights. */
+  photos_not_told_apart?: number;
   /** true while another flight of these fields is being measured in the background: ask again soon. */
   flights_measuring?: boolean;
   /** How many taps on this photo ended without a kept outline. */

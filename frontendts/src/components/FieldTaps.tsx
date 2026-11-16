@@ -602,6 +602,7 @@ export function FieldTaps({
               flights={selected.facts?.flights ?? []}
               flownOn={state.data?.flown_on ?? null}
               note={state.data?.flights_note}
+              notToldApart={state.data?.photos_not_told_apart}
             />
           )}
           {removing && (
