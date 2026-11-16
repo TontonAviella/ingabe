@@ -213,6 +213,7 @@ function AddDocument({ layerId, upload }: { layerId: string; upload: NonNullable
 function Documents({ layerId, documents }: { layerId: string; documents: NonNullable<DroneCardAnswer['documents']> }) {
   const remove = useRemoveFarmRecord(layerId);
   const [asking, setAsking] = useState<string | null>(null); // the document "Remove for good?" is showing for
+  const sending = useRef(false);
   const small = 'inline-flex min-h-11 shrink-0 cursor-pointer items-center px-2 text-[13px] underline disabled:opacity-60 sm:min-h-9';
   return (
     <div className="flex flex-col gap-1.5">
@@ -226,7 +227,15 @@ function Documents({ layerId, documents }: { layerId: string; documents: NonNull
                 <span className="block text-fg-soft">{doc.detail}</span>
               </span>
               {asking !== doc.id && (
-                <button type="button" className={`${small} text-fg-soft`} onClick={() => setAsking(doc.id)}>
+                <button
+                  type="button"
+                  className={`${small} text-fg-soft`}
+                  disabled={remove.isPending}
+                  onClick={() => {
+                    remove.reset();
+                    setAsking(doc.id);
+                  }}
+                >
                   Remove
                 </button>
               )}
@@ -240,11 +249,28 @@ function Documents({ layerId, documents }: { layerId: string; documents: NonNull
                   type="button"
                   className={`${small} font-semibold text-caramel-hi`}
                   disabled={remove.isPending}
-                  onClick={() => remove.mutate(doc.href, { onSuccess: () => setAsking(null) })}
+                  onClick={() => {
+                    if (sending.current) return; // a second tap in the same instant sends nothing
+                    sending.current = true;
+                    remove.mutate(doc.href, {
+                      onSuccess: () => setAsking(null),
+                      onSettled: () => {
+                        sending.current = false;
+                      },
+                    });
+                  }}
                 >
                   {remove.isPending ? 'Removing…' : 'Remove for good'}
                 </button>
-                <button type="button" className={`${small} text-fg-soft`} onClick={() => setAsking(null)}>
+                <button
+                  type="button"
+                  className={`${small} text-fg-soft`}
+                  disabled={remove.isPending}
+                  onClick={() => {
+                    remove.reset();
+                    setAsking(null);
+                  }}
+                >
                   Keep
                 </button>
               </div>
@@ -252,6 +278,11 @@ function Documents({ layerId, documents }: { layerId: string; documents: NonNull
           </li>
         ))}
       </ul>
+      {remove.data && !remove.data.file_deleted && (
+        <p className="m-0 text-[13px] text-fg-soft">
+          The document is out of the cards and the fields. Its file could not be deleted from storage just now; Ingabe has noted it.
+        </p>
+      )}
       {remove.error && (
         <p role="alert" className="m-0 text-[13px] text-caramel-hi">
           {remove.error.message}

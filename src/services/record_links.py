@@ -424,8 +424,7 @@ async def keep(s3: Any, bucket: str, project_id: str, row_key: str, geometry: di
 
 async def forget(s3: Any, bucket: str, project_id: str, document: farm_records.FarmDocument) -> int:
     """Drop what people said about the rows of a document that is being removed; how many links went."""
-    kept = await load(s3, bucket, project_id)
-    keys = [row.key for row in rows([document]) if row.key in kept]
+    keys = [row.key for row in rows([document])]  # deleting a link that was never made is nothing
     for row_key in keys:
         await s3.delete_object(Bucket=bucket, Key=_key(project_id, row_key))
     return len(keys)

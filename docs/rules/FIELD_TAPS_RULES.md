@@ -196,7 +196,11 @@ with up to six more taps ("this part too" / "not this part"), and keep it with i
     asked once; `DELETE /api/layer/{id}/records/{document_id}`, owner or editor of the records' project only).
     Its rows leave the cards, Sage's findings and the fields they were linked to, the kept file is deleted and
     what people said about its rows is dropped. A document that was neither a soil report nor harvest records
-    feeds no card and is listed on both so it can be taken out.
+    feeds no card and is listed on both so it can be taken out. The list (file names are the farm's own) and
+    Remove are given only to someone who may remove; a viewer gets neither. A removal is its own small mark
+    (`farm_records/v1/<project>/removed/<id>`) and never rewrites the list of documents, so an upload on another
+    worker at that moment is not lost and a removed document cannot come back. Not covered: figures from a
+    removed document that Sage already quoted earlier in the same conversation stay in that conversation.
 27. A kept field can carry the farm's own name ("Block A"; `field_taps.name_field`, "Name" on the picked field).
     The field keeps its number: the name is said with it ("Block A · field 7", `field_facts.name`) on the panel,
     the cards' labels and to Sage, and the number stays the label on the photo and in the cards' sentences. A name

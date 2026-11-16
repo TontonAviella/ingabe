@@ -2148,16 +2148,16 @@ def answer_card(card_id: str, analysis: PhotoAnalysis, audience: Optional[str], 
     answer = (_ANSWERS[card_id](analysis, reader, here) if card_id in _ANSWERS
               else _coming(card_id, analysis, reader, here))
     answer["ask_sage"] = _asks(card_id, analysis, here, answer["items"])
-    answer["documents"] = _documents(card_id, analysis, here)
     return answer
 
 
 _DOCUMENT_CARDS = {"soil": farm_records.SOIL_REPORT, "history": farm_records.HARVEST_RECORDS}
 
 
-def _documents(card_id: str, analysis: PhotoAnalysis, here: Here) -> list[dict[str, str]]:
+def documents(card_id: str, analysis: PhotoAnalysis, here: Here) -> list[dict[str, str]]:
     """The farm's documents this card reads, each with where it is removed. A document that was neither a soil report
-    nor harvest records feeds no card; it is listed on both so it can still be taken out."""
+    nor harvest records feeds no card; it is listed on both so it can still be taken out. Not part of a card's
+    answer: the route adds the list only for a reader who may remove a document (file names are the farm's own)."""
     kind = _DOCUMENT_CARDS.get(card_id)
     if kind is None:
         return []

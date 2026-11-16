@@ -442,6 +442,9 @@ async def test_a_field_is_given_the_farms_own_name_and_keeps_its_number(client, 
 
 @pytest.mark.anyio
 async def test_an_uploaded_document_is_removed_for_good_with_its_links(client, photo, taps_on, monkeypatch):
+    from fastapi import HTTPException
+
+    from src.routes import drone_card_routes
     from src.services import farm_records, record_links
     from src.utils import get_async_s3_client
 
@@ -459,12 +462,19 @@ async def test_an_uploaded_document_is_removed_for_good_with_its_links(client, p
     (row,) = (await client.get(f"{base}/field-taps/records")).json()["rows"]
     await client.post(f"{base}/field-taps/records/link", json={"row": row["key"], "field_id": kept["id"]})
     assert row["key"] in await record_links.load(s3, bucket, ids["project"])
-    _as(VIEWER)  # a viewer cannot remove a document
+    # the list of documents and Remove are for someone who owns or edits the records' project; a viewer is refused
+    assert await drone_card_routes._records_project(ids["layer"], ids["owner"]) == ids["project"]
+    assert await drone_card_routes._records_project(ids["layer"], EDITOR) == ids["project"]
+    with pytest.raises(HTTPException) as refused:
+        await drone_card_routes._records_project(ids["layer"], VIEWER)
+    assert refused.value.status_code in (403, 404)
+    _as(VIEWER)
     assert (await client.delete(f"{base}/records/{doc.id}")).status_code in (403, 404)
     _as(ids["owner"])
     assert (await client.delete(f"{base}/records/nope")).status_code == 404
     removed = await client.delete(f"{base}/records/{doc.id}")
-    assert removed.status_code == 200 and removed.json() == {"removed": doc.id, "soil_samples": 1, "harvests": 0, "links": 1}
+    assert removed.status_code == 200 and removed.json() == {"removed": doc.id, "soil_samples": 1, "harvests": 0,
+                                                             "file_deleted": True}
     assert (await client.get(f"{base}/field-taps/records")).json()["rows"] == []
     assert row["key"] not in await record_links.load(s3, bucket, ids["project"])
     assert (await client.get(f"{base}/field-taps")).json()["kept"][0]["facts"]["records_said"] == []
