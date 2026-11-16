@@ -44,6 +44,8 @@ export interface KeptOutline {
     checked_said: string | null;
     health_said?: string | null;
     health_note?: string | null;
+    temperature_said?: string | null;
+    temperature_note?: string | null;
     records_said?: string[];
   };
 }

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+import json
 import logging
 import re
 from typing import Any, Optional
@@ -393,6 +394,20 @@ _EXPORTS = {
     "zip": "application/zip",
     "geojson": "application/geo+json",
 }
+
+
+@router.get("/layer/{layer_id}/zones.geojson", operation_id="download_drone_field_zones")
+async def download_drone_field_zones(
+    layer: MapLayer = Depends(get_layer),
+    session: UserContext = Depends(verify_session_required),
+) -> Response:
+    """The zones inside the photo's fields, for the agronomist: one feature per zone, with an empty rate."""
+    _, here, _ = await _photo(layer, session, None)
+    if here.zones is None or not here.zones["geojson"]["features"]:
+        raise HTTPException(409, "This photo has no field zones yet")
+    stem = re.sub(r"[^A-Za-z0-9_-]+", "_", layer.name or layer.layer_id).strip("_")[:60] + "_zones"
+    return Response(content=json.dumps(here.zones["geojson"]), media_type="application/geo+json",
+                    headers={"Content-Disposition": f'attachment; filename="{stem}.geojson"'})
 
 
 @router.get("/layer/{layer_id}/plots.{fmt}", operation_id="download_drone_plots")

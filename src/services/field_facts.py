@@ -109,6 +109,7 @@ class FieldFacts:
     health_said: Optional[str] = None
     ndvi: Optional[float] = None
     ndre: Optional[float] = None
+    temperature_said: Optional[str] = None  # from a thermal band, beside the middle of the fields shown with it
 
     def shown(self) -> dict[str, Any]:
         return asdict(self)
@@ -116,7 +117,8 @@ class FieldFacts:
 
 def said(facts: FieldFacts) -> str:
     """One line for a field, the same on every surface: "Field 7 · 0.18 ha · green cover 62% · about 700 plants"."""
-    parts = [facts.name, facts.area_said, facts.cover_said, facts.plants_said, facts.health_said]
+    parts = [facts.name, facts.area_said, facts.cover_said, facts.plants_said, facts.health_said,
+             facts.temperature_said]
     return " · ".join(part for part in parts if part)
 
 
@@ -131,7 +133,7 @@ def _facts(number: int, label: str, area_ha: float, row: Optional[dict[str, Any]
            health: Optional[field_health.FieldHealth] = None) -> FieldFacts:
     return FieldFacts(
         health_said=health.said if health else None, ndvi=health.ndvi if health else None,
-        ndre=health.ndre if health else None,
+        ndre=health.ndre if health else None, temperature_said=health.temperature_said if health else None,
         number=number, name=label, area_ha=area_ha, area_said=area_said(area_ha),
         kept_id=row["id"] if row is not None else None,
         green_cover=cover, cover_said=f"green cover {round(cover * 100)}%" if cover is not None else None,

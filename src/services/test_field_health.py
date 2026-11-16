@@ -22,10 +22,13 @@ def _field(col: int) -> dict:
     return mapping(reproject(TO_WGS84, box(left, NORTH - 45, left + 40, NORTH - 5)))
 
 
-def _photo(path, nir_by_column, dtype="float32", names=("Green", "Red", "RedEdge", "NIR"), scale=1.0):
+def _photo(path, nir_by_column, dtype="float32", names=("Green", "Red", "RedEdge", "NIR"), scale=1.0, thermal=None):
     """200 m x 100 m: green 0.08, red 0.05, red edge 0.20, and near-infrared as given per 50 m column."""
     nir = np.repeat(np.array(nir_by_column, dtype="float64"), 100)[None, :].repeat(200, axis=0)
     layers = [np.full((200, 400), 0.08), np.full((200, 400), 0.05), np.full((200, 400), 0.20), nir]
+    if thermal is not None:  # a fifth band, as given per 50 m column
+        layers.append(np.repeat(np.array(thermal, dtype="float64"), 100)[None, :].repeat(200, axis=0))
+        names = (*names, "LWIR")
     with rasterio.open(path, "w", driver="GTiff", width=400, height=200, count=len(layers), dtype=dtype,
                        crs="EPSG:32736", transform=from_origin(WEST, NORTH, PIXEL, PIXEL)) as ds:
         for i, layer in enumerate(layers, start=1):
@@ -206,3 +209,71 @@ def test_a_field_says_its_health_in_its_one_line():
                                field_health.FieldHealth(said="health index (NDVI) 0.71, lowest of 3 fields", ndvi=0.71))
     assert field_facts.said(facts) == "Field 7 · 0.18 ha · health index (NDVI) 0.71, lowest of 3 fields"
     assert field_facts._facts(7, "Field 7", 0.18, None, None, None, None).health_said is None
+
+
+def test_surface_temperature_per_field_from_hundredths_of_a_kelvin(tmp_path):
+    # 24.0, 26.0, 31.5 and 31.5 degrees Celsius stored the way a multispectral camera with a thermal band stores them.
+    path = _photo(tmp_path / "thermal.tif", [3000, 3000, 3000, 3000], dtype="uint16",
+                  thermal=[29715, 29915, 30465, 30465], scale=1.0)
+    outlines = {f"f{c}": _field(c) for c in range(3)}
+    result = field_health.measure(path, outlines)
+    assert [result["fields"][f"f{c}"]["temp_c"] for c in range(3)] == pytest.approx([24.0, 26.0, 31.5], abs=0.05)
+    out = field_health.said(result["fields"], result["reflectance"])
+    assert out["f0"].temperature_said == "surface 24.0 °C, 2.0 °C cooler than the middle of 3 fields"
+    assert out["f1"].temperature_said == "surface 26.0 °C, level with the middle of 3 fields"
+    assert out["f2"].temperature_said == "surface 31.5 °C, 5.5 °C warmer than the middle of 3 fields"
+
+
+def test_thermal_values_in_no_scale_say_no_temperature(tmp_path):
+    path = _photo(tmp_path / "palette.tif", [3000] * 4, dtype="uint16", thermal=[120, 150, 200, 220])
+    assert field_health.measure(path, {"f0": _field(0)})["fields"]["f0"]["temp_c"] is None
+
+
+def test_temperature_without_a_place_for_two_fields():
+    out = field_health.said({"a": {"ndvi": None, "temp_c": 24.0}, "b": {"ndvi": None, "temp_c": 30.0}}, False)
+    assert out["a"].temperature_said == "surface 24.0 °C" and out["a"].said is None
+
+
+def _gradient_photo(path):
+    """200 m x 100 m whose near-infrared rises from west to east across each 50 m column, so each field is uneven."""
+    ramp = np.tile(np.linspace(0.25, 0.60, 100), 4)[None, :].repeat(200, axis=0)
+    layers = [np.full((200, 400), 0.08), np.full((200, 400), 0.05), np.full((200, 400), 0.20), ramp]
+    with rasterio.open(path, "w", driver="GTiff", width=400, height=200, count=4, dtype="float32",
+                       crs="EPSG:32736", transform=from_origin(WEST, NORTH, PIXEL, PIXEL)) as ds:
+        for i, (layer, name) in enumerate(zip(layers, ("Green", "Red", "RedEdge", "NIR")), start=1):
+            ds.write(layer.astype("float32"), i)
+            ds.set_band_description(i, name)
+    return str(path)
+
+
+def test_an_uneven_field_is_split_into_thirds_from_low_to_high(tmp_path):
+    result = field_health.measure(_gradient_photo(tmp_path / "ramp.tif"), {"f0": _field(0)})
+    field = result["fields"]["f0"]
+    assert field["zone_index"] == "ndre" and [z["zone"] for z in field["zones"]] == ["low", "middle", "high"]
+    areas = [z["area_m2"] for z in field["zones"]]
+    assert sum(areas) == pytest.approx(1600, rel=0.05) and min(areas) > 350  # 40 m x 40 m in about three thirds
+    west_of = [shape_centroid_x(z["geometry"]) for z in field["zones"]]
+    assert west_of == sorted(west_of)  # the index rises eastward, so the low zone is the western one
+
+
+def shape_centroid_x(geometry):
+    from shapely.geometry import shape
+    return shape(geometry).centroid.x
+
+
+def test_an_even_field_is_one_zone_and_a_small_field_none(tmp_path):
+    path = _photo(tmp_path / "ms.tif", [0.20, 0.30, 0.45, 0.45])
+    small = mapping(reproject(TO_WGS84, box(WEST + 5, NORTH - 25, WEST + 25, NORTH - 5)))  # 400 m2
+    fields = field_health.measure(path, {"even": _field(0), "small": small})["fields"]
+    assert fields["even"]["zones"] == [] and fields["small"]["zones"] is None
+    assert fields["small"]["ndvi"] is not None  # too small to zone, still measured
+
+
+def test_zones_file_has_a_field_a_size_and_an_empty_rate(tmp_path):
+    result = field_health.measure(_gradient_photo(tmp_path / "ramp.tif"), {"f0": _field(0), "f1": _field(1)})
+    said = field_health.said(result["fields"], result["reflectance"])
+    file = field_health.zone_features([(7, "Block A · field 7", said["f0"]), (8, "Field 8", said["f1"])])
+    assert len(file["features"]) == 6
+    first = file["features"][0]["properties"]
+    assert first["field"] == "Block A · field 7" and first["zone"] == "low" and first["rate"] is None
+    assert first["index"] == "NDRE" and first["group"] == "least_green" and first["area_m2"] > 0

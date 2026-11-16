@@ -221,10 +221,11 @@ async def load(s3: Any, bucket: str, *, layer_id: str, name: str, bounds: Any, m
             logger.exception("photo context: the documents could not be placed on the fields of layer %s", layer_id)
             linked = record_links.resolve(records, {}, [])
     fields: list[field_facts.FieldFacts] = []
+    zones: Optional[dict[str, Any]] = None  # the fields' zones from a near-infrared photo, once measured
     if plots is not None:
         try:
             health = {}
-            if analysis.look.bands.nir is not None:  # only a photo with a near-infrared band has a health index
+            if analysis.look.bands.nir is not None or analysis.look.bands.thermal is not None:  # else nothing to measure
                 try:
                     health = await field_health.of_features(s3, bucket, photo_plots.photo_key(metadata), url,
                                                             plots.geojson["features"])
@@ -232,9 +233,19 @@ async def load(s3: Any, bucket: str, *, layer_id: str, name: str, bounds: Any, m
                     logger.exception("photo context: the fields' health could not be measured for layer %s", layer_id)
             fields = await field_facts.of_plots(s3, bucket, photo_plots.photo_key(metadata), layer_id, plots,
                                                 record_links.by_field(linked), health)
+            of_outlined = field_facts.outlined(plots)
+            zoned = [(f["properties"]["number"],
+                      field_facts.name(f["properties"]["number"], of_outlined, field_facts.own_name(f["properties"])),
+                      health[field_health.key_of(f["geometry"])])
+                     for f in plots.geojson["features"] if field_health.key_of(f["geometry"]) in health]
+            if any(h.zones is not None for _, _, h in zoned):
+                zones = {"geojson": field_health.zone_features(zoned),
+                         "even": sum(1 for _, _, h in zoned if h.zones == ()),
+                         "zoned": sum(1 for _, _, h in zoned if h.zones),
+                         "by": next((h.zone_index for _, _, h in zoned if h.zone_index), None)}
         except Exception:  # the cards still answer, without the per-field facts gathered from the other surfaces
             logger.exception("photo context: the fields' facts could not be read for layer %s", layer_id)
-    here = drone_cards.Here(fields=tuple(fields), photos=max(1, int(photos_here or 0)), plots=plots, plot_job=plot_job,
+    here = drone_cards.Here(zones=zones, fields=tuple(fields), photos=max(1, int(photos_here or 0)), plots=plots, plot_job=plot_job,
                             plot_maps=tuple(m for m, _ in maps), plot_map=plot_map, plot_map_error=map_error,
                             survey=looks.survey, survey_job=looks.survey_job,
                             vision_looks=drone_vision.survey_enabled(), seed=seed,

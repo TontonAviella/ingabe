@@ -533,6 +533,11 @@ export function FieldTaps({
               ) : (
                 ''
               )}
+              {selected.facts?.temperature_said ? (
+                <span title={selected.facts.temperature_note ?? undefined}>{` · ${selected.facts.temperature_said}`}</span>
+              ) : (
+                ''
+              )}
             </span>
             {!removing && naming === null && (
               <span className="flex shrink-0">
