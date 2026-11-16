@@ -65,6 +65,7 @@ from src.services.card_status import (
     WORKING,
 )
 from src.services.card_status import how_sure as _how_sure
+from src.services import photo_bands
 from src.services.grvi import BARE_PIXEL, LOW_GREEN, grvi
 from src.services.insurance_engine import normalize_audience
 
@@ -164,7 +165,8 @@ class PhotoAnalysis:
 
     @property
     def camera(self) -> str:
-        return "multispectral" if self.band_count >= MULTISPECTRAL_MIN_BANDS else "colour"
+        named = self.look.bands.kind == photo_bands.MULTISPECTRAL  # the file names a near-infrared or red-edge band
+        return "multispectral" if named or self.band_count >= MULTISPECTRAL_MIN_BANDS else "colour"
 
     @property
     def centre(self) -> tuple[float, float]:
@@ -235,7 +237,7 @@ def measure_bare_ground(ds: Any) -> BareGround:
     """Bare patches of at least MIN_PATCH_HA in an RGB photo, outlined in WGS84."""
     factor = max(1, max(ds.width, ds.height) // BARE_SAMPLE_LONG_SIDE)
     rows, cols = max(1, ds.height // factor), max(1, ds.width // factor)
-    bands = ds.read([1, 2], out_shape=(2, rows, cols), resampling=Resampling.average, masked=True)
+    bands = ds.read(photo_bands.of(ds).red_green, out_shape=(2, rows, cols), resampling=Resampling.average, masked=True)
     nodata = np.ma.getmaskarray(bands).any(axis=0)
     bare_pixels = (grvi(bands[0], bands[1]) < BARE_PIXEL) & ~nodata
 
@@ -1712,13 +1714,35 @@ def _history(analysis: PhotoAnalysis, audience: str, here: Here) -> dict[str, An
 
 def _learn_camera(analysis: PhotoAnalysis, audience: str, here: Here) -> dict[str, Any]:
     colour = analysis.camera == "colour"
+    health = analysis.look.health
+    if health is not None:  # measured from this photo's own near-infrared band
+        technical = _tone(audience) == "technical"
+        facts = [{"label": "NDVI across the photo", "value": f"{health.ndvi_mean:.2f}"},
+                 {"label": "Most of it lies between", "value": f"{health.ndvi_p10:.2f} and {health.ndvi_p90:.2f}"}]
+        if health.ndre_mean is not None:
+            facts.append({"label": "NDRE across the photo", "value": f"{health.ndre_mean:.2f}"})
+        low = health.lowest
+        return _answer(
+            "learn_camera", analysis, here,
+            what=("Your photo comes from a multispectral camera, which also sees near-infrared light. "
+                  + drone_first_look.health_said(health, technical=technical)),
+            why="Healthy leaves send back a light our eyes cannot see. It drops before the leaves change colour.",
+            todo=((f"Walk the {low[0]} first: its index is the lowest on this photo. " if low else "")
+                  + "An index for each field, and fertilizer zones, are not built yet."),
+            how_sure=_how_sure("medium", ["Worked out from the photo's own red and near-infrared bands",
+                                          "The index is given with no verdict: no cut-off between healthy and "
+                                          "stressed has been tested"],
+                               "A file calibrated to reflectance, and a cut-off tested against plants checked on "
+                               "the ground."),
+            facts=facts, terms=["colour_camera", "near_infrared"], audience=audience)
     return _answer(
         "learn_camera", analysis, here,
         what=("Your photo comes from a normal colour camera. It sees green, but a leaf can be stressed and still look "
               "green." if colour else "Your photo comes from a multispectral camera, which also sees near-infrared light."),
         why="Healthy leaves send back a light our eyes cannot see. It drops before the leaves change colour.",
         todo=("To see stress early, fly a multispectral camera. Ingabe will always say when it would tell you more."
-              if colour else "Ingabe will use the extra bands for health and fertilizer zones."),
+              if colour else "This file does not name a near-infrared band Ingabe can read, so only its colours "
+                             "are used. Health and fertilizer zones from the extra bands are not built yet."),
         how_sure=_how_sure("high", ["How leaves reflect light is well established"], None),
         terms=["colour_camera", "near_infrared"], audience=audience)
 

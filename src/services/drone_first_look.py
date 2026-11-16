@@ -28,7 +28,7 @@ import rasterio
 from rasterio.enums import Resampling
 
 from src.services.grvi import LOW_GREEN, grvi, grvi_verdict
-from src.services import industry
+from src.services import industry, photo_bands
 from src.services.h3_admin_index import admin_units_for_hexagon
 from src.services.insurance_engine import resolve_audience
 from src.structures import get_async_db_connection
@@ -44,6 +44,7 @@ ZONES = (
 SAMPLE_LONG_SIDE = 1024
 MIN_ZONE_VALID = 0.05  # a zone with fewer valid pixels than this share is not judged
 HOTSPOT_MARGIN = 0.15  # a zone stands out when its low-green share exceeds the field's by this much
+HEALTH_ZONE_GAP = 0.10  # zones are said to differ in NDVI only past this gap; a choice, not yet tested
 HOTSPOT_MIN = 0.30  # ... and at least this share of it is low green
 
 
@@ -84,6 +85,24 @@ class Greenness:
 
 
 @dataclass(frozen=True)
+class Health:
+    """Indices a near-infrared band allows, as the file gives them (not checked for calibration)."""
+    ndvi_mean: float
+    ndvi_p10: float
+    ndvi_p90: float
+    ndre_mean: Optional[float]  # None when the photo has no red-edge band
+    zones: tuple[tuple[str, float], ...]  # (zone name, mean NDVI) for zones with enough image
+
+    @property
+    def lowest(self) -> Optional[tuple[str, float]]:
+        """The zone with the lowest NDVI, when zones differ by at least HEALTH_ZONE_GAP."""
+        if len(self.zones) < 2:
+            return None
+        low, high = min(self.zones, key=lambda z: z[1]), max(self.zones, key=lambda z: z[1])
+        return low if high[1] - low[1] >= HEALTH_ZONE_GAP else None
+
+
+@dataclass(frozen=True)
 class FirstLook:
     layer_name: str
     place: Optional[str]
@@ -92,11 +111,38 @@ class FirstLook:
     green: Greenness
     verdict: str = field(init=False)
     verdict_message: str = field(init=False)
+    bands: photo_bands.Bands = photo_bands.Bands()  # which band is which, as the file says
+    health: Optional[Health] = None  # only from a photo with a near-infrared band
 
     def __post_init__(self) -> None:
         level, message = grvi_verdict(self.green.mean)
         object.__setattr__(self, "verdict", level)
         object.__setattr__(self, "verdict_message", message)
+
+
+def measure_health(nir: Any, red: Any, red_edge: Any = None) -> Optional[Health]:
+    """NDVI (and NDRE when the photo has a red-edge band) for the whole image and per 3 x 3 zone; None when no
+    pixel is valid. The numbers are as the file gives them: no check that it was calibrated to reflectance."""
+    v = photo_bands.ndvi(nir, red)
+    valid = ~np.isnan(v)
+    if not valid.any():
+        return None
+    rows, cols = v.shape
+    zones = []
+    for i, names in enumerate(ZONES):
+        for j, name in enumerate(names):
+            block = v[i * rows // 3:(i + 1) * rows // 3, j * cols // 3:(j + 1) * cols // 3]
+            block_valid = ~np.isnan(block)
+            if block.size and block_valid.sum() / block.size >= MIN_ZONE_VALID:
+                zones.append((name, float(block[block_valid].mean())))
+    ndre_mean = None
+    if red_edge is not None:
+        e = photo_bands.ndre(nir, red_edge)
+        if (~np.isnan(e)).any():
+            ndre_mean = float(np.nanmean(e))
+    values = v[valid]
+    return Health(ndvi_mean=float(values.mean()), ndvi_p10=float(np.percentile(values, 10)),
+                  ndvi_p90=float(np.percentile(values, 90)), ndre_mean=ndre_mean, zones=tuple(zones))
 
 
 def measure_greenness(red: Any, green: Any) -> Optional[Greenness]:
@@ -166,6 +212,23 @@ def _where(look: FirstLook) -> str:
     return ", ".join(bits)
 
 
+AS_THE_FILE_GIVES_IT = ("The index is as the file gives it: compare parts of this photo with each other, not with "
+                        "another day's photo.")
+
+
+def health_said(health: Health, technical: bool = False) -> str:
+    """One sentence on the near-infrared indices of a photo, with no verdict: no cut-off has been tested."""
+    low = health.lowest
+    if technical:
+        ndre = f"; NDRE mean {health.ndre_mean:.3f}" if health.ndre_mean is not None else ""
+        where = f"; lowest zone: {low[0]} {low[1]:.3f}" if low else "; no zone stands out"
+        return (f"NDVI: mean {health.ndvi_mean:.3f}, p10 to p90 {health.ndvi_p10:.3f} to {health.ndvi_p90:.3f}"
+                f"{ndre}{where}. Reflectance calibration not checked.")
+    where = f" The {low[0]} is lowest, at {low[1]:.2f}." if low else " No part stands out."
+    return (f"The near-infrared band gives a health index (NDVI) of {health.ndvi_mean:.2f} across the photo."
+            f"{where} {AS_THE_FILE_GIVES_IT}")
+
+
 def compose(look: FirstLook, audience: str) -> str:
     """The chat message for one reader. Pure: everything comes from `look`."""
     g = look.green
@@ -189,7 +252,11 @@ def compose(look: FirstLook, audience: str) -> str:
                          "than the others.")
         if best and best not in hot:
             lines.append(f"The **{best.name}** part is the greenest.")
-        lines.append("_This comes from the colours in the photo. Roads, paths and roofs also count as not green._")
+        if look.health:
+            lines.append(health_said(look.health))
+        lines.append("_The greenness comes from the colours in the photo. Roads, paths and roofs also count as not green._"
+                     if look.health else
+                     "_This comes from the colours in the photo. Roads, paths and roofs also count as not green._")
         first = '"Show me the weak part on the map"' if hot else '"Show me the greenest and the weakest patches"'
         lines.append(f'You can ask me: {first} · "Has it rained enough here?" · '
                      '"How does it compare with my last photo?"')
@@ -202,8 +269,10 @@ def compose(look: FirstLook, audience: str) -> str:
             f"**Drone orthophoto received**: {head}.",
             f"Visible greenness: {_PLAIN_VERDICT[look.verdict]}. "
             f"**{pct_low}%** of the photographed area is low-green (possible damage, bare ground or non-crop){where}.",
-            "_Not a loss assessment: colour only (RGB, no infrared). Confirm on the ground or with a "
-            "multispectral flight before a claim decision._",
+            *([health_said(look.health), "_Not a loss assessment. Confirm on the ground before a claim decision._"]
+              if look.health else
+              ["_Not a loss assessment: colour only (RGB, no infrared). Confirm on the ground or with a "
+               "multispectral flight before a claim decision._"]),
             'You can ask me: "Show the low-green area on the map" · "Compare with the previous flight" · '
             '"Rain in this area since planting"',
         ])
@@ -217,13 +286,15 @@ def compose(look: FirstLook, audience: str) -> str:
         f"{look.verdict_message}",
         f"- Low-green share (GRVI < {LOW_GREEN}): {pct_low}% overall; highest: {zone_detail}.",
         f"- Uniformity: {'fairly uniform' if g.uniform else 'patchy (some areas clearly greener than others)'}.",
-        "_GRVI is about 70% as informative as NDVI for canopy stress; a multispectral (NIR) flight gives a "
-        "firmer answer. Roads, paths and roofs read as low-green._",
+        *([f"- {health_said(look.health, technical=True)}", "_Roads, paths and roofs read as low-green._"]
+          if look.health else
+          ["_GRVI is about 70% as informative as NDVI for canopy stress; a multispectral (NIR) flight gives a "
+           "firmer answer. Roads, paths and roofs read as low-green._"]),
     ]
     if audience == "scientist":
         rows, cols = g.sample_shape
         lines.append(
-            f"Method: GRVI = (G - R) / (G + R) on bands 2 and 1 of the processed COG, read at {cols} x {rows} px "
+            f"Method: GRVI = (G - R) / (G + R) on bands {look.bands.green} and {look.bands.red} of the processed COG, read at {cols} x {rows} px "
             f"(average resampling, nodata masked; {g.valid_pct:.0f}% valid). Zones: 3 x 3 grid of the image; a zone "
             f"is flagged when its low-green share is at least {round(100 * HOTSPOT_MIN)}% and "
             f"{round(100 * HOTSPOT_MARGIN)} points above the field's."
@@ -263,16 +334,27 @@ async def look_at_layer(conn: Any, layer: dict[str, Any], cog_url: str) -> Optio
     bounds = layer["bounds"]
     lat = (bounds[1] + bounds[3]) / 2 if bounds else 0.0
 
-    def read() -> tuple[Optional[Greenness], Optional[float]]:
+    def read() -> tuple[Optional[Greenness], Optional[float], photo_bands.Bands, Optional[Health]]:
         with rasterio.open(cog_url) as ds:
+            bands = photo_bands.of(ds)
+            if bands.red is None or bands.green is None:
+                return None, None, bands, None
             factor = max(1, max(ds.width, ds.height) // SAMPLE_LONG_SIDE)
             shape = (max(1, ds.height // factor), max(1, ds.width // factor))
-            red = ds.read(1, out_shape=shape, resampling=Resampling.average, masked=True)
-            green = ds.read(2, out_shape=shape, resampling=Resampling.average, masked=True)
-            return measure_greenness(red, green), _resolution_cm(ds, lat)
 
-    greenness, resolution_cm = await asyncio.wait_for(asyncio.to_thread(read), timeout=120)
+            def band(number: int) -> Any:
+                return ds.read(number, out_shape=shape, resampling=Resampling.average, masked=True)
+
+            red = band(bands.red)
+            health = None
+            if bands.nir is not None:
+                health = measure_health(band(bands.nir), red, band(bands.red_edge) if bands.red_edge else None)
+            return measure_greenness(red, band(bands.green)), _resolution_cm(ds, lat), bands, health
+
+    greenness, resolution_cm, bands, health = await asyncio.wait_for(asyncio.to_thread(read), timeout=120)
     if greenness is None:
+        if bands.kind == photo_bands.UNKNOWN:
+            logger.info("first look: layer %s does not say which band is which; nothing measured", layer["layer_id"])
         return None
     place = None
     if bounds:
@@ -283,7 +365,7 @@ async def look_at_layer(conn: Any, layer: dict[str, Any], cog_url: str) -> Optio
             logger.info("first look: no admin names for layer %s", layer["layer_id"], exc_info=True)
     area_ha = round(_bbox_area_ha(bounds) * greenness.valid_pct / 100, 1) if bounds else None
     return FirstLook(layer_name=layer["name"], place=place, area_ha=area_ha,
-                     resolution_cm=resolution_cm, green=greenness)
+                     resolution_cm=resolution_cm, green=greenness, bands=bands, health=health)
 
 
 async def conversation_for_upload(conn: Any, project_id: str, user_id: str, requested: Optional[int],

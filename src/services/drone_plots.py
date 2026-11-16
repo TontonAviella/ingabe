@@ -44,7 +44,7 @@ from shapely import STRtree
 from shapely.geometry import MultiPolygon, Polygon, box, mapping, shape
 from shapely.ops import transform as reproject, unary_union
 
-from src.services import background_jobs, ground_area, stored_files
+from src.services import background_jobs, ground_area, photo_bands, stored_files
 from src.services.grvi import BARE_PIXEL, grvi
 
 logger = logging.getLogger(__name__)
@@ -277,7 +277,7 @@ def _measure(ds: Any, outlines: list[Any]) -> list[tuple[Optional[float], Option
     window = rasterio.windows.Window(col0, row0, col1 - col0, row1 - row0)
     factor = max(1.0, STATS_M_PER_PX / _photo_m_per_px(ds))
     rows, cols = max(1, int(window.height / factor)), max(1, int(window.width / factor))
-    bands = ds.read([1, 2], window=window, out_shape=(2, rows, cols), resampling=Resampling.average, masked=True)
+    bands = ds.read(photo_bands.of(ds).red_green, window=window, out_shape=(2, rows, cols), resampling=Resampling.average, masked=True)
     green = grvi(bands[0], bands[1])  # NaN where the photo is empty
     readable = ~np.isnan(green)
     green = np.where(readable, green, 0).astype("float32")
@@ -365,7 +365,7 @@ def find_plots(cog_url: str, progress: Callable[[int, int], None] = lambda done,
     with rasterio.open(cog_url) as ds:
         factor = max(1.0, READ_M_PER_PX / _photo_m_per_px(ds))
         rows, cols = max(1, int(ds.height / factor)), max(1, int(ds.width / factor))
-        bands = ds.read([1, 2, 3], out_shape=(3, rows, cols), resampling=Resampling.average, masked=True)
+        bands = ds.read(photo_bands.of(ds).rgb, out_shape=(3, rows, cols), resampling=Resampling.average, masked=True)
         readable = ~np.ma.getmaskarray(bands).any(axis=0)
         image = np.ascontiguousarray(np.transpose(bands.filled(0), (1, 2, 0))[:, :, ::-1])  # BGR for the model
         to_photo = ds.transform * Affine.scale(ds.width / cols, ds.height / rows)
@@ -447,7 +447,7 @@ def bare_spots(cog_url: str, plots: list[dict[str, Any]],
                 continue
             window = rasterio.windows.Window(col0, row0, col1 - col0, row1 - row0)
             rows, cols = max(1, int(window.height / factor)), max(1, int(window.width / factor))
-            bands = ds.read([1, 2], window=window, out_shape=(2, rows, cols), resampling=Resampling.average, masked=True)
+            bands = ds.read(photo_bands.of(ds).red_green, window=window, out_shape=(2, rows, cols), resampling=Resampling.average, masked=True)
             green = grvi(bands[0], bands[1])
             bare = ((green < BARE_PIXEL) & ~np.isnan(green)).astype("uint8")
             bare = cv2.morphologyEx(bare, cv2.MORPH_OPEN, np.ones((SPOT_SMOOTH_PX, SPOT_SMOOTH_PX), np.uint8))

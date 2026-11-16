@@ -48,7 +48,7 @@ from shapely.geometry import Point, box, shape
 from shapely.ops import transform as reproject
 from shapely.prepared import prep
 
-from src.services import plant_counts, stored_files
+from src.services import photo_bands, plant_counts, stored_files
 
 SQUARE_PX = 384  # one square of the photo's grid: 12.5 m at the pixels the finder was taught on
 PIXEL_M = (0.029, 0.036)  # the finder was taught and tested at 3.25 cm; other pixels are not measured
@@ -211,7 +211,7 @@ def read_square(ds: Any, j: int, i: int) -> Optional[np.ndarray]:
     window = Window(j * SQUARE_PX, i * SQUARE_PX, SQUARE_PX, SQUARE_PX)
     if ds.count < 3 or (ds.read_masks(1, window=window, boundless=True) > 0).mean() < MIN_READABLE:
         return None
-    return np.ascontiguousarray(ds.read([1, 2, 3], window=window, boundless=True, fill_value=0).transpose(1, 2, 0))
+    return np.ascontiguousarray(ds.read(photo_bands.of(ds).rgb, window=window, boundless=True, fill_value=0).transpose(1, 2, 0))
 
 
 def find_plants(cog_url: str, feature: dict[str, Any], models: Models) -> PlantsFound:

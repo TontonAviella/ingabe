@@ -39,7 +39,7 @@ from rasterio.windows import from_bounds
 from shapely.geometry import box, shape
 from shapely.ops import transform as reproject
 
-from src.services import background_jobs, drone_plots, drone_vision, stored_files
+from src.services import background_jobs, drone_plots, drone_vision, photo_bands, stored_files
 from src.utils import get_s3_client
 
 SIDE_M = 4.5  # metres across each square (the size of the Rwandan drone squares the method was tried on)
@@ -139,7 +139,7 @@ def plot_squares(ds: Any, outline: Any, number: int, lat: float) -> list[np.ndar
     squares = []
     for cell in cells[:MAX_SQUARES]:
         window = from_bounds(*cell.bounds, ds.transform)
-        bands = ds.read([1, 2, 3], window=window, out_shape=(3, SQUARE_PX, SQUARE_PX),
+        bands = ds.read(photo_bands.of(ds).rgb, window=window, out_shape=(3, SQUARE_PX, SQUARE_PX),
                         resampling=Resampling.bilinear, boundless=True, fill_value=0)
         squares.append(np.ascontiguousarray(np.transpose(bands, (1, 2, 0))).astype("uint8"))
     return squares

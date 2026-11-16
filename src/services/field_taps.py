@@ -52,7 +52,7 @@ from shapely.geometry import Point, Polygon, mapping, shape
 from shapely.validation import make_valid
 from shapely.ops import transform as reproject
 
-from src.services import ground_area, stored_files
+from src.services import ground_area, photo_bands, stored_files
 from src.services.gdal_http import GDAL_HTTP_TIMEOUTS
 
 logger = logging.getLogger(__name__)
@@ -347,7 +347,7 @@ def _cover_on(ds: Any, geometry: dict[str, Any], area_ha: float) -> dict[str, An
         return _not_measured(f"Not measured for a field more than {COVER_MAX_SPAN_M:g} m across: it was tested on "
                              "smaller fields.")
     window = from_bounds(west, south, east, north, ds.transform).round_offsets().round_lengths()
-    rgb = ds.read([1, 2, 3], window=window, boundless=True, fill_value=0)
+    rgb = ds.read(photo_bands.of(ds).rgb, window=window, boundless=True, fill_value=0)
     photo = ds.read_masks(1, window=window, boundless=True) > 0
     inside = ~geometry_mask([mapping(inner)], out_shape=rgb.shape[1:], transform=ds.window_transform(window))
     share = _cover_from_pixels(rgb, inside & photo)

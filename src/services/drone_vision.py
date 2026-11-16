@@ -49,7 +49,7 @@ from shapely.geometry import Point, shape
 from shapely.ops import transform as reproject
 
 from src.llm_defaults import model_name as llm_model_name, resolve_chat_endpoint, thinking_kwargs
-from src.services import background_jobs, drone_plots, llm_cache
+from src.services import background_jobs, drone_plots, llm_cache, photo_bands
 
 logger = logging.getLogger(__name__)
 
@@ -252,7 +252,7 @@ def plot_picture(ds: Any, outline: Any) -> tuple[bytes, float, float]:
     window = from_bounds(minx, miny, maxx, maxy, ds.transform)
     scale = max(1.0, max(window.width, window.height) / IMAGE_LONG_SIDE)
     width, height = max(1, int(window.width / scale)), max(1, int(window.height / scale))
-    bands = ds.read([1, 2, 3], window=window, out_shape=(3, height, width), resampling=Resampling.average,
+    bands = ds.read(photo_bands.of(ds).rgb, window=window, out_shape=(3, height, width), resampling=Resampling.average,
                     boundless=True, fill_value=0)
     image = Image.fromarray(np.transpose(bands, (1, 2, 0)).astype("uint8"))
     to_pixel = ~ds.window_transform(window)
@@ -298,7 +298,7 @@ def closeups(ds: Any, outline: Any, number: int, count: int) -> list[bytes]:
     for centre in centres:
         half = CLOSE_M / 2
         window = from_bounds(centre.x - half, centre.y - half, centre.x + half, centre.y + half, ds.transform)
-        bands = ds.read([1, 2, 3], window=window, out_shape=(3, CLOSE_PX, CLOSE_PX), resampling=Resampling.average,
+        bands = ds.read(photo_bands.of(ds).rgb, window=window, out_shape=(3, CLOSE_PX, CLOSE_PX), resampling=Resampling.average,
                         boundless=True, fill_value=0)
         image = Image.fromarray(np.transpose(bands, (1, 2, 0)).astype("uint8"))
         draw = ImageDraw.Draw(image)
