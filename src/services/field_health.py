@@ -250,7 +250,8 @@ def thermal_band(ds: Any, bands: photo_bands.Bands, named_thermal: bool = False)
         return bands.thermal
     if int(ds.count) != 1:
         return None
-    if photo_bands.thermal_unit(ds.units[0], ds.descriptions[0]):
+    if (photo_bands.thermal_unit(ds.units[0], ds.descriptions[0])
+            or photo_bands.described_as(ds.descriptions[0]) == "thermal"):
         return 1
     if named_thermal:  # the reader's name is believed only when the values could be temperatures
         scale = max(1, max(ds.width, ds.height) // OVERVIEW_LONG_SIDE)
@@ -518,6 +519,15 @@ async def _asked(s3: Any, bucket: str, photo_key: str, cog_url: str, features: l
                 _measure_missing(s3, bucket, store_key, cog_url, named_thermal, band_urls))
     return (said({key: record["fields"][key] for key in outlines if key in record["fields"]},
                  bool(record.get("reflectance")), record.get("thermal_unit")), not missing)
+
+
+async def forget(s3: Any, bucket: str, photo_key: str) -> None:
+    """Drop what is kept of a photo's measurements, so it is measured afresh: for when what the photo says of its
+    bands has changed (band_names)."""
+    for named in (False, True):
+        store_key = _store_key(photo_key, named)
+        await s3.delete_object(Bucket=bucket, Key=store_key)
+        _failed_at.pop(store_key, None)
 
 
 async def settled(photo_key: str, named_thermal: bool = False) -> None:

@@ -7,9 +7,12 @@ import asyncio
 import dataclasses
 import json
 import logging
+import os
+import tempfile
 import re
 from typing import Any, Optional
 
+import rasterio
 from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, Response, UploadFile
 from pydantic import BaseModel, Field
 
@@ -18,6 +21,8 @@ from src.dependencies.dag import edit_layer, get_layer
 from src.dependencies.redis_client import get_async_redis
 from src.dependencies.session import UserContext, verify_session_required
 from src.services import (
+    band_names,
+    field_health,
     asked_questions,
     background_jobs,
     card_memory,
@@ -36,7 +41,8 @@ from src.services import (
 )
 from src.services.insurance_engine import resolve_audience
 from src.structures import async_read_conn, get_async_db_connection
-from src.utils import get_async_s3_client, get_bucket_name
+from src.services.gdal_http import GDAL_HTTP_TIMEOUTS
+from src.utils import get_async_s3_client, get_bucket_name, get_s3_client
 
 logger = logging.getLogger(__name__)
 
@@ -394,6 +400,74 @@ _EXPORTS = {
     "zip": "application/zip",
     "geojson": "application/geo+json",
 }
+
+
+class BandsIn(BaseModel):
+    order: list[str] = Field(min_length=1, max_length=64)  # one of band_names.ROLES for each band, in file order
+    thermal_unit: Optional[str] = None  # "celsius" or "kelvin", for a thermal band
+
+
+def _band_names_job(metadata: dict[str, Any]) -> str:
+    return f"band-names:{metadata['cog_key']}"
+
+
+async def _bands_state(metadata: dict[str, Any]) -> dict[str, Any]:
+    url = await _cog_url(await get_async_s3_client(), metadata)
+
+    def read() -> dict[str, Any]:
+        with rasterio.Env(**GDAL_HTTP_TIMEOUTS), rasterio.open(url) as ds:
+            return band_names.state(ds)
+
+    return await asyncio.wait_for(asyncio.to_thread(read), timeout=60)
+
+
+@router.get("/layer/{layer_id}/bands", operation_id="get_drone_photo_bands")
+async def get_drone_photo_bands(
+    layer: MapLayer = Depends(get_layer),
+    session: UserContext = Depends(verify_session_required),
+) -> dict[str, Any]:
+    """What the photo's file says of its bands, and whether the reader has to say which band is which."""
+    metadata = _photo_ready(layer)
+    state = await _bands_state(metadata)
+    job = background_jobs.status(_band_names_job(metadata))
+    state["working"] = job is not None and job.state == "running"
+    state["failed"] = job is not None and job.state == "failed"
+    return state
+
+
+@router.put("/layer/{layer_id}/bands", status_code=202, operation_id="say_drone_photo_bands")
+async def say_drone_photo_bands(
+    body: BandsIn,
+    layer: MapLayer = Depends(edit_layer),
+    session: UserContext = Depends(verify_session_required),
+) -> dict[str, Any]:
+    """The reader says which band is which, for a photo whose file does not. The names are written into the app's
+    copy of the photo beside the request (minutes for a large photo); the cards read it once that is done."""
+    metadata = _photo_ready(layer)
+    state = await _bands_state(metadata)
+    if not state["needs_names"]:
+        raise HTTPException(409, "This photo's file says which band is which itself")
+    try:
+        band_names.check(body.order, state["band_count"], body.thermal_unit)
+    except ValueError as error:
+        raise HTTPException(422, str(error)) from None
+    bucket, key = get_bucket_name(), metadata["cog_key"]
+
+    async def work(progress: background_jobs.Progress) -> None:
+        def rewrite() -> None:
+            client = get_s3_client()
+            with tempfile.TemporaryDirectory() as folder:
+                source, target = os.path.join(folder, "photo.tif"), os.path.join(folder, "named.tif")
+                client.download_file(bucket, key, source)
+                band_names.rewrite(source, target, body.order, body.thermal_unit, folder)
+                client.upload_file(target, bucket, key, ExtraArgs={"ContentType": "image/tiff"})
+
+        await asyncio.to_thread(rewrite)
+        # what was kept of this photo while its bands were unknown ("nothing to measure") no longer holds
+        await field_health.forget(await get_async_s3_client(), bucket, key)
+
+    background_jobs.start(_band_names_job(metadata), work)
+    return {"working": True}
 
 
 @router.get("/layer/{layer_id}/zones.geojson", operation_id="download_drone_field_zones")
