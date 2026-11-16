@@ -57,6 +57,34 @@ body {
   animation: word-arrive 0.9s var(--ease-out) forwards;
 }
 
+/* The headline's whole sentence (Words.tsx): out of sight beside the words that arrive one by one, and shown in
+   their place once the browser has translated the page. */
+.words-whole {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+html.translated-ltr .words-whole,
+html.translated-rtl .words-whole {
+  position: static;
+  width: auto;
+  height: auto;
+  margin: 0;
+  overflow: visible;
+  clip-path: none;
+  white-space: normal;
+}
+
+html.translated-ltr .words-shown,
+html.translated-rtl .words-shown {
+  display: none;
+}
+
 .arrive {
   opacity: 0;
   animation: content-arrive 0.8s var(--ease-out) forwards;
