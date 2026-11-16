@@ -600,3 +600,42 @@ def test_exactly_the_level_width_apart_is_not_level():
     for low in (0.30, 0.60):
         said = field_health.said({"a": {"ndvi": low}, "b": {"ndvi": low + 0.02}, "c": {"ndvi": low + 0.05}}, True)
         assert said["a"].said.endswith("lowest of 3 fields") and said["c"].said.endswith("highest of 3 fields")
+
+
+def test_reflectance_kept_as_whole_numbers_with_a_stated_scale_is_reflectance(tmp_path):
+    # As a real Metashape file does it (Zenodo 7847262): whole numbers, with "scale 0.0001" written in the file.
+    path = _photo(tmp_path / "scaled.tif", [2000, 3000, 4500, 4500], dtype="uint16", scale=10000.0 / 10000.0)
+    with rasterio.open(path, "r+") as ds:
+        data = ds.read()
+        ds.write((np.array([800, 500, 2000])[:, None, None] * np.ones_like(data[:3])).astype("uint16"), [1, 2, 3])
+        ds.scales = [0.0001] * 4
+    result = field_health.measure(path, {f"f{c}": _field(c) for c in range(3)})
+    assert result["reflectance"] is True
+    assert result["fields"]["f0"]["ndvi"] == pytest.approx((0.20 - 0.05) / 0.25, abs=1e-3)
+    assert field_health.said(result["fields"], True)["f0"].said.startswith("health index (NDVI) 0.60")
+
+
+def test_a_multispectral_file_beside_the_colour_photo_gives_the_fields_their_index(tmp_path):
+    path = _photo(tmp_path / "ms.tif", [0.20, 0.30, 0.45, 0.45])
+    features = [{"geometry": _field(c)} for c in range(3)]
+    import datetime as dt
+    companions = [{"name": "Farm multispectral", "bands": 4, "uploaded": dt.datetime(2026, 11, 16, 9),
+                   "metadata": {"cog_key": "cog/ms-beside", "path": path}},
+                  {"name": "Farm colour copy", "bands": 3, "metadata": {"cog_key": "cog/rgb", "path": "unused"}}]
+
+    async def url_of(metadata):
+        return metadata["path"]
+
+    async def ask():
+        out = await field_health.with_spectral(store, "b", {}, features, companions, url_of)
+        await field_health.settled("cog/ms-beside")
+        return out
+
+    store = _Store()
+    assert asyncio.run(ask()) == {}  # measured beside the ask
+    out = asyncio.run(ask())
+    first = out[field_health.key_of(features[0]["geometry"])]
+    assert first.said == "health index (NDVI) 0.60, lowest of 3 fields"
+    assert first.index_from == "Farm multispectral, added 16 Nov 2026"
+    own = {"k": field_health.FieldHealth(said="health index (NDVI) 0.50", ndvi=0.5)}
+    assert asyncio.run(field_health.with_spectral(store, "b", own, features, companions, url_of)) == own

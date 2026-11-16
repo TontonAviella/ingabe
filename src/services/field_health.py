@@ -200,8 +200,11 @@ def _one(ds: Any, bands: photo_bands.Bands, outline: Any, to_wgs84: Any, photo: 
     rows, cols = max(1, int(window.height / factor)), max(1, int(window.width / factor))
     pixel_m = photo_m * window.width / cols  # a read pixel's side on the ground
 
-    def band(number: int) -> Any:
+    def raw(number: int) -> Any:
         return ds.read(number, window=window, out_shape=(rows, cols), resampling=Resampling.average, masked=True)
+
+    def band(number: int) -> Any:  # a band of light, on the scale the file states for it
+        return _on_its_scale(ds, number, raw(number))
 
     transform = ds.window_transform(window) * Affine.scale(window.width / cols, window.height / rows)
     inside = geometry_mask([mapping(outline)], out_shape=(rows, cols), transform=transform, invert=True)
@@ -229,7 +232,7 @@ def _one(ds: Any, bands: photo_bands.Bands, outline: Any, to_wgs84: Any, photo: 
                 out["zones"] = out["bare_m2"] = None
     if photo["thermal"]:
         try:
-            degrees = photo_bands.temperature(band(bands.thermal), photo["thermal_unit"],  # type: ignore[arg-type]
+            degrees = photo_bands.temperature(raw(bands.thermal), photo["thermal_unit"],  # type: ignore[arg-type]
                                               photo["thermal_scale"], photo["thermal_offset"], photo["thermal_whole"])
             mean = _mean(degrees, inside, whole)
             out["temp"] = round(mean, 2) if mean is not None else None
@@ -255,6 +258,15 @@ def thermal_band(ds: Any, bands: photo_bands.Bands, named_thermal: bool = False)
     return None
 
 
+def _on_its_scale(ds: Any, number: int, values: Any) -> Any:
+    """A band's values with the scale and offset the file states for it applied (reflectance kept as whole numbers
+    with "scale 0.0001" becomes 0 to 1). A file that states neither is returned as it is."""
+    scale, offset = float(ds.scales[number - 1] or 1.0), float(ds.offsets[number - 1] or 0.0)
+    if scale == 1.0 and offset == 0.0:
+        return values
+    return np.ma.asarray(values, dtype="float32") * scale + offset
+
+
 def _photo_facts(ds: Any, bands: photo_bands.Bands) -> dict[str, Any]:
     """What is true of the whole photo, judged on the whole photo once: whether an index can be measured, whether
     its values are reflectance, and what its thermal band is in."""
@@ -262,8 +274,8 @@ def _photo_facts(ds: Any, bands: photo_bands.Bands) -> dict[str, Any]:
     scale = max(1, max(ds.width, ds.height) // OVERVIEW_LONG_SIDE)
     small = (max(1, ds.height // scale), max(1, ds.width // scale))
     reflectance = index and photo_bands.looks_like_reflectance(
-        ds.read(bands.nir, out_shape=small, resampling=Resampling.average, masked=True),
-        ds.read(bands.red, out_shape=small, resampling=Resampling.average, masked=True))
+        _on_its_scale(ds, bands.nir, ds.read(bands.nir, out_shape=small, resampling=Resampling.average, masked=True)),
+        _on_its_scale(ds, bands.red, ds.read(bands.red, out_shape=small, resampling=Resampling.average, masked=True)))
     t = bands.thermal
     # an 8-bit thermal band is a picture of colours or a stretched preview: it holds no temperature
     thermal = t is not None and str(ds.dtypes[t - 1]) != "uint8"
@@ -362,7 +374,7 @@ def _measure(cog_url: str, outlines: dict[str, dict[str, Any]], named_thermal: b
             fields[key] = (_one(ds, bands, outline, to_wgs84, photo)
                            if not outline.is_empty and outline.area > 0 else dict(_EMPTY))
         return {"nir": True, "reflectance": photo["reflectance"], "thermal_unit": photo["thermal_unit"],
-                "fields": fields}
+                "program": photo_bands.program(ds.tags()), "fields": fields}
 
 
 def _place(below: int, above: int, tied: bool, total: int, low: str = "lowest", high: str = "highest") -> str:
@@ -519,6 +531,48 @@ async def settled(photo_key: str, named_thermal: bool = False) -> None:
 
 
 _THERMAL_NAME = re.compile(r"(?<![a-z])(thermal|thermique|lwir|temperature)(?![a-z])", re.IGNORECASE)
+def _one_band(companions: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [c for c in companions if int(c.get("bands") or 1) == 1]
+
+
+async def with_spectral(s3: Any, bucket: str, health: dict[str, FieldHealth], features: list[dict[str, Any]],
+                        companions: list[dict[str, Any]],
+                        url_of: Callable[[dict[str, Any]], Awaitable[str]]) -> dict[str, FieldHealth]:
+    """`health` with each field's index and zones from a multispectral photo of the same place that was uploaded
+    beside the colour photo (most programs deliver a colour picture and a file of bands as two files). The newest
+    such file that names a near-infrared band is used, by the same rules as a thermal photo of its own: never
+    while it is still being measured, never when it reaches fewer than MIN_COMPANION_COVER of the fields, and an
+    older one only when every newer one is whole and gave nothing. Not used when the photo itself, or band
+    files, already gave any field an index. Nothing is read here."""
+    asked = len({key_of(f["geometry"]) for f in features if isinstance(f.get("geometry"), dict)})
+    if not asked or any(h.said or h.zones is not None for h in health.values()):
+        return health
+    for companion in [c for c in companions if int(c.get("bands") or 1) >= 4][:MAX_COMPANIONS]:
+        metadata = companion["metadata"]
+        if not metadata.get("cog_key"):
+            continue
+        try:
+            found, complete = await _asked(s3, bucket, metadata["cog_key"], await url_of(metadata), features)
+        except Exception:  # this file cannot be asked now: wait, do not fall to an older one meanwhile
+            logger.exception("field health: a multispectral photo of the place could not be asked")
+            return health
+        if not complete:
+            return health
+        measured = {key: h for key, h in found.items() if h.said or h.zones is not None or h.ndvi is not None}
+        if measured and len(measured) >= MIN_COMPANION_COVER * asked:
+            uploaded = companion.get("uploaded")
+            source = plain_name(companion.get("name")) + (f", added {uploaded:%d %b %Y}" if uploaded else "")
+            out = dict(health)
+            for key, h in measured.items():
+                kept = out.get(key, FieldHealth(said=None))
+                out[key] = dataclasses.replace(h, temperature_said=h.temperature_said or kept.temperature_said,
+                                               temp_c=h.temp_c if h.temperature_said else kept.temp_c,
+                                               temperature_from=(source if h.temperature_said else kept.temperature_from),
+                                               index_from=source)
+            return out
+    return health
+
+
 MAX_COMPANIONS = 3  # other one-band photos of the place that are looked at for a temperature, newest first
 MIN_COMPANION_COVER = 0.8  # a thermal photo is used when it gives this share of the fields a temperature: a place
 # "among 4 fields" beside 10 fields on the screen would read as if it were among all of them
@@ -543,7 +597,7 @@ async def with_thermal(s3: Any, bucket: str, health: dict[str, FieldHealth], fea
     asked = len({key_of(f["geometry"]) for f in features if isinstance(f.get("geometry"), dict)})
     if not asked or any(h.temperature_said for h in health.values()):
         return health
-    for companion in companions[:MAX_COMPANIONS]:
+    for companion in _one_band(companions)[:MAX_COMPANIONS]:
         metadata = companion["metadata"]
         if not metadata.get("cog_key"):
             continue
@@ -595,7 +649,7 @@ def band_set(companions: list[dict[str, Any]]) -> Optional[dict[str, Any]]:
     both called "result" lie on slightly different outlines, so they are never mixed.
     `companions`: one-band photos of the place ({"name", "metadata", "bounds", "uploaded"}), newest first."""
     groups: dict[tuple[Any, ...], dict[str, dict[str, Any]]] = {}
-    for companion in companions:
+    for companion in _one_band(companions):
         metadata = companion.get("metadata") or {}
         named = band_named(companion.get("name"), metadata)
         if named and metadata.get("cog_key"):

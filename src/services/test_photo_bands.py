@@ -222,3 +222,25 @@ def test_temperature_in_degrees_only_with_a_stated_unit():
     raw = photo_bands.temperature(np.array([300, 315], dtype="uint16"), None, whole_numbers=True)
     assert list(raw) == [300.0, 315.0]  # no unit stated: the stored values, good for their order only
     assert np.isnan(photo_bands.temperature(np.array([400.0]), photo_bands.CELSIUS)[0])  # no land surface is 400 degrees
+
+
+def test_two_bands_of_one_light_described_by_wavelength_take_the_nearer_one():
+    # A real OpenDroneMap file (Zenodo 20594065): 660, 730, 880, 900, 1100 and 1150 nm.
+    names = [f"{nm} nm PSR gain corrected" for nm in (660, 730, 880, 900, 1100, 1150)]
+    bands = photo_bands.roles(names, [], 6, ["float32"] * 6)
+    assert bands.kind == photo_bands.MULTISPECTRAL
+    assert (bands.red, bands.red_edge, bands.nir, bands.green, bands.blue, bands.thermal) == (1, 2, 3, None, None, None)
+    reverse = photo_bands.roles(list(reversed(names)), [], 6, ["float32"] * 6)
+    assert reverse.nir == 4  # 880 nm again, wherever it stands
+
+
+def test_two_bands_named_the_same_in_words_still_contradict():
+    assert photo_bands.roles(["Red", "Red", "Green", "NIR", "Blue"], [], 5).kind == photo_bands.UNKNOWN
+
+
+@pytest.mark.parametrize("tag, expected", [
+    ("Pix4Dfields 1.8.1 (2d5036799)", "Pix4Dfields"), ("pix4dmapper", "Pix4Dmapper"), ("ODM 3.5.6", "OpenDroneMap"),
+    ("Agisoft Metashape Professional 2.1", "Agisoft Metashape"), ("DJI Terra 3.6", "DJI Terra"),
+    ("GDAL 3.11", None), ("", None), (None, None)])
+def test_the_program_is_only_what_the_file_says(tag, expected):
+    assert photo_bands.program({"TIFFTAG_SOFTWARE": tag} if tag is not None else {}) == expected

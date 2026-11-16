@@ -162,6 +162,8 @@ async def _with_facts(rows: list[dict[str, Any]], s3: Any, bucket: str, key: str
     if thermal_photos:
         health = await field_health.with_bands(s3, bucket, health, rows, thermal_photos,
                                                lambda companion: photo_context.long_cog_url(s3, bucket, companion))
+        health = await field_health.with_spectral(s3, bucket, health, rows, thermal_photos,
+                                                  lambda companion: photo_context.long_cog_url(s3, bucket, companion))
         health = await field_health.with_thermal(s3, bucket, health, rows, thermal_photos,
                                                  lambda companion: photo_context.long_cog_url(s3, bucket, companion))
     try:
