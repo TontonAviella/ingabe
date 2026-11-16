@@ -109,7 +109,7 @@ def test_fields_that_show_the_same_index_share_a_place():
     assert out["c"].said == "health index (NDVI) 0.71, 3rd lowest of 4 fields"
     same = field_health.said({k: {"ndvi": 0.5} for k in "abc"}, reflectance=False)
     # every field level: said so, with no number on raw values (before 2026-11-16 nothing was said)
-    assert same["a"].said == "health index (NDVI): level with the other 2 fields"
+    assert same["a"].said == "health index (NDVI): within 0.05 of the other 2 fields"
 
 
 @pytest.mark.parametrize("below, above, total, words", [(0, 14, 15, "lowest of 15 fields"), (2, 12, 15, "3rd lowest of 15 fields"),
@@ -548,5 +548,55 @@ def test_fields_a_hair_apart_are_level_not_highest_and_lowest():
     fields = {f"s{i}": {"ndvi": v} for i, v in enumerate([0.7939, 0.8019, 0.8011, 0.8032, 0.8039, 0.8015, 0.7908])}
     for reflectance in (True, False):
         said = [h.said for h in field_health.said(fields, reflectance).values()]
-        assert all("level with the other 6 fields" in words for words in said)
+        assert all("within 0.05 of the other 6 fields" in words for words in said)
         assert not any("lowest" in words or "highest" in words for words in said)
+
+
+def _dated(companions, when, bounds=(27.5, 43.0, 27.6, 43.1)):
+    return [{**c, "uploaded": when, "bounds": list(bounds)} for c in companions]
+
+
+def test_bands_of_two_flights_with_one_name_are_never_mixed(tmp_path):
+    import datetime as dt
+    (tmp_path / "apr").mkdir()
+    (tmp_path / "jul").mkdir()
+    april = _dated(_band_files(tmp_path / "apr"), dt.datetime(2026, 4, 25, 9), bounds=(27.5449, 43.0808, 27.5545, 43.0914))
+    july = _dated(_band_files(tmp_path / "jul", skip=("NIR",)), dt.datetime(2026, 7, 10, 9),
+                  bounds=(27.5450, 43.0806, 27.5543, 43.0914))  # the same field, flown again: a slightly other outline
+    found = field_health.band_set([*july, *april])  # both flights are called "result"; July's near-infrared is missing
+    assert {m["cog_key"] for m in found["members"].values()} == {c["metadata"]["cog_key"] for c in april}
+    assert found["name"] == "result, added 25 Apr 2026"
+
+
+def test_band_files_uploaded_days_apart_are_not_joined(tmp_path):
+    import datetime as dt
+    files = _band_files(tmp_path)
+    mixed = [{**c, "bounds": [1.0, 2.0, 3.0, 4.0],
+              "uploaded": dt.datetime(2026, 7, 10 if c["name"].endswith("NIR") else 1, 9)} for c in files]
+    assert field_health.band_set(mixed) is None
+
+
+def test_band_files_on_different_grids_or_of_different_kinds_are_not_one_photo(tmp_path):
+    red = _thermal_only(tmp_path / "result_Red.tif", [0.05] * 4)
+    small = str(tmp_path / "result_NIR.tif")
+    with rasterio.open(small, "w", driver="GTiff", width=200, height=200, count=1, dtype="float32", crs="EPSG:32736",
+                       transform=from_origin(WEST, NORTH, PIXEL, PIXEL)) as ds:  # the west half only
+        ds.write(np.full((200, 200), 0.4, dtype="float32"), 1)
+    result = field_health.measure("", {"f3": _field(3)}, band_urls={"red": red, "nir": small})
+    assert result == {"nir": False, "reflectance": False, "thermal_unit": None, "fields": {}}  # not an index of -1
+    eight_bit = _thermal_only(tmp_path / "x_Red.tif", [50] * 4, dtype="uint8")
+    nir = _thermal_only(tmp_path / "x_NIR.tif", [0.4] * 4)
+    assert field_health.measure("", {"f0": _field(0)}, band_urls={"red": eight_bit, "nir": nir})["nir"] is False
+
+
+def test_a_failed_join_does_not_put_the_links_in_the_error(tmp_path):
+    with pytest.raises(OSError) as error:
+        field_health._stack({"red": "https://storage.invalid/a.tif?X-Amz-Signature=secret",
+                             "nir": str(tmp_path / "missing.tif")}, str(tmp_path))
+    assert "secret" not in str(error.value) and error.value.__cause__ is None
+
+
+def test_exactly_the_level_width_apart_is_not_level():
+    for low in (0.30, 0.60):
+        said = field_health.said({"a": {"ndvi": low}, "b": {"ndvi": low + 0.02}, "c": {"ndvi": low + 0.05}}, True)
+        assert said["a"].said.endswith("lowest of 3 fields") and said["c"].said.endswith("highest of 3 fields")

@@ -281,21 +281,45 @@ def _photo_facts(ds: Any, bands: photo_bands.Bands) -> dict[str, Any]:
 BAND_DESCRIPTIONS = {"blue": "Blue", "green": "Green", "red": "Red", "red_edge": "RedEdge", "nir": "NIR"}
 
 
+class NotOnePhoto(ValueError):
+    """The band files are not the bands of one photo: different grids or different kinds of numbers."""
+
+
 def _stack(band_urls: dict[str, str], folder: str) -> str:
     """One virtual photo of several one-band files (role -> link or path), each band described by its role, so the
     file says which band is which like any multispectral photo. Nothing is copied: the bands are read where they
-    are. Files on different grids are laid over each other by position."""
+    are. The files must cover exactly the same pixels and hold the same kind of number, or they are not one photo
+    (NotOnePhoto): laid over each other by position, a band missing over part of the ground would read as zero
+    there, and an index of 1 or -1 would look like a result."""
     roles = [role for role in BAND_DESCRIPTIONS if role in band_urls]
     path = os.path.join(folder, "bands.vrt")
     sources = [f"/vsicurl/{band_urls[role]}" if band_urls[role].startswith("http") else band_urls[role] for role in roles]
-    subprocess.run(["gdalbuildvrt", "-q", "-separate", path, *sources], check=True, capture_output=True, timeout=180,
-                   env={**os.environ, **GDAL_HTTP_TIMEOUTS})
+    try:
+        subprocess.run(["gdalbuildvrt", "-q", "-separate", path, *sources], check=True, capture_output=True,
+                       timeout=180, env={**os.environ, **GDAL_HTTP_TIMEOUTS})
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
+        # said without the command: it holds the links to the files, which must not reach the logs
+        raise OSError("the band files could not be opened to lay them over each other") from None
     tree = ET.parse(path)
-    made = tree.getroot().findall("VRTRasterBand")
+    root = tree.getroot()
+    made = root.findall("VRTRasterBand")
     if len(made) != len(roles):
         raise OSError("the band files could not be laid over each other")
+    whole = (root.get("rasterXSize"), root.get("rasterYSize"))
+    kinds = set()
     for band, role in zip(made, roles):
-        ET.SubElement(band, "Description").text = BAND_DESCRIPTIONS[role]
+        kinds.add(band.get("dataType"))
+        for source in band:
+            placed, read = source.find("DstRect"), source.find("SrcRect")
+            if placed is None or read is None:
+                continue
+            same = lambda r: (r.get("xOff"), r.get("yOff"), r.get("xSize"), r.get("ySize")) == ("0", "0", *whole)  # noqa: E731
+            if not same(placed) or not same(read):
+                raise NotOnePhoto("the band files do not cover the same pixels")
+        described = band.find("Description")
+        (described if described is not None else ET.SubElement(band, "Description")).text = BAND_DESCRIPTIONS[role]
+    if len(kinds) != 1:
+        raise NotOnePhoto("the band files hold different kinds of numbers")
     tree.write(path)
     return path
 
@@ -306,7 +330,12 @@ def measure(cog_url: str, outlines: dict[str, dict[str, Any]], named_thermal: bo
     if not band_urls:
         return _measure(cog_url, outlines, named_thermal)
     with tempfile.TemporaryDirectory() as folder:
-        return _measure(_stack(band_urls, folder), outlines, named_thermal)
+        try:
+            stacked = _stack(band_urls, folder)
+        except NotOnePhoto:  # a fact of these files: kept as nothing to measure, not tried again
+            logger.info("field health: band files that are not one photo were not joined", exc_info=True)
+            return {"nir": False, "reflectance": False, "thermal_unit": None, "fields": {}}
+        return _measure(stacked, outlines, named_thermal)
 
 
 def _measure(cog_url: str, outlines: dict[str, dict[str, Any]], named_thermal: bool = False) -> dict[str, Any]:
@@ -350,11 +379,11 @@ def _places(shown: dict[str, float], low: str = "lowest", high: str = "highest",
             level_within: Optional[float] = None) -> dict[str, str]:
     """Each field's place among the given values; {} for fewer than MIN_RANKED fields; no place where all are level.
     `level_within`: when the highest and lowest are closer than this, no field is called highest or lowest: each
-    is said to be level with the others."""
+    is said to be within that of the others, which is a fact and not a judgement that they are the same."""
     if len(shown) < MIN_RANKED:
         return {}
-    if level_within is not None and max(shown.values()) - min(shown.values()) < level_within:
-        return {key: f"level with the other {len(shown) - 1} fields" for key in shown}
+    if level_within is not None and round(max(shown.values()) - min(shown.values()), 4) < level_within:
+        return {key: f"within {level_within:g} of the other {len(shown) - 1} fields" for key in shown}
     out = {}
     for key, value in shown.items():
         below = sum(1 for other in shown.values() if other < value)
@@ -556,21 +585,33 @@ def band_named(name: Optional[str], metadata: dict[str, Any]) -> Optional[tuple[
     return None
 
 
+SAME_FLIGHT_HOURS = 24  # the bands of one flight are uploaded together: files further apart are not joined
+
+
 def band_set(companions: list[dict[str, Any]]) -> Optional[dict[str, Any]]:
-    """The newest set of one-band layers that are the bands of one flight: same name but for the band's word, with at
-    least red and near-infrared. {"key", "name", "members": {role: metadata}}; None when there is none.
-    `companions`: one-band photos of the place ({"name", "metadata"}), newest first."""
-    groups: dict[str, dict[str, dict[str, Any]]] = {}
+    """The newest set of one-band layers that are the bands of one flight: the same name but for the band's word,
+    the same outline on the map, uploaded within SAME_FLIGHT_HOURS of each other, with at least red and
+    near-infrared. {"key", "name", "members": {role: metadata}}; None when there is none. Two flights that are
+    both called "result" lie on slightly different outlines, so they are never mixed.
+    `companions`: one-band photos of the place ({"name", "metadata", "bounds", "uploaded"}), newest first."""
+    groups: dict[tuple[Any, ...], dict[str, dict[str, Any]]] = {}
     for companion in companions:
         metadata = companion.get("metadata") or {}
         named = band_named(companion.get("name"), metadata)
         if named and metadata.get("cog_key"):
-            groups.setdefault(named[1], {}).setdefault(named[0], metadata)  # the newest file of each band
-    for prefix, members in groups.items():
-        if "red" in members and "nir" in members:
-            joined = "|".join(f"{role}={members[role]['cog_key']}" for role in sorted(members))
-            return {"key": "bands:" + hashlib.sha256(joined.encode()).hexdigest()[:32],
-                    "name": plain_name(prefix or "band files"), "members": members}
+            outline = tuple(round(float(v), 7) for v in companion.get("bounds") or ())
+            groups.setdefault((named[1], outline), {}).setdefault(named[0], companion)  # the newest file of each band
+    for (prefix, _outline), members in groups.items():
+        if "red" not in members or "nir" not in members:
+            continue
+        times = [m["uploaded"] for m in members.values() if m.get("uploaded") is not None]
+        if times and (max(times) - min(times)).total_seconds() > SAME_FLIGHT_HOURS * 3600:
+            continue
+        joined = "|".join(f"{role}={members[role]['metadata']['cog_key']}" for role in sorted(members))
+        added = f", added {max(times):%d %b %Y}" if times else ""
+        return {"key": "bands:" + hashlib.sha256(joined.encode()).hexdigest()[:32],
+                "name": plain_name(prefix or "band files") + added,
+                "members": {role: member["metadata"] for role, member in members.items()}}
     return None
 
 
@@ -578,7 +619,8 @@ async def with_bands(s3: Any, bucket: str, health: dict[str, FieldHealth], featu
                      companions: list[dict[str, Any]],
                      url_of: Callable[[dict[str, Any]], Awaitable[str]]) -> dict[str, FieldHealth]:
     """`health` with each field's index and zones from the band files of the same place that were uploaded one band
-    a file. Fields that already have an index from their own photo keep it. Nothing is said while the set is still
+    a file. When the photo itself gives any field an index, the band files are not used at all: a field's place
+    among fields measured on two different sources would compare nothing. Nothing is said while the set is still
     being measured, or when it reaches fewer than MIN_COMPANION_COVER of the fields. Nothing is read here."""
     asked = len({key_of(f["geometry"]) for f in features if isinstance(f.get("geometry"), dict)})
     if not asked or any(h.said or h.zones is not None for h in health.values()):

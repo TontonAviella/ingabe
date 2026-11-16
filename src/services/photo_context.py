@@ -51,7 +51,7 @@ SELECT count(DISTINCT COALESCE(l.metadata->>'upload_etag', l.layer_id))
 # Other one-band photos in the layer's projects (their shown maps only) whose outline overlaps this layer's,
 # newest first: where a thermal photo flown as its own file is looked for (field_health.with_thermal).
 _ONE_BAND_PHOTOS_HERE_SQL = f"""
-SELECT l.layer_id, l.name, l.metadata
+SELECT l.layer_id, l.name, l.metadata, l.bounds, l.created_on
   FROM map_layers l
  WHERE l.type = 'raster'
    AND l.layer_id <> $1
@@ -65,7 +65,7 @@ SELECT l.layer_id, l.name, l.metadata
        SELECT unnest(s.layers) FROM ({SHOWN_MAPS_SQL}) s
         WHERE s.project_id IN (SELECT s2.project_id FROM ({SHOWN_MAPS_SQL}) s2 WHERE $1 = ANY(s2.layers)))
  ORDER BY l.created_on DESC
- LIMIT 12
+ LIMIT 30
 """
 
 _PROJECT_SQL = """
@@ -107,8 +107,8 @@ def is_georeferenced(metadata: dict[str, Any], bounds: Any) -> bool:
 
 
 async def one_band_photos_here(conn: Any, layer_id: str, bounds: Any) -> list[dict[str, Any]]:
-    """The project's other one-band photos over this layer's place ({"name", "metadata"}), newest first, as `conn`
-    may see them. [] when the layer has no bounds."""
+    """The project's other one-band photos over this layer's place ({"name", "metadata", "bounds", "uploaded"}),
+    newest first, as `conn` may see them. [] when the layer has no bounds."""
     if not bounds or len(bounds) != 4:
         return []
     west, south, east, north = bounds
@@ -121,7 +121,8 @@ async def one_band_photos_here(conn: Any, layer_id: str, bounds: Any) -> list[di
         if metadata.get("cog_key") in seen:  # copies of one layer are one photo
             continue
         seen.add(metadata.get("cog_key"))
-        out.append({"name": row["name"], "metadata": metadata})
+        out.append({"name": row["name"], "metadata": metadata, "bounds": list(row["bounds"] or []),
+                    "uploaded": row["created_on"]})
     return out
 
 
