@@ -1718,8 +1718,9 @@ def _learn_camera(analysis: PhotoAnalysis, audience: str, here: Here) -> dict[st
     if health is not None:  # measured from this photo's own near-infrared band
         technical = _tone(audience) == "technical"
         facts = [{"label": "NDVI across the photo", "value": f"{health.ndvi_mean:.2f}"},
-                 {"label": "Most of it lies between", "value": f"{health.ndvi_p10:.2f} and {health.ndvi_p90:.2f}"}]
-        if health.ndre_mean is not None:
+                 {"label": "Most of it lies between", "value": f"{health.ndvi_p10:.2f} and {health.ndvi_p90:.2f}"}
+                 ] if health.reflectance else []
+        if health.reflectance and health.ndre_mean is not None:
             facts.append({"label": "NDRE across the photo", "value": f"{health.ndre_mean:.2f}"})
         low = health.lowest
         return _answer(
@@ -1727,7 +1728,8 @@ def _learn_camera(analysis: PhotoAnalysis, audience: str, here: Here) -> dict[st
             what=("Your photo comes from a multispectral camera, which also sees near-infrared light. "
                   + drone_first_look.health_said(health, technical=technical)),
             why="Healthy leaves send back a light our eyes cannot see. It drops before the leaves change colour.",
-            todo=((f"Walk the {low[0]} first: its index is the lowest on this photo. " if low else "")
+            todo=((f"Look at the {low[0]} first: its index is the lowest on this photo. A road, roofs or bare ground "
+                   "there would also make it low. " if low else "")
                   + "An index for each field, and fertilizer zones, are not built yet."),
             how_sure=_how_sure("medium", ["Worked out from the photo's own red and near-infrared bands",
                                           "The index is given with no verdict: no cut-off between healthy and "

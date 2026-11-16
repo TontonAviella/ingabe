@@ -44,6 +44,7 @@ ZONES = (
 SAMPLE_LONG_SIDE = 1024
 MIN_ZONE_VALID = 0.05  # a zone with fewer valid pixels than this share is not judged
 HOTSPOT_MARGIN = 0.15  # a zone stands out when its low-green share exceeds the field's by this much
+HEALTH_MIN_ZONE_VALID = 0.5  # a zone that is mostly empty photo edge is not compared with the others
 HEALTH_ZONE_GAP = 0.10  # zones are said to differ in NDVI only past this gap; a choice, not yet tested
 HOTSPOT_MIN = 0.30  # ... and at least this share of it is low green
 
@@ -91,12 +92,13 @@ class Health:
     ndvi_p10: float
     ndvi_p90: float
     ndre_mean: Optional[float]  # None when the photo has no red-edge band
-    zones: tuple[tuple[str, float], ...]  # (zone name, mean NDVI) for zones with enough image
+    zones: tuple[tuple[str, float], ...]  # (zone name, mean NDVI) for zones at least half image
+    reflectance: bool = True  # False: raw camera counts, so only the order of the zones means something
 
     @property
     def lowest(self) -> Optional[tuple[str, float]]:
-        """The zone with the lowest NDVI, when zones differ by at least HEALTH_ZONE_GAP."""
-        if len(self.zones) < 2:
+        """The zone with the lowest NDVI, when at least three zones are judged and they differ by HEALTH_ZONE_GAP."""
+        if len(self.zones) < 3:
             return None
         low, high = min(self.zones, key=lambda z: z[1]), max(self.zones, key=lambda z: z[1])
         return low if high[1] - low[1] >= HEALTH_ZONE_GAP else None
@@ -133,7 +135,7 @@ def measure_health(nir: Any, red: Any, red_edge: Any = None) -> Optional[Health]
         for j, name in enumerate(names):
             block = v[i * rows // 3:(i + 1) * rows // 3, j * cols // 3:(j + 1) * cols // 3]
             block_valid = ~np.isnan(block)
-            if block.size and block_valid.sum() / block.size >= MIN_ZONE_VALID:
+            if block.size and block_valid.sum() / block.size >= HEALTH_MIN_ZONE_VALID:
                 zones.append((name, float(block[block_valid].mean())))
     ndre_mean = None
     if red_edge is not None:
@@ -142,7 +144,8 @@ def measure_health(nir: Any, red: Any, red_edge: Any = None) -> Optional[Health]
             ndre_mean = float(np.nanmean(e))
     values = v[valid]
     return Health(ndvi_mean=float(values.mean()), ndvi_p10=float(np.percentile(values, 10)),
-                  ndvi_p90=float(np.percentile(values, 90)), ndre_mean=ndre_mean, zones=tuple(zones))
+                  ndvi_p90=float(np.percentile(values, 90)), ndre_mean=ndre_mean, zones=tuple(zones),
+                  reflectance=photo_bands.looks_like_reflectance(nir, red, *([] if red_edge is None else [red_edge])))
 
 
 def measure_greenness(red: Any, green: Any) -> Optional[Greenness]:
@@ -217,13 +220,20 @@ AS_THE_FILE_GIVES_IT = ("The index is as the file gives it: compare parts of thi
 
 
 def health_said(health: Health, technical: bool = False) -> str:
-    """One sentence on the near-infrared indices of a photo, with no verdict: no cut-off has been tested."""
+    """One sentence on the near-infrared indices of a photo, with no verdict: no cut-off has been tested. A photo
+    of raw camera counts gets no number, only which part is lowest (that order does not depend on calibration)."""
     low = health.lowest
+    if not health.reflectance:
+        where = (f"the {low[0]} has the lowest health index (NDVI) on this photo" if low
+                 else "no part of this photo stands out on the health index (NDVI)")
+        return (f"From the near-infrared band, {where}. The file holds raw camera values, not calibrated ones, so "
+                "Ingabe gives no index number.")
     if technical:
         ndre = f"; NDRE mean {health.ndre_mean:.3f}" if health.ndre_mean is not None else ""
         where = f"; lowest zone: {low[0]} {low[1]:.3f}" if low else "; no zone stands out"
         return (f"NDVI: mean {health.ndvi_mean:.3f}, p10 to p90 {health.ndvi_p10:.3f} to {health.ndvi_p90:.3f}"
-                f"{ndre}{where}. Reflectance calibration not checked.")
+                f"{ndre}{where}. Read as reflectance because the values are decimals from 0 to 1; not checked "
+                "against a calibration panel.")
     where = f" The {low[0]} is lowest, at {low[1]:.2f}." if low else " No part stands out."
     return (f"The near-infrared band gives a health index (NDVI) of {health.ndvi_mean:.2f} across the photo."
             f"{where} {AS_THE_FILE_GIVES_IT}")

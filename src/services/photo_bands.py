@@ -29,8 +29,9 @@ ROLES = ("red", "green", "blue", "red_edge", "nir")
 # Centre wavelengths (nm) the cameras in use put their bands at; gaps between ranges stay unnamed.
 _WAVELENGTHS = (((430, 510), "blue"), ((520, 590), "green"), ((620, 690), "red"),
                 ((700, 760), "red_edge"), ((770, 900), "nir"))
-_NM = re.compile(r"(\d{3})(?:\.\d+)?\s*nm")
-# Whole-description names, after lower-casing and dropping everything but letters.
+_NM = re.compile(r"(?<![\d.])(\d{3})(?:\.\d+)?\s*nm")  # 842 nm, never the 550 inside 1550 nm
+# Whole-description names, after lower-casing and dropping everything but letters and digits
+# ("B1" or "NIR2" is no name we know, so it names nothing).
 _NAMES = {
     "nir": "nir", "nearinfrared": "nir", "nearir": "nir", "infrared": "nir",
     "rededge": "red_edge", "re": "red_edge",
@@ -51,12 +52,18 @@ class Bands:
     blue: Optional[int] = 3
     red_edge: Optional[int] = None
     nir: Optional[int] = None
+    eight_bit: bool = True  # the bands hold 0 to 255, as a picture does
+
+    @property
+    def picture(self) -> bool:
+        """Whether a true-colour picture can be read: red, green and blue known, as 8-bit values."""
+        return self.eight_bit and None not in (self.red, self.green, self.blue)
 
     @property
     def rgb(self) -> list[int]:
         """Red, green, blue band numbers, for a picture of the ground."""
-        if self.red is None or self.green is None or self.blue is None:
-            raise BandsUnknown("this photo does not say which bands are red, green and blue")
+        if not self.picture:
+            raise BandsUnknown("this photo has no red, green and blue bands a picture can be made from")
         return [self.red, self.green, self.blue]
 
     @property
@@ -77,7 +84,7 @@ def _role_of_name(description: Optional[str]) -> Optional[str]:
             if low <= wavelength <= high:
                 return role
         return None  # a wavelength we have no name for: not guessed from the words around it
-    return _NAMES.get(re.sub(r"[^a-z]", "", text))
+    return _NAMES.get(re.sub(r"[^a-z0-9]", "", text))
 
 
 def _role_of_interp(interp: Any) -> Optional[str]:
@@ -85,42 +92,74 @@ def _role_of_interp(interp: Any) -> Optional[str]:
     return {"red": "red", "green": "green", "blue": "blue", "nir": "nir", "rededge": "red_edge"}.get(name)
 
 
-def roles(descriptions: Any, interps: Any, count: int) -> Bands:
-    """Bands from what a file says about itself. descriptions and interps are per band, in file order."""
-    named: dict[str, int] = {}
+def roles(descriptions: Any, interps: Any, count: int, dtypes: Any = ()) -> Bands:
+    """Bands from what a file says about itself. descriptions, interps and dtypes are per band, in file order.
+
+    A transparency band never gets a role, whatever its description says. A description that contradicts the
+    band's own colour interpretation, or two bands described as the same thing, make the file unknown. A
+    multispectral photo's roles come from descriptions only: writers often stamp red, green, blue onto the first
+    three bands of a stack that is in another order."""
+    said: dict[str, int] = {}  # from descriptions
+    stamped: dict[str, int] = {}  # from colour interpretation
     clash = False
     for number in range(1, count + 1):
-        description = descriptions[number - 1] if number <= len(descriptions) else None
         interp = interps[number - 1] if number <= len(interps) else None
-        role = _role_of_name(description) or _role_of_interp(interp)
-        if role is None:
+        if str(getattr(interp, "name", "")).lower() == "alpha":
             continue
-        if role in named:
-            clash = True  # two bands claim one role: the file contradicts itself
-        named[role] = number
-    extra = "nir" in named or "red_edge" in named
-    if clash:
-        return Bands(kind=UNKNOWN, red=None, green=None, blue=None)
-    if extra:
-        return Bands(kind=MULTISPECTRAL, **{role: named.get(role) for role in ROLES})
-    if count >= 5:  # too many bands for a colour photo, and none named as an extra one
-        return Bands(kind=UNKNOWN, red=None, green=None, blue=None)
-    if {"red", "green", "blue"} <= named.keys():  # a colour photo that names its own order
-        return Bands(kind=COLOUR, red=named["red"], green=named["green"], blue=named["blue"])
-    if count >= 3:
-        return Bands()  # an ordinary colour photo: red, green, blue, then transparency
-    return Bands(kind=UNKNOWN, red=None, green=None, blue=None)
+        by_name = _role_of_name(descriptions[number - 1] if number <= len(descriptions) else None)
+        by_stamp = _role_of_interp(interp)
+        if by_name and by_stamp and by_name != by_stamp:
+            clash = True
+        if by_name:
+            clash = clash or by_name in said
+            said[by_name] = number
+        if by_stamp and by_stamp not in stamped:
+            stamped[by_stamp] = number
+
+    def eight_bit(numbers: list[int]) -> bool:
+        return all(str(dtypes[n - 1]) == "uint8" for n in numbers if n <= len(dtypes))
+
+    unknown = Bands(kind=UNKNOWN, red=None, green=None, blue=None)
+    if ("nir" in said or "red_edge" in said) and (count >= 5 or "red" in said):
+        if clash or "red" not in said:
+            return unknown
+        found = {role: said.get(role) for role in ROLES}
+        return Bands(kind=MULTISPECTRAL, eight_bit=eight_bit([n for n in found.values() if n]), **found)
+    if count >= 5 or count < 3:  # too many bands for a colour photo and no extra one described, or too few
+        return unknown
+    named = {**stamped, **said}
+    if not clash and {"red", "green", "blue"} <= named.keys():  # a colour photo that says its own order
+        order = [named["red"], named["green"], named["blue"]]
+        return Bands(kind=COLOUR, red=order[0], green=order[1], blue=order[2], eight_bit=eight_bit(order))
+    if not eight_bit([1, 2, 3]):  # not an ordinary picture, and it does not say what its bands are
+        return unknown
+    return Bands()  # an ordinary colour photo: red, green, blue, then transparency
 
 
 def of(ds: Any) -> Bands:
     """Bands of an open rasterio dataset."""
-    return roles(list(ds.descriptions or ()), list(ds.colorinterp or ()), int(ds.count))
+    return roles(list(ds.descriptions or ()), list(ds.colorinterp or ()), int(ds.count), list(ds.dtypes or ()))
+
+
+def looks_like_reflectance(*bands: Any) -> bool:
+    """Whether bands hold reflectance (decimal numbers from 0 to about 1) and not raw camera counts. Only then
+    does an index mean the same from one photo to the next."""
+    for band in bands:
+        data = np.ma.asarray(band)
+        if data.dtype.kind != "f":
+            return False
+        values = data.compressed()
+        values = values[np.isfinite(values)]
+        if values.size == 0 or float(values.min()) < -0.05 or float(np.percentile(values, 99)) > 1.2:
+            return False
+    return True
 
 
 def index(high: Any, low: Any) -> Any:
     """(high - low) / (high + low) per pixel as a float array; NaN where the sum is 0 or either band is masked."""
     a = np.ma.filled(np.ma.asarray(high, dtype="float32"), np.nan)
     b = np.ma.filled(np.ma.asarray(low, dtype="float32"), np.nan)
+    a, b = np.where(a < 0, np.nan, a), np.where(b < 0, np.nan, b)  # light sent back is never negative
     total = a + b
     with np.errstate(divide="ignore", invalid="ignore"):
         return np.where(total > 0, (a - b) / total, np.nan)

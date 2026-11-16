@@ -373,6 +373,10 @@ def green_covers(cog_url: str, fields: Sequence[tuple[str, dict[str, Any], float
     cannot be read raises, to be tried again later."""
     covers = {}
     with rasterio.Env(**GDAL_HTTP_TIMEOUTS), rasterio.open(cog_url) as ds:
+        bands = photo_bands.of(ds)
+        if not bands.picture:  # the photo, not any outline
+            return {field_id: _not_measured("Not measured: this photo has no red, green and blue bands a picture "
+                                            "can be made from.") for field_id, _, _ in fields}
         for field_id, geometry, area_ha in fields:
             try:
                 covers[field_id] = _cover_on(ds, geometry, area_ha)
