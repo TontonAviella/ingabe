@@ -29,13 +29,17 @@ export function siteMetadata(locale: Locale): Metadata {
       languages: { en: LOCALE_PATH.en, fr: LOCALE_PATH.fr, "x-default": LOCALE_PATH.en },
     },
     openGraph: { title: m.title, description: m.description, locale: locale === "fr" ? "fr_FR" : "en_GB", siteName: "Noza Labs" },
+    // The site is written in both languages. A browser's own translation of one page never matches the other as
+    // written ("the land" came out "the earth", "EN" came out "IN", the drawing's labels stayed French), so browsers
+    // are asked not to translate: the reader switches language with EN · FR.
+    other: { google: "notranslate" },
   };
 }
 
 /** The <html> shell for one language: each language group ("(en)", "(fr)") is its own root layout, so lang is right. */
 export function RootHtml({ locale, children }: { locale: Locale; children: React.ReactNode }) {
   return (
-    <html lang={locale} className={`${display.variable} ${mono.variable}`}>
+    <html lang={locale} translate="no" className={`${display.variable} ${mono.variable}`}>
       <body className="font-sans">{children}</body>
     </html>
   );
