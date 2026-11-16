@@ -1,6 +1,7 @@
 """Each field's health index: measured from the photo's named bands, said with its place and no verdict."""
 
 import asyncio
+import json
 
 import numpy as np
 import pytest
@@ -636,6 +637,70 @@ def test_a_multispectral_file_beside_the_colour_photo_gives_the_fields_their_ind
     out = asyncio.run(ask())
     first = out[field_health.key_of(features[0]["geometry"])]
     assert first.said == "health index (NDVI) 0.60, lowest of 3 fields"
-    assert first.index_from == "Farm multispectral, added 16 Nov 2026"
+    assert first.index_from == "photo Farm multispectral, added 16 Nov 2026"
+    assert "Measured on the photo Farm multispectral" in field_health.health_note(first.index_from)
     own = {"k": field_health.FieldHealth(said="health index (NDVI) 0.50", ndvi=0.5)}
     assert asyncio.run(field_health.with_spectral(store, "b", own, features, companions, url_of)) == own
+
+
+def _beside(tmp_path, hours=2.0, name="Farm multispectral"):
+    import datetime as dt
+    path = _photo(tmp_path / "beside.tif", [0.20, 0.30, 0.45, 0.45])
+    return [{"name": name, "bands": 4, "uploaded": dt.datetime(2026, 11, 16, 9), "hours_from_photo": hours,
+             "metadata": {"cog_key": f"cog/beside-{hours}", "path": path}}]
+
+
+def _spectral(store, companions, features, own=None, times=2):
+    async def url_of(metadata):
+        return metadata["path"]
+
+    async def run():
+        out = {}
+        for _ in range(times):
+            out = await field_health.with_spectral(store, "b", {}, features, companions, url_of, own)
+            for c in companions:
+                await field_health.settled(c["metadata"]["cog_key"])
+        return out
+    return asyncio.run(run())
+
+
+def test_a_multispectral_file_of_another_season_is_not_this_photos_fields(tmp_path):
+    features = [{"geometry": _field(c)} for c in range(3)]
+    assert _spectral(_Store(), _beside(tmp_path, hours=24 * 90), features) == {}
+    assert len(_spectral(_Store(), _beside(tmp_path, hours=3), features)) == 3
+
+
+def test_a_file_beside_waits_until_the_photo_itself_is_known_to_hold_nothing(tmp_path):
+    features = [{"geometry": _field(c)} for c in range(3)]
+    store, companions = _Store(), _beside(tmp_path)
+    assert _spectral(store, companions, features, own="cog/own") == {}  # the photo's own bands are not judged yet
+    store.objects[field_health._store_key("cog/own")] = json.dumps(
+        {"method": field_health.METHOD, "nir": False, "fields": {}}).encode()
+    assert len(_spectral(store, companions, features, own="cog/own")) == 3
+
+
+def test_band_files_come_before_a_file_beside(tmp_path):
+    (tmp_path / "set").mkdir()
+    features = [{"geometry": _field(c)} for c in range(3)]
+    assert _spectral(_Store(), [*_beside(tmp_path), *_band_files(tmp_path / "set")], features) == {}
+
+
+def test_a_scale_anyone_could_write_does_not_make_raw_values_reflectance(tmp_path):
+    path = _photo(tmp_path / "raw.tif", [20000, 30000, 45000, 45000], dtype="uint16")
+    with rasterio.open(path, "r+") as ds:
+        ds.scales = [1 / 65535] * 4  # raw 16-bit counts dressed as 0 to 1
+    result = field_health.measure(path, {f"f{c}": _field(c) for c in range(3)})
+    assert result["reflectance"] is False
+    assert all(v["zones"] is None for v in result["fields"].values())
+    said = field_health.said(result["fields"], result["reflectance"])
+    assert all(h.ndvi is None for h in said.values())  # a place among the fields, and no number
+
+
+def test_a_coarse_photo_is_not_measured_field_by_field(tmp_path):
+    path = str(tmp_path / "satellite.tif")
+    with rasterio.open(path, "w", driver="GTiff", width=40, height=20, count=4, dtype="float32", crs="EPSG:32736",
+                       transform=from_origin(WEST, NORTH, 10.0, 10.0)) as ds:  # 10 m pixels
+        for i, name in enumerate(("Green", "Red", "RedEdge", "NIR"), start=1):
+            ds.write(np.full((20, 40), 0.1 * i, dtype="float32"), i)
+            ds.set_band_description(i, name)
+    assert field_health.measure(path, {"f0": _field(0)})["nir"] is False

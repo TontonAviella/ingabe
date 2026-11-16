@@ -244,3 +244,22 @@ def test_two_bands_named_the_same_in_words_still_contradict():
     ("GDAL 3.11", None), ("", None), (None, None)])
 def test_the_program_is_only_what_the_file_says(tag, expected):
     assert photo_bands.program({"TIFFTAG_SOFTWARE": tag} if tag is not None else {}) == expected
+
+
+def test_the_same_wavelength_twice_still_contradicts():
+    assert photo_bands.roles(["668 nm", "668 nm", "560 nm", "842 nm", "475 nm"], [], 5).kind == photo_bands.UNKNOWN
+    assert photo_bands.roles(["668 nm", "560 nm", "817 nm", "867 nm", "475 nm"], [], 5).kind == photo_bands.UNKNOWN
+
+
+def test_first_look_reads_a_stated_scale_like_the_field_measurement(tmp_path):
+    path = _photo(tmp_path / "scaled.tif", ["Green", "Red", "RedEdge", "NIR"], [800, 500, 2000, 4500])
+    with rasterio.open(path, "r+") as ds:
+        ds.scales = [0.0001] * 4
+    look = _look(path)
+    assert look.health.reflectance is True and look.health.ndvi_mean == pytest.approx(0.8, abs=1e-3)
+    assert "0.80" in drone_first_look.compose(look, "farmer")  # the number is said: the file is on its stated scale
+
+
+def test_a_camera_of_many_narrow_bands_is_not_chosen_for():
+    names = [f"{nm} nm" for nm in (475, 560, 668, 705, 720, 740, 842, 865)]
+    assert photo_bands.roles(names, [], 8, ["float32"] * 8).kind == photo_bands.UNKNOWN

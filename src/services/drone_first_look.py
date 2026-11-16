@@ -122,7 +122,7 @@ class FirstLook:
         object.__setattr__(self, "verdict_message", message)
 
 
-def measure_health(nir: Any, red: Any, red_edge: Any = None) -> Optional[Health]:
+def measure_health(nir: Any, red: Any, red_edge: Any = None, trusted_scale: bool = True) -> Optional[Health]:
     """NDVI (and NDRE when the photo has a red-edge band) for the whole image and per 3 x 3 zone; None when no
     pixel is valid. The numbers are as the file gives them: no check that it was calibrated to reflectance."""
     v = photo_bands.ndvi(nir, red)
@@ -145,7 +145,8 @@ def measure_health(nir: Any, red: Any, red_edge: Any = None) -> Optional[Health]
     values = v[valid]
     return Health(ndvi_mean=float(values.mean()), ndvi_p10=float(np.percentile(values, 10)),
                   ndvi_p90=float(np.percentile(values, 90)), ndre_mean=ndre_mean, zones=tuple(zones),
-                  reflectance=photo_bands.looks_like_reflectance(nir, red, *([] if red_edge is None else [red_edge])))
+                  reflectance=trusted_scale and photo_bands.looks_like_reflectance(
+                      nir, red, *([] if red_edge is None else [red_edge])))
 
 
 def measure_greenness(red: Any, green: Any) -> Optional[Greenness]:
@@ -352,13 +353,16 @@ async def look_at_layer(conn: Any, layer: dict[str, Any], cog_url: str) -> Optio
             factor = max(1, max(ds.width, ds.height) // SAMPLE_LONG_SIDE)
             shape = (max(1, ds.height // factor), max(1, ds.width // factor))
 
-            def band(number: int) -> Any:
-                return ds.read(number, out_shape=shape, resampling=Resampling.average, masked=True)
+            def band(number: int) -> Any:  # on the scale the file states for it, as field_health reads it
+                return photo_bands.on_its_scale(
+                    ds, number, ds.read(number, out_shape=shape, resampling=Resampling.average, masked=True))
 
             red = band(bands.red)
             health = None
             if bands.nir is not None:
-                health = measure_health(band(bands.nir), red, band(bands.red_edge) if bands.red_edge else None)
+                health = measure_health(band(bands.nir), red, band(bands.red_edge) if bands.red_edge else None,
+                                        trusted_scale=photo_bands.scale_is_trusted(ds, bands.nir)
+                                        and photo_bands.scale_is_trusted(ds, bands.red))
             return measure_greenness(red, band(bands.green)), _resolution_cm(ds, lat), bands, health
 
     greenness, resolution_cm, bands, health = await asyncio.wait_for(asyncio.to_thread(read), timeout=120)

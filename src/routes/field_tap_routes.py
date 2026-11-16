@@ -117,7 +117,7 @@ async def get_field_taps(layer: MapLayer = Depends(get_layer),
     thermal_photos: list[dict[str, Any]] = []
     try:
         async with async_read_conn("field_taps.thermal", user_id=session.get_user_id()) as conn:
-            thermal_photos = await photo_context.one_band_photos_here(conn, layer.layer_id, layer.bounds)
+            thermal_photos = await photo_context.one_band_photos_here(conn, layer.layer_id, layer.bounds, key)
     except Exception:  # the fields are still shown, without a temperature from another photo
         logger.exception("field taps: the thermal photos of this place could not be listed")
     state["kept"] = await _with_facts(state["kept"], s3, bucket, key, layer.layer_id, session.get_user_id(), cog_url,
@@ -163,7 +163,7 @@ async def _with_facts(rows: list[dict[str, Any]], s3: Any, bucket: str, key: str
         health = await field_health.with_bands(s3, bucket, health, rows, thermal_photos,
                                                lambda companion: photo_context.long_cog_url(s3, bucket, companion))
         health = await field_health.with_spectral(s3, bucket, health, rows, thermal_photos,
-                                                  lambda companion: photo_context.long_cog_url(s3, bucket, companion))
+                                                  lambda companion: photo_context.long_cog_url(s3, bucket, companion), key)
         health = await field_health.with_thermal(s3, bucket, health, rows, thermal_photos,
                                                  lambda companion: photo_context.long_cog_url(s3, bucket, companion))
     try:

@@ -69,7 +69,7 @@ from src.services.gdal_http import GDAL_HTTP_TIMEOUTS
 
 logger = logging.getLogger(__name__)
 
-METHOD = "field-health-1"  # change when what is measured changes: kept records of another method are not read
+METHOD = "field-health-2"  # change when what is measured changes: kept records of another method are not read
 STORE_PREFIX = "field_health/v1"
 STATS_M_PER_PX = 0.5  # the photo is read at about this ground size: a field's mean does not need each leaf
 MAX_READ_PIXELS = 4_000_000
@@ -83,6 +83,8 @@ EVEN_SPREAD = 0.05  # a field whose index varies less than this (10th to 90th pe
 ZONES = ("low", "middle", "high")
 LEVEL_INDEX = 0.05  # fields whose index lies within this of each other are said to be level: on the first real
 # photo (sunflower at full cover, 2026-11-16) nine squares of one even field differed by 0.01. A choice, not tested.
+MAX_PIXEL_M = 2.0  # a photo whose pixels are larger than this on the ground is not measured field by field: a
+# field's index would be mixed with its neighbours' ground
 MIN_RANKED = 3  # a field's place among fewer fields than this is not said
 
 
@@ -204,7 +206,7 @@ def _one(ds: Any, bands: photo_bands.Bands, outline: Any, to_wgs84: Any, photo: 
         return ds.read(number, window=window, out_shape=(rows, cols), resampling=Resampling.average, masked=True)
 
     def band(number: int) -> Any:  # a band of light, on the scale the file states for it
-        return _on_its_scale(ds, number, raw(number))
+        return photo_bands.on_its_scale(ds, number, raw(number))
 
     transform = ds.window_transform(window) * Affine.scale(window.width / cols, window.height / rows)
     inside = geometry_mask([mapping(outline)], out_shape=(rows, cols), transform=transform, invert=True)
@@ -258,24 +260,16 @@ def thermal_band(ds: Any, bands: photo_bands.Bands, named_thermal: bool = False)
     return None
 
 
-def _on_its_scale(ds: Any, number: int, values: Any) -> Any:
-    """A band's values with the scale and offset the file states for it applied (reflectance kept as whole numbers
-    with "scale 0.0001" becomes 0 to 1). A file that states neither is returned as it is."""
-    scale, offset = float(ds.scales[number - 1] or 1.0), float(ds.offsets[number - 1] or 0.0)
-    if scale == 1.0 and offset == 0.0:
-        return values
-    return np.ma.asarray(values, dtype="float32") * scale + offset
-
-
 def _photo_facts(ds: Any, bands: photo_bands.Bands) -> dict[str, Any]:
     """What is true of the whole photo, judged on the whole photo once: whether an index can be measured, whether
     its values are reflectance, and what its thermal band is in."""
     index = bands.nir is not None and bands.red is not None
     scale = max(1, max(ds.width, ds.height) // OVERVIEW_LONG_SIDE)
     small = (max(1, ds.height // scale), max(1, ds.width // scale))
-    reflectance = index and photo_bands.looks_like_reflectance(
-        _on_its_scale(ds, bands.nir, ds.read(bands.nir, out_shape=small, resampling=Resampling.average, masked=True)),
-        _on_its_scale(ds, bands.red, ds.read(bands.red, out_shape=small, resampling=Resampling.average, masked=True)))
+    trusted = index and photo_bands.scale_is_trusted(ds, bands.nir) and photo_bands.scale_is_trusted(ds, bands.red)
+    reflectance = trusted and photo_bands.looks_like_reflectance(
+        photo_bands.on_its_scale(ds, bands.nir, ds.read(bands.nir, out_shape=small, resampling=Resampling.average, masked=True)),
+        photo_bands.on_its_scale(ds, bands.red, ds.read(bands.red, out_shape=small, resampling=Resampling.average, masked=True)))
     t = bands.thermal
     # an 8-bit thermal band is a picture of colours or a stretched preview: it holds no temperature
     thermal = t is not None and str(ds.dtypes[t - 1]) != "uint8"
@@ -359,6 +353,8 @@ def _measure(cog_url: str, outlines: dict[str, dict[str, Any]], named_thermal: b
         bands = photo_bands.of(ds)
         bands = dataclasses.replace(bands, thermal=thermal_band(ds, bands, named_thermal))
         photo = _photo_facts(ds, bands)
+        if drone_plots._photo_m_per_px(ds) > MAX_PIXEL_M:  # a satellite scene or a coarse map, not a drone photo
+            return {"nir": False, "reflectance": False, "thermal_unit": None, "fields": {}}
         if not photo["index"] and not photo["thermal"]:
             return {"nir": False, "reflectance": False, "thermal_unit": None, "fields": {}}
         to_photo = Transformer.from_crs("EPSG:4326", ds.crs, always_xy=True).transform
@@ -476,6 +472,7 @@ async def _measure_missing(s3: Any, bucket: str, store_key: str, cog_url: str, n
                         # facts of the whole photo, judged on the whole photo: set once, the same for every reader
                         "reflectance": record.get("reflectance", measured["reflectance"]),
                         "thermal_unit": record.get("thermal_unit", measured["thermal_unit"]),
+                        "program": record.get("program", measured.get("program")),
                         "fields": dict(list(fields.items())[-MAX_KEPT:])}
                 await s3.put_object(Bucket=bucket, Key=store_key, Body=json.dumps(kept).encode(),
                                     ContentType="application/json")
@@ -531,25 +528,37 @@ async def settled(photo_key: str, named_thermal: bool = False) -> None:
 
 
 _THERMAL_NAME = re.compile(r"(?<![a-z])(thermal|thermique|lwir|temperature)(?![a-z])", re.IGNORECASE)
+MAX_SPECTRAL_CANDIDATES = 8
+
+
 def _one_band(companions: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [c for c in companions if int(c.get("bands") or 1) == 1]
 
 
 async def with_spectral(s3: Any, bucket: str, health: dict[str, FieldHealth], features: list[dict[str, Any]],
                         companions: list[dict[str, Any]],
-                        url_of: Callable[[dict[str, Any]], Awaitable[str]]) -> dict[str, FieldHealth]:
+                        url_of: Callable[[dict[str, Any]], Awaitable[str]],
+                        own_photo_key: Optional[str] = None) -> dict[str, FieldHealth]:
     """`health` with each field's index and zones from a multispectral photo of the same place that was uploaded
     beside the colour photo (most programs deliver a colour picture and a file of bands as two files). The newest
     such file that names a near-infrared band is used, by the same rules as a thermal photo of its own: never
     while it is still being measured, never when it reaches fewer than MIN_COMPANION_COVER of the fields, and an
-    older one only when every newer one is whole and gave nothing. Not used when the photo itself, or band
-    files, already gave any field an index. Nothing is read here."""
+    older one only when every newer one is whole and gave nothing. Only a file uploaded within SAME_FLIGHT_HOURS
+    of this photo is taken as the same flight: another season's bands are not this photo's fields. Not used when
+    the photo itself or band files give, or may yet give, the fields an index (`own_photo_key`: this photo's own
+    measurement must be known to hold nothing), so what a field says does not change source between loads.
+    Nothing is read here."""
     asked = len({key_of(f["geometry"]) for f in features if isinstance(f.get("geometry"), dict)})
-    if not asked or any(h.said or h.zones is not None for h in health.values()):
+    if not asked or any(h.said or h.zones is not None for h in health.values()) or band_set(companions) is not None:
         return health
-    for companion in [c for c in companions if int(c.get("bands") or 1) >= 4][:MAX_COMPANIONS]:
+    if own_photo_key is not None and (await _record(s3, bucket, _store_key(own_photo_key))).get("nir") is not False:
+        return health  # this photo may have bands of its own to measure: wait for that
+    # A colour picture with transparency also has four bands: it is asked once, kept as nothing to measure, and
+    # passed over from then on, so more files are looked at here than MAX_COMPANIONS.
+    for companion in [c for c in companions if int(c.get("bands") or 1) >= 4][:MAX_SPECTRAL_CANDIDATES]:
         metadata = companion["metadata"]
-        if not metadata.get("cog_key"):
+        apart = companion.get("hours_from_photo")
+        if not metadata.get("cog_key") or (apart is not None and apart > SAME_FLIGHT_HOURS):
             continue
         try:
             found, complete = await _asked(s3, bucket, metadata["cog_key"], await url_of(metadata), features)
@@ -561,7 +570,7 @@ async def with_spectral(s3: Any, bucket: str, health: dict[str, FieldHealth], fe
         measured = {key: h for key, h in found.items() if h.said or h.zones is not None or h.ndvi is not None}
         if measured and len(measured) >= MIN_COMPANION_COVER * asked:
             uploaded = companion.get("uploaded")
-            source = plain_name(companion.get("name")) + (f", added {uploaded:%d %b %Y}" if uploaded else "")
+            source = "photo " + plain_name(companion.get("name")) + (f", added {uploaded:%d %b %Y}" if uploaded else "")
             out = dict(health)
             for key, h in measured.items():
                 kept = out.get(key, FieldHealth(said=None))
@@ -701,8 +710,10 @@ async def with_bands(s3: Any, bucket: str, health: dict[str, FieldHealth], featu
 
 def health_note(source: Optional[str]) -> str:
     """The caveat every surface gives with a health index, saying when it comes from separate band files."""
-    return SHORT_NOTE + (f" Measured on the band files {source}, which may be from another day than this photo."
-                         if source else "")
+    if not source:
+        return SHORT_NOTE
+    what = f"the {source}" if source.startswith("photo ") else f"the band files {source}"
+    return f"{SHORT_NOTE} Measured on {what}, which may be from another day than this photo."
 
 
 TEMPERATURE_NOTE = ("A warmer field can be bare soil, a thinner crop, or a crop short of water. Sun, wind and the "
