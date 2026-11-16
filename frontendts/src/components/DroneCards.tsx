@@ -1,3 +1,4 @@
+import { useQueryClient } from '@tanstack/react-query';
 import { Check, ChevronDown, ChevronLeft, FileUp, LoaderCircle, Shuffle } from 'lucide-react';
 import { type ExpressionSpecification, type GeoJSONSource, type MapLayerMouseEvent, type Map as MLMap, Popup } from 'maplibre-gl';
 import { useEffect, useMemo, useRef, useState } from 'react';
@@ -16,6 +17,7 @@ import {
   StatusIcon,
   writeCollapsed,
 } from '@/components/CardAnswer';
+import { PhotoBandsForm } from '@/components/PhotoBands';
 import { useReaderRole } from '@/components/ReportAudienceSelect';
 import { rememberAsked, useOthersAsked } from '@/hooks/useAskedQuestions';
 import {
@@ -29,6 +31,7 @@ import {
   useDroneDeck,
   useRemoveFarmRecord,
 } from '@/hooks/useDroneCards';
+import { usePhotoBands } from '@/hooks/usePhotoBands';
 import type { MapLayer } from '@/lib/types';
 
 // The question cards for a drone photo, over the map. Everything shown comes
@@ -793,8 +796,18 @@ export function DroneCards({
   const answer = useDroneCardAnswer(layerId, openCard, audience, deck.data?.seed ?? seed);
   useAnswerOverlay(map, collapsed ? null : (answer.data ?? null), deck.data?.photo.bounds ?? null);
 
-  // A photo the cards cannot read (not a colour photo, not a raster) shows no panel.
-  if (!layerId || (deck.error && [400, 404, 422].includes(deck.error.status))) return null;
+  // A photo the cards cannot read because its file does not name its bands: the reader is asked which is which.
+  const bands = usePhotoBands(layerId, deck.error?.status === 422);
+  const askBands = deck.error?.status === 422 && !!bands.data && (bands.data.needs_names || bands.data.working);
+  // Once the names are written the photo can be read: ask for its cards again (the deck is still holding its 422).
+  const bandsNamed = deck.error?.status === 422 && !!bands.data && !bands.data.needs_names && !bands.data.working;
+  const queryClient = useQueryClient();
+  useEffect(() => {
+    if (bandsNamed) queryClient.invalidateQueries({ queryKey: ['drone-cards', layerId] });
+  }, [bandsNamed, layerId, queryClient]);
+
+  // A photo the cards cannot read for another reason (not a raster, too few bands) shows no panel.
+  if (!layerId || (deck.error && [400, 404, 422].includes(deck.error.status) && !askBands)) return null;
 
   const setCollapsedAndSave = (value: boolean) => {
     setCollapsed(value);
@@ -821,7 +834,8 @@ export function DroneCards({
       {deck.error?.status === 409 && (
         <p className="m-0 py-6 text-[15px] text-fg-soft">The photo is still being prepared. The questions will appear when it is ready.</p>
       )}
-      {deck.error && deck.error.status !== 409 && <p className="m-0 py-6 text-[15px] text-caramel-hi">{deck.error.message}</p>}
+      {askBands && bands.data && <PhotoBandsForm layerId={layerId} bands={bands.data} />}
+      {deck.error && deck.error.status !== 409 && !askBands && <p className="m-0 py-6 text-[15px] text-caramel-hi">{deck.error.message}</p>}
       {deck.data && !openCard && (
         <DeckView
           deck={deck.data}

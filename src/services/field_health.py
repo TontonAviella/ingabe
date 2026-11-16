@@ -250,7 +250,8 @@ def thermal_band(ds: Any, bands: photo_bands.Bands, named_thermal: bool = False)
         return bands.thermal
     if int(ds.count) != 1:
         return None
-    if photo_bands.thermal_unit(ds.units[0], ds.descriptions[0]):
+    if (photo_bands.thermal_unit(ds.units[0], ds.descriptions[0])
+            or photo_bands.described_as(ds.descriptions[0]) == "thermal"):
         return 1
     if named_thermal:  # the reader's name is believed only when the values could be temperatures
         scale = max(1, max(ds.width, ds.height) // OVERVIEW_LONG_SIDE)

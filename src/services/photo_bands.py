@@ -116,6 +116,11 @@ def program(tags: Any) -> Optional[str]:
     return None
 
 
+def described_as(description: Optional[str]) -> Optional[str]:
+    """The band a description names ("Thermal", "842 nm", "RedEdge"), or None."""
+    return _role_of_name(description)
+
+
 def on_its_scale(ds: Any, number: int, values: Any) -> Any:
     """A band's values with the scale and offset the file states for it applied (reflectance kept as whole numbers
     with "scale 0.0001" becomes 0 to 1). A file that states neither is returned as it is."""
