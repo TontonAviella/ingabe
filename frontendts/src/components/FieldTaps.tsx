@@ -528,6 +528,16 @@ export function FieldTaps({
               {selected.by_hand ? ' · by hand' : ''}
               {coverText(selected) ? ` · ${coverText(selected)}` : ''}
               {selected.facts?.plants_said ? ` · ${selected.facts.plants_said}` : ''}
+              {selected.facts?.health_said ? (
+                <span title={selected.facts.health_note ?? undefined}>{` · ${selected.facts.health_said}`}</span>
+              ) : (
+                ''
+              )}
+              {selected.facts?.temperature_said ? (
+                <span title={selected.facts.temperature_note ?? undefined}>{` · ${selected.facts.temperature_said}`}</span>
+              ) : (
+                ''
+              )}
             </span>
             {!removing && naming === null && (
               <span className="flex shrink-0">

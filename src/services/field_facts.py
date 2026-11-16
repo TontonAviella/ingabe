@@ -19,7 +19,7 @@ from typing import Any, Optional
 from shapely.geometry import shape
 from shapely.validation import make_valid
 
-from src.services import count_check, drone_plots, field_taps, plant_finder
+from src.services import count_check, drone_plots, field_health, field_taps, plant_finder
 
 logger = logging.getLogger(__name__)
 
@@ -105,6 +105,11 @@ class FieldFacts:
     checked_said: Optional[str] = None  # a person's own check of that count, in parts the app chose
     # rows of the farm's documents linked to this field by place (record_links), each as it is said everywhere
     records_said: tuple[str, ...] = ()
+    # from a photo with a near-infrared band (field_health): the index and the field's place among the photo's fields
+    health_said: Optional[str] = None
+    ndvi: Optional[float] = None
+    ndre: Optional[float] = None
+    temperature_said: Optional[str] = None  # from a thermal band, beside the middle of the fields shown with it
 
     def shown(self) -> dict[str, Any]:
         return asdict(self)
@@ -112,7 +117,8 @@ class FieldFacts:
 
 def said(facts: FieldFacts) -> str:
     """One line for a field, the same on every surface: "Field 7 · 0.18 ha · green cover 62% · about 700 plants"."""
-    parts = [facts.name, facts.area_said, facts.cover_said, facts.plants_said]
+    parts = [facts.name, facts.area_said, facts.cover_said, facts.plants_said, facts.health_said,
+             facts.temperature_said]
     return " · ".join(part for part in parts if part)
 
 
@@ -123,8 +129,11 @@ def _counted(entry: Optional[dict[str, Any]]) -> Optional[dict[str, Any]]:
 
 def _facts(number: int, label: str, area_ha: float, row: Optional[dict[str, Any]], cover: Optional[float],
            count: Optional[dict[str, Any]], check: Optional[dict[str, Any]],
-           records: Optional[dict[int, list[str]]] = None) -> FieldFacts:
+           records: Optional[dict[int, list[str]]] = None,
+           health: Optional[field_health.FieldHealth] = None) -> FieldFacts:
     return FieldFacts(
+        health_said=health.said if health else None, ndvi=health.ndvi if health else None,
+        ndre=health.ndre if health else None, temperature_said=health.temperature_said if health else None,
         number=number, name=label, area_ha=area_ha, area_said=area_said(area_ha),
         kept_id=row["id"] if row is not None else None,
         green_cover=cover, cover_said=f"green cover {round(cover * 100)}%" if cover is not None else None,
@@ -161,7 +170,8 @@ async def _kept_and_counts(s3: Any, bucket: str, photo_key: str,
 
 
 async def of_plots(s3: Any, bucket: str, photo_key: str, layer_id: str, plots: Any,
-                   records: Optional[dict[int, list[str]]] = None) -> list[FieldFacts]:
+                   records: Optional[dict[int, list[str]]] = None,
+                   health: Optional[dict[str, field_health.FieldHealth]] = None) -> list[FieldFacts]:
     """The facts of every plot in a plot set, in the set's order. The reader's kept fields bring green cover and
     checks; a plot bears them only when it is that field (same number, same outline). `records`: what the farm's
     documents say per plot number, already linked by place (record_links.by_field)."""
@@ -177,12 +187,14 @@ async def of_plots(s3: Any, bucket: str, photo_key: str, layer_id: str, plots: A
         count = _counted(counts.get(plant_finder.answer_key(photo_key, feature)))
         out.append(_facts(props["number"], name(props["number"], of_outlined, own_name(props)), props["area_ha"], row,
                           field_taps.cover_share(row) if row is not None and covered else None, count,
-                          await _check(s3, bucket, photo_key, layer_id, row, count), records))
+                          await _check(s3, bucket, photo_key, layer_id, row, count), records,
+                          (health or {}).get(field_health.key_of(feature["geometry"]))))
     return out
 
 
 async def of_kept(s3: Any, bucket: str, photo_key: str, layer_id: str,
-                  records: Optional[dict[int, list[str]]] = None) -> dict[str, FieldFacts]:
+                  records: Optional[dict[int, list[str]]] = None,
+                  health: Optional[dict[str, field_health.FieldHealth]] = None) -> dict[str, FieldFacts]:
     """The facts of the reader's kept fields, by field id, for the field panel: read from the fields themselves and
     the photo's record of counts, so nothing is measured and no plot set is built. A count is the field's when it
     was made on the field's own outline (same number, same outline)."""
@@ -194,5 +206,6 @@ async def of_kept(s3: Any, bucket: str, photo_key: str, layer_id: str,
                       and same_field(entry["geometry"], row["geometry"])), None)
         out[row["id"]] = _facts(row["number"], name(row["number"], True, row.get("name")), row.get("area_ha") or 0.0, row,
                                 field_taps.cover_share(row) if covered else None, count,
-                                await _check(s3, bucket, photo_key, layer_id, row, count), records)
+                                await _check(s3, bucket, photo_key, layer_id, row, count), records,
+                                (health or {}).get(field_health.key_of(row["geometry"])))
     return out

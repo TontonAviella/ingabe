@@ -37,7 +37,17 @@ export interface KeptOutline {
   /** Share of the field under living green plants (0..1), or why it was not measured. Missing until measured. */
   green_cover?: { share: number | null; why_not: string | null };
   /** What is known of the field in the words the cards and Sage use too (src/services/field_facts.py). */
-  facts?: { name?: string; area_said: string; plants_said: string | null; checked_said: string | null; records_said?: string[] };
+  facts?: {
+    name?: string;
+    area_said: string;
+    plants_said: string | null;
+    checked_said: string | null;
+    health_said?: string | null;
+    health_note?: string | null;
+    temperature_said?: string | null;
+    temperature_note?: string | null;
+    records_said?: string[];
+  };
 }
 
 /** A row of the farm's documents (a lab sample, a harvest) and the kept field it is linked to, if any. */

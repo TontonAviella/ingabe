@@ -14,6 +14,7 @@ import rasterio
 from rasterio.transform import from_origin
 
 from src.services import (
+    photo_bands,
     background_jobs,
     drone_cards,
     drone_first_look,
@@ -1011,3 +1012,21 @@ def test_the_soil_and_history_cards_list_their_documents_with_where_each_is_remo
     assert drone_cards.documents("plots_green", _analysis(photo), here) == []
     # the list is no part of a card's answer: the route adds it only for someone who may remove a document
     assert "documents" not in drone_cards.answer_card("soil", _analysis(photo), "farmer", here)
+
+
+def test_fertilizer_card_shows_zones_and_gives_no_rate(photo):
+    analysis = _analysis(photo)
+    look = dataclasses.replace(analysis.look, bands=photo_bands.Bands(kind=photo_bands.MULTISPECTRAL, red_edge=4, nir=5))
+    analysis = dataclasses.replace(analysis, look=look, band_count=5)
+    assert drone_cards.answer_card("fertilizer", analysis, "farmer", drone_cards.Here(photos=1))["status"] == drone_cards.CANT_TELL
+    square = {"type": "Polygon", "coordinates": [[[30.0, -2.0], [30.0005, -2.0], [30.0005, -1.9995], [30.0, -2.0]]]}
+    zones = {"zoned": 1, "even": 2, "by": "ndre", "geojson": {"type": "FeatureCollection", "features": [
+        {"type": "Feature", "geometry": square, "properties": {"number": 7, "field": "Field 7", "zone": zone,
+                                                               "area_m2": 500, "group": "least_green"}}
+        for zone in ("low", "middle", "high")]}}
+    answer = drone_cards.answer_card("fertilizer", analysis, "farmer", drone_cards.Here(photos=1, zones=zones))
+    assert answer["status"] == drone_cards.PARTLY
+    assert "1 field is split into three zones" in answer["what"] and "2 fields are too even to split" in answer["what"]
+    assert "Ingabe gives no rate" in answer["todo"] and answer["overlay"]["kind"] == "plot_groups"
+    assert answer["downloads"][0]["href"].endswith("/zones.geojson")
+    assert "rate" not in " ".join(f["label"] + f["value"] for f in answer["facts"])

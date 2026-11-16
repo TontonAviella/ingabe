@@ -10,6 +10,12 @@ greenness worked out from the wrong two bands is a wrong number that looks right
 
 The health indices the extra bands allow are here too, one formula each:
 NDVI = (NIR - Red) / (NIR + Red), NDRE = (NIR - RedEdge) / (NIR + RedEdge).
+
+A thermal band is different in kind: it does not record sunlight thrown back but the heat the surface itself
+gives off (8 to 14 micrometres), which a radiometric camera turns into a temperature. Cameras store it in
+different scales (degrees, kelvin, tenths or hundredths of either), and the values alone do not say which, so a
+temperature is said in degrees only when the file states its unit (`thermal_unit`); otherwise only which field is
+warmer. A thermal picture saved as 8-bit colours holds no temperature and is not measured.
 """
 
 from __future__ import annotations
@@ -24,11 +30,14 @@ COLOUR = "colour"
 MULTISPECTRAL = "multispectral"
 UNKNOWN = "unknown"
 
-ROLES = ("red", "green", "blue", "red_edge", "nir")
+ROLES = ("red", "green", "blue", "red_edge", "nir", "thermal")
 
 # Centre wavelengths (nm) the cameras in use put their bands at; gaps between ranges stay unnamed.
 _WAVELENGTHS = (((430, 510), "blue"), ((520, 590), "green"), ((620, 690), "red"),
                 ((700, 760), "red_edge"), ((770, 900), "nir"))
+_THERMAL_NM = (8000, 14000)
+_LONG_NM = re.compile(r"(?<![\d.])(\d{4,5})(?:\.\d+)?\s*nm")  # 11000 nm
+_UM = re.compile(r"(?<![\d.])(\d{1,2}(?:\.\d+)?)\s*(?:um|µm|μm|micron)")  # 11 um, 10.5 µm
 _NM = re.compile(r"(?<![\d.])(\d{3})(?:\.\d+)?\s*nm")  # 842 nm, never the 550 inside 1550 nm
 # Whole-description names, after lower-casing and dropping everything but letters and digits
 # ("B1" or "NIR2" is no name we know, so it names nothing).
@@ -36,6 +45,8 @@ _NAMES = {
     "nir": "nir", "nearinfrared": "nir", "nearir": "nir", "infrared": "nir",
     "rededge": "red_edge", "re": "red_edge",
     "red": "red", "r": "red", "green": "green", "g": "green", "blue": "blue", "b": "blue",
+    "thermal": "thermal", "lwir": "thermal", "tir": "thermal", "thermalinfrared": "thermal",
+    "longwaveinfrared": "thermal", "temperature": "thermal",
 }
 
 
@@ -52,6 +63,7 @@ class Bands:
     blue: Optional[int] = 3
     red_edge: Optional[int] = None
     nir: Optional[int] = None
+    thermal: Optional[int] = None
     eight_bit: bool = True  # the bands hold 0 to 255, as a picture does
 
     @property
@@ -77,6 +89,10 @@ def _role_of_name(description: Optional[str]) -> Optional[str]:
     if not description:
         return None
     text = description.lower()
+    long_nm, um = _LONG_NM.search(text), _UM.search(text)
+    if long_nm or um:  # a wavelength beyond what sunlight cameras see
+        wavelength_nm = int(long_nm.group(1)) if long_nm else float(um.group(1)) * 1000  # type: ignore[union-attr]
+        return "thermal" if _THERMAL_NM[0] <= wavelength_nm <= _THERMAL_NM[1] else None
     nm = _NM.search(text)
     if nm:
         wavelength = int(nm.group(1))
@@ -124,16 +140,19 @@ def roles(descriptions: Any, interps: Any, count: int, dtypes: Any = ()) -> Band
         if clash or "red" not in said:
             return unknown
         found = {role: said.get(role) for role in ROLES}
-        return Bands(kind=MULTISPECTRAL, eight_bit=eight_bit([n for n in found.values() if n]), **found)
+        picture = [n for role, n in found.items() if n and role != "thermal"]
+        return Bands(kind=MULTISPECTRAL, eight_bit=eight_bit(picture), **found)
     if count >= 5 or count < 3:  # too many bands for a colour photo and no extra one described, or too few
         return unknown
     named = {**stamped, **said}
     if not clash and {"red", "green", "blue"} <= named.keys():  # a colour photo that says its own order
         order = [named["red"], named["green"], named["blue"]]
-        return Bands(kind=COLOUR, red=order[0], green=order[1], blue=order[2], eight_bit=eight_bit(order))
+        return Bands(kind=COLOUR, red=order[0], green=order[1], blue=order[2], eight_bit=eight_bit(order),
+                     thermal=said.get("thermal"))
     if not eight_bit([1, 2, 3]):  # not an ordinary picture, and it does not say what its bands are
         return unknown
-    return Bands()  # an ordinary colour photo: red, green, blue, then transparency
+    thermal = said.get("thermal") if not clash and said.get("thermal", 0) > 3 else None
+    return Bands(thermal=thermal)  # an ordinary colour photo: red, green, blue, then transparency or a described extra
 
 
 def of(ds: Any) -> Bands:
@@ -171,3 +190,35 @@ def ndvi(nir: Any, red: Any) -> Any:
 
 def ndre(nir: Any, red_edge: Any) -> Any:
     return index(nir, red_edge)
+
+
+CELSIUS, KELVIN = "celsius", "kelvin"
+_CELSIUS_WORDS = re.compile(r"celsius|centigrade|deg(?:rees?)?\s*c\b|°\s*c\b")
+
+
+def thermal_unit(unit: Optional[str], description: Optional[str]) -> Optional[str]:
+    """The temperature unit a thermal band states for itself (its unit field or its description), or None. It is
+    never read from the values: a stored 300 is 300 kelvin for one camera and 30.0 degrees for another."""
+    stated = (unit or "").strip().lower()
+    text = f"{stated} {(description or '').lower()}"
+    if stated in ("c", "°c", "degc") or _CELSIUS_WORDS.search(text):
+        return CELSIUS
+    if stated == "k" or "kelvin" in text:
+        return KELVIN
+    return None
+
+
+def temperature(band: Any, unit: Optional[str], scale: float = 1.0, offset: float = 0.0,
+                whole_numbers: bool = False) -> Any:
+    """A thermal band as a float array with NaN where empty: degrees Celsius when `unit` is known, else the stored
+    values as they are (only their order means anything then). The file's own scale and offset are applied. A zero
+    in a band of whole numbers is an empty pixel, not a temperature."""
+    data = np.ma.filled(np.ma.asarray(band, dtype="float32"), np.nan)
+    if whole_numbers:
+        data = np.where(data == 0, np.nan, data)
+    data = data * float(scale or 1.0) + float(offset or 0.0)
+    if unit == KELVIN:
+        data = data - 273.15
+    if unit is not None:
+        data = np.where((data < -60) | (data > 120), np.nan, data)  # no land surface is outside this
+    return np.where(np.isfinite(data), data, np.nan)

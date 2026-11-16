@@ -187,3 +187,38 @@ def test_camera_card_states_the_measured_index(tmp_path):
     assert "NDVI" in answer["what"] and "0.67" in answer["what"]
     assert {"label": "NDRE across the photo", "value": "0.20"} in answer["facts"]
     assert "not built yet" in answer["todo"]
+
+
+@pytest.mark.parametrize("name", ["LWIR", "Thermal", "Thermal Infrared", "TIR", "Band 6 (11000 nm)", "11 um", "10.5 µm"])
+def test_thermal_band_is_named(name):
+    bands = photo_bands.roles(["Blue", "Green", "Red", "RedEdge", "NIR", name], [], 6, ["uint16"] * 6)
+    assert bands.thermal == 6 and bands.nir == 5 and bands.kind == photo_bands.MULTISPECTRAL
+
+
+def test_short_wave_infrared_is_not_thermal():
+    assert photo_bands.roles(["Blue", "Green", "Red", "RedEdge", "NIR", "2200 nm"], [], 6).thermal is None
+    assert photo_bands.roles(["Blue", "Green", "Red", "RedEdge", "NIR", "1.6 um"], [], 6).thermal is None
+
+
+def test_colour_photo_with_a_described_thermal_band():
+    bands = photo_bands.roles([None, None, None, "Thermal"], [], 4)
+    assert bands.kind == photo_bands.COLOUR and bands.rgb == [1, 2, 3] and bands.thermal == 4
+    assert photo_bands.roles(["Thermal", None, None], [], 3).thermal is None  # one of the picture's own three
+
+
+@pytest.mark.parametrize("unit, description, expected", [
+    ("K", "LWIR", photo_bands.KELVIN), ("kelvin", None, photo_bands.KELVIN), ("C", "Thermal", photo_bands.CELSIUS),
+    ("°C", None, photo_bands.CELSIUS), (None, "Temperature (degrees Celsius)", photo_bands.CELSIUS),
+    (None, "LWIR", None), ("", "Thermal", None), ("cK", "LWIR", None), ("DN", "Thermal counts", None)])
+def test_thermal_unit_is_only_what_the_file_states(unit, description, expected):
+    assert photo_bands.thermal_unit(unit, description) == expected
+
+
+def test_temperature_in_degrees_only_with_a_stated_unit():
+    kelvin = photo_bands.temperature(np.array([29715, 30465, 0], dtype="uint16"), photo_bands.KELVIN, scale=0.01,
+                                     whole_numbers=True)
+    assert kelvin[:2] == pytest.approx([24.0, 31.5], abs=0.01) and np.isnan(kelvin[2])  # a zero is an empty pixel
+    assert photo_bands.temperature(np.array([24.0, 31.5]), photo_bands.CELSIUS) == pytest.approx([24.0, 31.5])
+    raw = photo_bands.temperature(np.array([300, 315], dtype="uint16"), None, whole_numbers=True)
+    assert list(raw) == [300.0, 315.0]  # no unit stated: the stored values, good for their order only
+    assert np.isnan(photo_bands.temperature(np.array([400.0]), photo_bands.CELSIUS)[0])  # no land surface is 400 degrees

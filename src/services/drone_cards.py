@@ -48,6 +48,7 @@ from src.services import (
     record_links,
     field_checks,
     field_facts,
+    field_health,
     ground_area,
     isdasoil_service,
     plant_finder,
@@ -206,6 +207,9 @@ class Here:
     # then a plot nobody checked is named from its fingerprint or not at all.
     fingerprinted: Optional[int] = None
     fingerprint_job: Optional[background_jobs.Job] = None
+    # zones inside the fields from a photo with a near-infrared band (photo_context): {"geojson", "zoned", "even",
+    # "by", "bare_m2"}; None while not measured, on a colour photo, or on raw camera values
+    zones: Optional[dict[str, Any]] = None
     seed: int = 0  # picks the wording of each question and shuffles the deck; 0 keeps both fixed
     role: Optional[str] = None  # the reader's role (reader_roles): the questions are worded for it
     moment: Optional[str] = None  # the moment of the season (crop_calendar.season_moment); None: not weighed
@@ -651,7 +655,11 @@ def _status(card_id: str, analysis: PhotoAnalysis, here: Here) -> str:
     if card_id in ("water", "history", "soil"):
         return PARTLY
     if card_id == "fertilizer":
-        return NEEDS_CAMERA if analysis.camera == "colour" else TO_BUILD
+        if analysis.look.bands.nir is None:
+            return NEEDS_CAMERA if analysis.camera == "colour" else TO_BUILD  # extra bands, none named near-infrared
+        if here.zones is not None:
+            return PARTLY  # zones, and no rate: the rate is the agronomist's
+        return WORKING if here.plots is not None else CANT_TELL
     if card_id == "growth":
         return NEEDS_FLIGHT if here.photos < 2 else TO_BUILD
     if card_id == "plant_count":
@@ -716,8 +724,11 @@ def _preview(card_id: str, analysis: PhotoAnalysis, here: Here) -> str:
             return f"No bare patches larger than {MIN_PATCH_HA} ha."
         return f"About {_ha(bare.area_ha)} is bare ground, in {bare.patches} patches."
     if card_id == "fertilizer":
+        if here.zones is not None:
+            return (f"{here.zones['zoned']} field{'s' if here.zones['zoned'] != 1 else ''} split into zones; "
+                    "the rate for each is your agronomist's.")
         return ("Needs a multispectral photo and soil tests per zone." if analysis.camera == "colour"
-                else "Zones with a rate each, and a file for the spreader.")
+                else "Zones inside each field, and a file for your agronomist.")
     if card_id == "water":
         return "Satellite water use for this area; dry patches on the photo are coming."
     if card_id == "pests":
@@ -1787,6 +1798,43 @@ def _coming(card_id: str, analysis: PhotoAnalysis, audience: str, here: Here) ->
         terms=["near_infrared"] if card_id == "fertilizer" else [], audience=audience)
 
 
+def _fertilizer(analysis: PhotoAnalysis, audience: str, here: Here) -> dict[str, Any]:
+    """Zones inside the fields from the leaf index, with no rate: where the leaves hold less, not what to apply."""
+    zones = here.zones
+    if zones is None:
+        return _coming("fertilizer", analysis, audience, here)
+    by = ("how much chlorophyll the leaves hold (NDRE, from the red-edge band)" if zones["by"] == "ndre"
+          else "how much living leaf covers the ground (NDVI); this camera has no red-edge band, which would follow "
+               "the nitrogen in the leaves more closely")
+    zoned, even = zones["zoned"], zones["even"]
+    features = zones["geojson"]["features"]
+    totals = {zone: sum(f["properties"]["area_m2"] for f in features if f["properties"]["zone"] == zone)
+              for zone in field_health.ZONES}
+    what = (f"{zoned} field{'s are' if zoned != 1 else ' is'} split into three zones each, by {by}."
+            if zoned else "No field on this photo is both large and uneven enough to split into zones.")
+    if even:
+        what += f" {even} field{'s are' if even != 1 else ' is'} too even to split."
+    if zones.get("bare_m2"):
+        what += (f" About {_ha(zones['bare_m2'] / 10_000)} inside the fields reads as bare ground, shadow or road and "
+                 "is left out of the zones.")
+    facts = [{"label": f"{field_health.ZONE_SAID[zone].capitalize()} of the index, all fields",
+              "value": _ha(totals[zone] / 10_000)} for zone in field_health.ZONES if totals[zone]]
+    return _answer(
+        "fertilizer", analysis, here, what=what,
+        why="The zones show where the leaves hold less and where more, so your agronomist can decide what each part needs.",
+        todo=("Give the zones file to your agronomist: the rate for each zone is theirs. Ingabe gives no rate. A zone "
+              "shows where the leaves hold less, not why: it can be nitrogen, water, a pest, or thinner soil. Look at "
+              "a lower zone on foot before spending on it."),
+        how_sure=_how_sure("medium", ["Worked out from the photo's own bands, field by field",
+                                      "The zones are thirds of each field's own index, and ground under an index "
+                                      f"of {field_health.SOIL_NDVI} is taken as bare: choices, not yet tested against yield"],
+                           "Soil tests in each zone, and one strip of the field left at the old rate to compare."),
+        terms=["near_infrared"], audience=audience, facts=facts,
+        downloads=[{"label": "Zones (GeoJSON)", "href": f"/api/layer/{analysis.layer_id}/zones.geojson"}] if zoned else [],
+        overlay=({"kind": "plot_groups", "legend": "Lower third of each field's index", "geojson": zones["geojson"]}
+                 if zoned else None))
+
+
 def _plant_count(analysis: PhotoAnalysis, audience: str, here: Here) -> dict[str, Any]:
     """Stand count as it exists today: an estimate for one field at a time, on request, that the reader can check."""
     size = analysis.look.resolution_cm
@@ -2030,6 +2078,7 @@ def _history_card(analysis: PhotoAnalysis, audience: str, here: Here) -> dict[st
 
 
 _ANSWERS: dict[str, Callable[[PhotoAnalysis, str, Here], dict[str, Any]]] = {
+    "fertilizer": _fertilizer,
     "plots_green": _plots_green,
     "crop_types": _crop_types,
     "plot_problems": _plot_problems,
