@@ -521,6 +521,13 @@ async def _asked(s3: Any, bucket: str, photo_key: str, cog_url: str, features: l
                  bool(record.get("reflectance")), record.get("thermal_unit")), not missing)
 
 
+async def asked(s3: Any, bucket: str, photo_key: str, cog_url: str,
+                features: list[dict[str, Any]]) -> tuple[dict[str, FieldHealth], bool]:
+    """of_features, and whether the answer is final (every outline asked is kept): for a caller that says
+    "being measured" until it is (field_flights)."""
+    return await _asked(s3, bucket, photo_key, cog_url, features)
+
+
 async def settled(photo_key: str, named_thermal: bool = False) -> None:
     """Wait for this photo's measurement beside the request, if one is running (tests; a job that wants it now)."""
     task = _tasks.get(_store_key(photo_key, named_thermal))

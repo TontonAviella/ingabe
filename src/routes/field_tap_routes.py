@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from datetime import date, datetime, timedelta, timezone
 from typing import Annotated, Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -18,6 +19,7 @@ from src.services import (
     count_check,
     farm_records,
     field_facts,
+    field_flights,
     field_health,
     field_taps,
     industry,
@@ -27,7 +29,7 @@ from src.services import (
     plant_finder,
     record_links,
 )
-from src.structures import async_read_conn
+from src.structures import async_read_conn, get_async_db_connection
 from src.utils import get_async_s3_client, get_bucket_name, get_s3_client
 
 logger = logging.getLogger(__name__)
@@ -120,9 +122,46 @@ async def get_field_taps(layer: MapLayer = Depends(get_layer),
             thermal_photos = await photo_context.one_band_photos_here(conn, layer.layer_id, layer.bounds, key)
     except Exception:  # the fields are still shown, without a temperature from another photo
         logger.exception("field taps: the thermal photos of this place could not be listed")
+    added, other_flights = None, []
+    try:
+        async with async_read_conn("field_taps.flights", user_id=session.get_user_id()) as conn:
+            added, other_flights = await photo_context.flights_here(conn, layer.layer_id, layer.bounds, key)
+    except Exception:  # the fields are still shown, each on this photo alone
+        logger.exception("field taps: the other flights of this place could not be listed")
     state["kept"] = await _with_facts(state["kept"], s3, bucket, key, layer.layer_id, session.get_user_id(), cog_url,
-                                      thermal_photos)
+                                      thermal_photos, other_flights,
+                                      {"name": layer.name, "metadata": layer.metadata_dict or {}, "uploaded": added})
+    given = field_flights.flown_on(layer.metadata_dict or {})
+    state["flown_on"] = given.isoformat() if given else None
+    state["flights_note"] = field_flights.NOTE
+    state["flights_measuring"] = any(entry["said"] == field_flights.NOT_YET
+                                     for row in state["kept"] for entry in (row.get("facts") or {}).get("flights", ()))
     return state
+
+
+class FlownIn(BaseModel):
+    day: Optional[date] = Field(default=None, description="the day of the flight; null takes it off")
+
+
+@router.put("/layer/{layer_id}/field-taps/flown-on", operation_id="say_photo_flight_day")
+async def say_photo_flight_day(body: FlownIn, layer: MapLayer = Depends(edit_layer),
+                               session: UserContext = Depends(verify_session_required)) -> dict[str, Optional[str]]:
+    """The day this photo was flown, as the reader gives it: what a field's flights are put in order by. Without it
+    a photo is said by the day it was added."""
+    await _photo_key(layer)
+    if body.day is None:
+        sql, args = "UPDATE map_layers SET metadata = metadata - $2::text WHERE layer_id = $1", (layer.layer_id, field_flights.FLOWN_ON)
+    else:
+        try:  # a day ahead of the server's clock by a time zone is still today somewhere
+            field_flights.check_day(body.day, datetime.now(timezone.utc).date() + timedelta(days=1))
+        except ValueError as why:
+            raise HTTPException(422, str(why)) from why
+        sql = ("UPDATE map_layers SET metadata = COALESCE(metadata, '{}'::jsonb) || jsonb_build_object($2::text, $3::text) "
+               "WHERE layer_id = $1")
+        args = (layer.layer_id, field_flights.FLOWN_ON, body.day.isoformat())
+    async with get_async_db_connection() as conn:
+        await conn.execute(sql, *args)
+    return {"flown_on": body.day.isoformat() if body.day else None}
 
 
 async def _project(layer_id: str, user_id: str, to_edit: bool = False) -> Optional[str]:
@@ -140,7 +179,9 @@ async def _project(layer_id: str, user_id: str, to_edit: bool = False) -> Option
 
 async def _with_facts(rows: list[dict[str, Any]], s3: Any, bucket: str, key: str, layer_id: str,
                       user_id: str, cog_url: Optional[str] = None,
-                      thermal_photos: Optional[list[dict[str, Any]]] = None) -> list[dict[str, Any]]:
+                      thermal_photos: Optional[list[dict[str, Any]]] = None,
+                      other_flights: Optional[list[dict[str, Any]]] = None,
+                      this_photo: Optional[dict[str, Any]] = None) -> list[dict[str, Any]]:
     """Each kept field with what is known of it in the words every surface uses (field_facts): its size, its
     plant count and a person's check of it once Sage counted it, and the rows of the farm's documents linked to it
     by place. Reads only; a field whose facts cannot be read is still shown."""
@@ -166,8 +207,17 @@ async def _with_facts(rows: list[dict[str, Any]], s3: Any, bucket: str, key: str
                                                   lambda companion: photo_context.long_cog_url(s3, bucket, companion), key)
         health = await field_health.with_thermal(s3, bucket, health, rows, thermal_photos,
                                                  lambda companion: photo_context.long_cog_url(s3, bucket, companion))
+    flights: dict[str, list[dict[str, Any]]] = {}
+    if other_flights:
+        try:  # the same outlines on the other flights of this place
+            flights = await field_flights.of_features(
+                s3, bucket, rows, other_flights, lambda companion: photo_context.long_cog_url(s3, bucket, companion),
+                next((h.index_from for h in health.values() if h.index_from), None))
+        except Exception:
+            logger.exception("field taps: the other flights of the kept fields could not be read")
     try:
-        known = await field_facts.of_kept(s3, bucket, key, layer_id, record_links.by_field(linked), health)
+        known = await field_facts.of_kept(s3, bucket, key, layer_id, record_links.by_field(linked), health, flights,
+                                          this_photo)
     except Exception:
         logger.exception("field taps: the facts of the kept fields could not be read")
     return [{**row, "facts": {"name": known[row["id"]].name, "area_said": known[row["id"]].area_said, "plants_said": known[row["id"]].plants_said,
@@ -178,6 +228,7 @@ async def _with_facts(rows: list[dict[str, Any]], s3: Any, bucket: str, key: str
                               "temperature_said": known[row["id"]].temperature_said,
                               "temperature_note": (field_health.temperature_note(known[row["id"]].temperature_from)
                                                    if known[row["id"]].temperature_said else None),
+                              "flights": list(known[row["id"]].flights),
                               "records_said": list(known[row["id"]].records_said)}} if row["id"] in known else row
             for row in rows]
 

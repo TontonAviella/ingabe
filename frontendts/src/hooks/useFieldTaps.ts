@@ -47,7 +47,22 @@ export interface KeptOutline {
     temperature_said?: string | null;
     temperature_note?: string | null;
     records_said?: string[];
+    /** The field's same outline on the other flights of its place, oldest first, this photo's line among them. */
+    flights?: FieldFlight[];
   };
+}
+
+/** One flight of a field, as the server says it (src/services/field_flights.py). */
+export interface FieldFlight {
+  /** ISO day. `flown`: the reader gave it as the flight day; otherwise it is the day the photo was added. */
+  day: string;
+  flown: boolean;
+  day_said: string;
+  photo: string;
+  this: boolean;
+  /** false: nothing is said for this flight (a colour picture, or still being measured). */
+  measured: boolean;
+  said: string;
 }
 
 /** A row of the farm's documents (a lab sample, a harvest) and the kept field it is linked to, if any. */
@@ -83,6 +98,12 @@ export interface FieldTapState {
   /** true while the server is measuring green cover for kept fields in the background: ask again soon. */
   cover_filling?: boolean;
   kept: KeptOutline[];
+  /** The day this photo was flown, as the reader gave it (ISO); null until given. */
+  flown_on?: string | null;
+  /** How the flights of a field are to be read, written by the server. */
+  flights_note?: string;
+  /** true while another flight of these fields is being measured in the background: ask again soon. */
+  flights_measuring?: boolean;
   /** How many taps on this photo ended without a kept outline. */
   turned_down: number;
 }
@@ -101,7 +122,10 @@ export function useFieldTapState(layerId: string | null) {
     retry: (count, error) => !(error.status >= 400 && error.status < 500) && count < 2,
     staleTime: 60_000,
     // green cover of fields kept earlier is measured in the background: ask again until the server says it is done
-    refetchInterval: (query) => (query.state.data?.cover_filling ? 3_000 : false),
+    // so is a field's outline on the other flights of its place; that stops being asked after a few minutes, since a
+    // flight that cannot be read stays "being measured"
+    refetchInterval: (query) =>
+      query.state.data?.cover_filling ? 3_000 : query.state.data?.flights_measuring && query.state.dataUpdateCount < 40 ? 8_000 : false,
   });
 }
 
@@ -258,6 +282,15 @@ export function useKeepOutline(layerId: string | null) {
   const client = useQueryClient();
   return useMutation<KeptOutline, ServerError, { taps: Tap[]; pick: number; moved?: Corner[] }>({
     mutationFn: (body) => sendJson<KeptOutline>(`${url(layerId as string)}/kept`, 'POST', body),
+    onSuccess: () => fieldsChanged(client, layerId),
+  });
+}
+
+/** Say the day this photo was flown (null: take it off). A field's flights are put in order by it everywhere. */
+export function useSayFlownOn(layerId: string | null) {
+  const client = useQueryClient();
+  return useMutation<{ flown_on: string | null }, ServerError, string | null>({
+    mutationFn: (day) => sendJson(`${url(layerId as string)}/flown-on`, 'PUT', { day }),
     onSuccess: () => fieldsChanged(client, layerId),
   });
 }

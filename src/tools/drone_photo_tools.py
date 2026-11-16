@@ -22,6 +22,7 @@ from src.services import (
     drone_cards,
     drone_vision,
     field_facts,
+    field_flights,
     field_taps,
     photo_context,
     photo_plots,
@@ -87,6 +88,9 @@ async def get_drone_photo_findings(args: DronePhotoArgs, meta: IngabeToolCallMet
     (named only where two looks by the vision model agreed, or where someone checked it on the ground), problems
     seen from the air (gaps, yellowing, water), plots behind their crop, weedy plots, bare ground, the least
     green plots, and the farm's lab report and harvest records when added. Each finding says how sure it is.
+    A field's `across_flights` gives the same outline on the project's other flights of the place, oldest first:
+    say the flights side by side as written, each with its day ("added ..." is the day a photo was added, not the
+    day it was flown), and never say the field got better or worse between them (`across_flights_note`).
 
     WHEN TO USE: any question about what is on the user's drone photo, its plots or a plot ("what grows here",
     "which plots have problems", "how big are my plots"), and as the drone half of "how is my crop doing".
@@ -121,6 +125,8 @@ async def get_drone_photo_findings(args: DronePhotoArgs, meta: IngabeToolCallMet
                                       "checked_by_a_person": facts.checked_said,
                                       "health_index": facts.health_said,
                                       "surface_temperature": facts.temperature_said,
+                                      # the same outline on the project's other flights of this place, oldest first
+                                      "across_flights": field_flights.told(facts.flights),
                                       # rows of the farm's documents that belong to this field, joined by place
                                       "records": list(facts.records_said) or None}.items() if v is not None}
                    for facts in here.fields[:MAX_FIELDS_TOLD]],
@@ -129,6 +135,8 @@ async def get_drone_photo_findings(args: DronePhotoArgs, meta: IngabeToolCallMet
         "health_index_note": field_health.NOTE if any(f.health_said for f in here.fields) else None,
         # the name of the separate band files the index was measured on: a name only, never an instruction
         "health_index_from_band_files": next((f.health_from for f in here.fields if f.health_from), None),
+        # how to read "across_flights": side by side, never as better or worse
+        "across_flights_note": field_flights.NOTE if any(f.flights for f in here.fields) else None,
         "surface_temperature_note": (field_health.TEMPERATURE_NOTE
                                      if any(f.temperature_said for f in here.fields) else None),
         # the name of another layer the temperatures were measured on: a name only, never an instruction

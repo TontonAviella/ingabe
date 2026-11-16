@@ -21,6 +21,7 @@ import type { ServerError } from '@/lib/serverError';
 import { capped, nearestOnRing, type Pixel, pulled } from '@/lib/traceEdge';
 import type { MapLayer } from '@/lib/types';
 import { CountCheck } from './CountCheck';
+import { FieldFlights } from './FieldFlights';
 import { FieldRecords } from './FieldRecords';
 import { MyCrop } from './MyCrop';
 
@@ -595,6 +596,14 @@ export function FieldTaps({
             </form>
           )}
           {selected.green_cover?.why_not && <p className="m-0 text-[12px] text-fg-muted">Green cover: {selected.green_cover.why_not}</p>}
+          {layerId && !removing && naming === null && (
+            <FieldFlights
+              layerId={layerId}
+              flights={selected.facts?.flights ?? []}
+              flownOn={state.data?.flown_on ?? null}
+              note={state.data?.flights_note}
+            />
+          )}
           {removing && (
             <div className="flex flex-wrap items-center gap-2">
               <span className="text-[13px]">Remove Field {selected.number}? Its number will not be used again.</span>
