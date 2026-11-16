@@ -80,7 +80,7 @@ async def _photo(layer: MapLayer, session: UserContext, audience: Optional[str],
         metadata=metadata, user_id=session.get_user_id(), org_id=session.get_org_id(), audience=audience,
         retry_failed=retry_plots, seed=seed)
     if context is None:
-        raise HTTPException(422, "Question cards need a colour (RGB) photo")
+        raise HTTPException(422, "Question cards need a colour photo, or a multispectral photo whose file names its bands")
     return context.analysis, context.here, context.reader
 
 

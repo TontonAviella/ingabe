@@ -201,6 +201,8 @@ async def load(s3: Any, bucket: str, *, layer_id: str, name: str, bounds: Any, m
     records = await farm_records.load_records(s3, bucket, project_id) if project_id else []
     plots, plot_map, map_error = await photo_plots.plots_from_chosen_map(
         s3, bucket, layer_id, metadata, user_id, url, maps)
+    # Finding plots, fingerprints and looks all need a true-colour picture; a photo without one starts none of them.
+    start_jobs = start_jobs and analysis.look.bands.picture
     plot_job = None
     if plots is None:
         plots, plot_job = await _found_plots(s3, bucket, metadata, start=start_jobs, retry_failed=retry_failed)
