@@ -18,6 +18,7 @@ from src.services import (
     count_check,
     farm_records,
     field_facts,
+    field_health,
     field_taps,
     industry,
     my_crop,
@@ -113,7 +114,7 @@ async def get_field_taps(layer: MapLayer = Depends(get_layer),
     # a link that outlasts the background job measuring green cover, as the other background photo readers use
     cog_url = await photo_context.cog_url(s3, bucket, layer.metadata_dict or {}, photo_context.LONG_URL_SECONDS)
     state = await field_taps.state(s3, bucket, key, layer.layer_id, cog_url)
-    state["kept"] = await _with_facts(state["kept"], s3, bucket, key, layer.layer_id, session.get_user_id())
+    state["kept"] = await _with_facts(state["kept"], s3, bucket, key, layer.layer_id, session.get_user_id(), cog_url)
     return state
 
 
@@ -131,7 +132,7 @@ async def _project(layer_id: str, user_id: str, to_edit: bool = False) -> Option
 
 
 async def _with_facts(rows: list[dict[str, Any]], s3: Any, bucket: str, key: str, layer_id: str,
-                      user_id: str) -> list[dict[str, Any]]:
+                      user_id: str, cog_url: Optional[str] = None) -> list[dict[str, Any]]:
     """Each kept field with what is known of it in the words every surface uses (field_facts): its size, its
     plant count and a person's check of it once Sage counted it, and the rows of the farm's documents linked to it
     by place. Reads only; a field whose facts cannot be read is still shown."""
@@ -144,12 +145,19 @@ async def _with_facts(rows: list[dict[str, Any]], s3: Any, bucket: str, key: str
                                                record_links.kept_features(rows))
     except Exception:
         logger.exception("field taps: the documents' rows could not be placed on the kept fields")
+    health: dict[str, field_health.FieldHealth] = {}
+    if cog_url:
+        try:  # {} at once for a photo with no near-infrared band, after its first look
+            health = await field_health.of_features(s3, bucket, key, cog_url, rows)
+        except Exception:
+            logger.exception("field taps: the health of the kept fields could not be measured")
     try:
-        known = await field_facts.of_kept(s3, bucket, key, layer_id, record_links.by_field(linked))
+        known = await field_facts.of_kept(s3, bucket, key, layer_id, record_links.by_field(linked), health)
     except Exception:
         logger.exception("field taps: the facts of the kept fields could not be read")
     return [{**row, "facts": {"name": known[row["id"]].name, "area_said": known[row["id"]].area_said, "plants_said": known[row["id"]].plants_said,
                               "checked_said": known[row["id"]].checked_said,
+                              "health_said": known[row["id"]].health_said,
                               "records_said": list(known[row["id"]].records_said)}} if row["id"] in known else row
             for row in rows]
 

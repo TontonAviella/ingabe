@@ -17,6 +17,7 @@ from shapely.geometry import shape
 
 from src.routes.websocket import kue_ephemeral_action
 from src.services import (
+    field_health,
     count_check,
     drone_cards,
     drone_vision,
@@ -118,10 +119,13 @@ async def get_drone_photo_findings(args: DronePhotoArgs, meta: IngabeToolCallMet
         "fields": [{k: v for k, v in {"field": facts.name, "size": facts.area_said, "green_cover": facts.cover_said,
                                       "plants": facts.plants_said, "counted_share_of_field": facts.counted_share,
                                       "checked_by_a_person": facts.checked_said,
+                                      "health_index": facts.health_said,
                                       # rows of the farm's documents that belong to this field, joined by place
                                       "records": list(facts.records_said) or None}.items() if v is not None}
                    for facts in here.fields[:MAX_FIELDS_TOLD]],
         "fields_left_out": max(0, len(here.fields) - MAX_FIELDS_TOLD),
+        # how to read "health_index": no verdict, and what else makes it low
+        "health_index_note": field_health.NOTE if any(f.health_said for f in here.fields) else None,
         # document rows no one has linked to a field: they belong to the farm, not to any one field; a number in a
         # document is not the photo's field number
         "records_not_linked_to_a_field": record_links.not_linked(here.linked) if here.records else None,

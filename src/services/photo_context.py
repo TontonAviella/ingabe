@@ -22,6 +22,7 @@ from src.services import (
     record_links,
     field_checks,
     field_facts,
+    field_health,
     photo_plots,
     reader_roles,
 )
@@ -222,8 +223,15 @@ async def load(s3: Any, bucket: str, *, layer_id: str, name: str, bounds: Any, m
     fields: list[field_facts.FieldFacts] = []
     if plots is not None:
         try:
+            health = {}
+            if analysis.look.bands.nir is not None:  # only a photo with a near-infrared band has a health index
+                try:
+                    health = await field_health.of_features(s3, bucket, photo_plots.photo_key(metadata), url,
+                                                            plots.geojson["features"])
+                except Exception:  # the fields are still said, without their health index
+                    logger.exception("photo context: the fields' health could not be measured for layer %s", layer_id)
             fields = await field_facts.of_plots(s3, bucket, photo_plots.photo_key(metadata), layer_id, plots,
-                                                record_links.by_field(linked))
+                                                record_links.by_field(linked), health)
         except Exception:  # the cards still answer, without the per-field facts gathered from the other surfaces
             logger.exception("photo context: the fields' facts could not be read for layer %s", layer_id)
     here = drone_cards.Here(fields=tuple(fields), photos=max(1, int(photos_here or 0)), plots=plots, plot_job=plot_job,

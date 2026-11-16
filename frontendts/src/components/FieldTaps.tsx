@@ -528,6 +528,7 @@ export function FieldTaps({
               {selected.by_hand ? ' · by hand' : ''}
               {coverText(selected) ? ` · ${coverText(selected)}` : ''}
               {selected.facts?.plants_said ? ` · ${selected.facts.plants_said}` : ''}
+              {selected.facts?.health_said ? ` · ${selected.facts.health_said}` : ''}
             </span>
             {!removing && naming === null && (
               <span className="flex shrink-0">
