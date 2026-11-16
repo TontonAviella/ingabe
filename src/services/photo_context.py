@@ -58,12 +58,14 @@ SELECT l.layer_id, l.name, l.metadata
    AND l.bounds IS NOT NULL
    AND l.bounds[1] < $4 AND l.bounds[3] > $2 AND l.bounds[2] < $5 AND l.bounds[4] > $3
    AND l.metadata->>'cog_key' IS NOT NULL
+   AND l.metadata->>'cog_status' = 'ready'
+   AND COALESCE(l.metadata->>'crs_missing', 'false') <> 'true'
    AND (l.metadata->>'band_count') = '1'
    AND l.layer_id IN (
        SELECT unnest(s.layers) FROM ({SHOWN_MAPS_SQL}) s
         WHERE s.project_id IN (SELECT s2.project_id FROM ({SHOWN_MAPS_SQL}) s2 WHERE $1 = ANY(s2.layers)))
  ORDER BY l.created_on DESC
- LIMIT 5
+ LIMIT 12
 """
 
 _PROJECT_SQL = """
@@ -111,10 +113,14 @@ async def one_band_photos_here(conn: Any, layer_id: str, bounds: Any) -> list[di
         return []
     west, south, east, north = bounds
     rows = await conn.fetch(_ONE_BAND_PHOTOS_HERE_SQL, layer_id, west, south, east, north)
-    out = []
+    out: list[dict[str, Any]] = []
+    seen: set[str] = set()
     for row in rows:
         metadata = row["metadata"]
         metadata = json.loads(metadata) if isinstance(metadata, str) else dict(metadata or {})
+        if metadata.get("cog_key") in seen:  # copies of one layer are one photo
+            continue
+        seen.add(metadata.get("cog_key"))
         out.append({"name": row["name"], "metadata": metadata})
     return out
 
@@ -238,7 +244,11 @@ async def load(s3: Any, bucket: str, *, layer_id: str, name: str, bounds: Any, m
         reader = await reader_roles.role_in(conn, "agriculture", audience, user_id, org_id)
         maps = await photo_plots.plot_sources(conn, s3, bucket, layer_id, analysis.bounds, metadata)
         project_id = await project_of(conn, layer_id)
-        thermal_photos = await one_band_photos_here(conn, layer_id, analysis.bounds)
+        thermal_photos: list[dict[str, Any]] = []
+        try:
+            thermal_photos = await one_band_photos_here(conn, layer_id, analysis.bounds)
+        except Exception:  # the cards still answer, without a temperature from another photo
+            logger.exception("photo context: the thermal photos of layer %s's place could not be listed", layer_id)
     records = await farm_records.load_records(s3, bucket, project_id) if project_id else []
     plots, plot_map, map_error = await photo_plots.plots_from_chosen_map(
         s3, bucket, layer_id, metadata, user_id, url, maps)

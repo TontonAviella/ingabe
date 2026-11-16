@@ -231,8 +231,15 @@ def thermal_band(ds: Any, bands: photo_bands.Bands, named_thermal: bool = False)
     states a temperature unit for it or the reader named the layer as thermal."""
     if bands.thermal is not None:
         return bands.thermal
-    if int(ds.count) == 1 and (named_thermal or photo_bands.thermal_unit(ds.units[0], ds.descriptions[0])):
+    if int(ds.count) != 1:
+        return None
+    if photo_bands.thermal_unit(ds.units[0], ds.descriptions[0]):
         return 1
+    if named_thermal:  # the reader's name is believed only when the values could be temperatures
+        scale = max(1, max(ds.width, ds.height) // OVERVIEW_LONG_SIDE)
+        small = (max(1, ds.height // scale), max(1, ds.width // scale))
+        if photo_bands.could_be_temperature(ds.read(1, out_shape=small, resampling=Resampling.average, masked=True)):
+            return 1
     return None
 
 
@@ -248,11 +255,15 @@ def _photo_facts(ds: Any, bands: photo_bands.Bands) -> dict[str, Any]:
     t = bands.thermal
     # an 8-bit thermal band is a picture of colours or a stretched preview: it holds no temperature
     thermal = t is not None and str(ds.dtypes[t - 1]) != "uint8"
-    return {"index": index, "reflectance": bool(reflectance), "thermal": thermal,
-            "thermal_unit": photo_bands.thermal_unit(ds.units[t - 1], ds.descriptions[t - 1]) if thermal else None,
-            "thermal_scale": float(ds.scales[t - 1]) if thermal else 1.0,
-            "thermal_offset": float(ds.offsets[t - 1]) if thermal else 0.0,
-            "thermal_whole": bool(thermal and np.dtype(ds.dtypes[t - 1]).kind in "iu")}
+    unit = photo_bands.thermal_unit(ds.units[t - 1], ds.descriptions[t - 1]) if thermal else None
+    t_scale = float(ds.scales[t - 1]) if thermal else 1.0
+    t_offset = float(ds.offsets[t - 1]) if thermal else 0.0
+    whole = bool(thermal and np.dtype(ds.dtypes[t - 1]).kind in "iu")
+    if unit is not None and not photo_bands.unit_fits(
+            ds.read(t, out_shape=small, resampling=Resampling.average, masked=True), unit, t_scale, t_offset, whole):
+        unit = None  # the values contradict the stated unit: no degrees, only which field is warmer
+    return {"index": index, "reflectance": bool(reflectance), "thermal": thermal, "thermal_unit": unit,
+            "thermal_scale": t_scale, "thermal_offset": t_offset, "thermal_whole": whole}
 
 
 def measure(cog_url: str, outlines: dict[str, dict[str, Any]], named_thermal: bool = False) -> dict[str, Any]:
@@ -390,17 +401,22 @@ async def _measure_missing(s3: Any, bucket: str, store_key: str, cog_url: str, n
 
 async def of_features(s3: Any, bucket: str, photo_key: str, cog_url: str, features: list[dict[str, Any]],
                       named_thermal: bool = False) -> dict[str, FieldHealth]:
-    """The health of each feature's outline, by key_of(geometry), from what is kept: {} for a photo with nothing
-    to measure from. Never reads the photo itself: outlines not measured yet are measured beside the request and
-    are there the next time this is asked, so no screen waits for it. `named_thermal`: the reader named this
-    one-band layer as a thermal photo (`thermal_band`)."""
+    return (await _asked(s3, bucket, photo_key, cog_url, features, named_thermal))[0]
+
+
+async def _asked(s3: Any, bucket: str, photo_key: str, cog_url: str, features: list[dict[str, Any]],
+                 named_thermal: bool = False) -> tuple[dict[str, FieldHealth], bool]:
+    """(The health of each feature's outline, by key_of(geometry), from what is kept; whether every outline asked
+    is kept, so the answer will not change): {} for a photo with nothing to measure from. Never reads the photo
+    itself: outlines not measured yet are measured beside the request and are there the next time this is asked,
+    so no screen waits for it. `named_thermal`: the reader named this one-band layer as a thermal photo."""
     outlines = {key_of(f["geometry"]): f["geometry"] for f in features if isinstance(f.get("geometry"), dict)}
     if not outlines:
-        return {}
+        return {}, True
     store_key = _store_key(photo_key, named_thermal)
     record = await _record(s3, bucket, store_key)
     if record.get("nir") is False:
-        return {}
+        return {}, True
     missing = {key: geometry for key, geometry in outlines.items() if key not in record["fields"]}
     loop = asyncio.get_running_loop()
     if missing and loop.time() - _failed_at.get(store_key, -RETRY_SECONDS) >= RETRY_SECONDS:
@@ -410,8 +426,8 @@ async def of_features(s3: Any, bucket: str, photo_key: str, cog_url: str, featur
         else:
             _pending[store_key] = dict(missing)
             _tasks[store_key] = loop.create_task(_measure_missing(s3, bucket, store_key, cog_url, named_thermal))
-    return said({key: record["fields"][key] for key in outlines if key in record["fields"]},
-                bool(record.get("reflectance")), record.get("thermal_unit"))
+    return (said({key: record["fields"][key] for key in outlines if key in record["fields"]},
+                 bool(record.get("reflectance")), record.get("thermal_unit")), not missing)
 
 
 async def settled(photo_key: str, named_thermal: bool = False) -> None:
@@ -421,13 +437,16 @@ async def settled(photo_key: str, named_thermal: bool = False) -> None:
         await task
 
 
-_THERMAL_NAME = re.compile(r"(?<![a-z])(thermal|thermique|lwir|tir|temperature)(?![a-z])", re.IGNORECASE)
+_THERMAL_NAME = re.compile(r"(?<![a-z])(thermal|thermique|lwir|temperature)(?![a-z])", re.IGNORECASE)
 MAX_COMPANIONS = 3  # other one-band photos of the place that are looked at for a temperature, newest first
+MIN_COMPANION_COVER = 0.8  # a thermal photo is used when it gives this share of the fields a temperature: a place
+# "among 4 fields" beside 10 fields on the screen would read as if it were among all of them
 
 
 def named_thermal(name: Optional[str], metadata: dict[str, Any]) -> bool:
     """Whether the reader named this layer as a thermal photo: the word stands on its own in the layer's name or
-    its file's name ("Kabarama_thermal.tif", "LWIR ortho"), not inside another word."""
+    its file's name ("Kabarama_thermal.tif", "LWIR ortho"), not inside another word. The name is believed only
+    when the file's values could be temperatures (`thermal_band`)."""
     return any(_THERMAL_NAME.search(str(text)) for text in (name, metadata.get("original_filename")) if text)
 
 
@@ -436,26 +455,32 @@ async def with_thermal(s3: Any, bucket: str, health: dict[str, FieldHealth], fea
                        url_of: Callable[[dict[str, Any]], Awaitable[str]]) -> dict[str, FieldHealth]:
     """`health` with each field's temperature from a thermal photo of the same place that is its own file.
     `companions`: the project's other one-band photos overlapping this one ({"name", "metadata"}), newest first.
-    The first that gives a temperature is used, and every field says which photo that was. Fields that already
-    have a temperature from their own photo keep it. Nothing is read here: see `of_features`."""
-    if not features or any(h.temperature_said for h in health.values()):
+    The newest one that gives the fields a temperature is used, and every field says which photo that was. An
+    older one is used only once every newer one is fully measured and gave nothing, and none is used while its own
+    measuring is unfinished: what a field says does not change from one load to the next. Fields that already have
+    a temperature from their own photo keep it. Nothing is read here: see `of_features`."""
+    asked = len({key_of(f["geometry"]) for f in features if isinstance(f.get("geometry"), dict)})
+    if not asked or any(h.temperature_said for h in health.values()):
         return health
     for companion in companions[:MAX_COMPANIONS]:
         metadata = companion["metadata"]
         if not metadata.get("cog_key"):
             continue
         try:
-            found = await of_features(s3, bucket, metadata["cog_key"], await url_of(metadata), features,
-                                      named_thermal(companion.get("name"), metadata))
-        except Exception:  # this companion only: the fields are still said
+            found, complete = await _asked(s3, bucket, metadata["cog_key"], await url_of(metadata), features,
+                                           named_thermal(companion.get("name"), metadata))
+        except Exception:  # this companion cannot be asked now: wait, do not fall to an older photo meanwhile
             logger.exception("field health: a thermal photo of the place could not be asked")
-            continue
+            return health
+        if not complete:
+            return health  # still being measured: nothing is said until it is whole
         warm = {key: h for key, h in found.items() if h.temperature_said}
-        if warm:
+        if warm and len(warm) >= MIN_COMPANION_COVER * asked:
             out = dict(health)
+            source = plain_name(companion.get("name"))
             for key, h in warm.items():
                 out[key] = dataclasses.replace(out.get(key, FieldHealth(said=None)), temperature_said=h.temperature_said,
-                                               temp_c=h.temp_c, temperature_from=companion.get("name") or "a thermal photo")
+                                               temp_c=h.temp_c, temperature_from=source)
             return out
     return health
 
@@ -463,9 +488,17 @@ async def with_thermal(s3: Any, bucket: str, health: dict[str, FieldHealth], fea
 TEMPERATURE_NOTE = ("A warmer field can be bare soil, a thinner crop, or a crop short of water. Sun, wind and the "
                     "hour change every field, so compare fields from one flight only. The temperature is the "
                     "camera's reading of the surface, soil and leaves together, not checked with a thermometer.")
+def plain_name(name: Optional[str]) -> str:
+    """A layer's name as it may be repeated to a reader or to Sage: letters, digits, spaces and . _ - only, 60 at
+    most. A name is written by whoever can edit the project, and must stay a name."""
+    kept = re.sub(r"[^\w .\-]", " ", str(name or ""), flags=re.UNICODE)
+    return re.sub(r"\s+", " ", kept).strip()[:60] or "a thermal photo"
+
+
 def temperature_note(source: Optional[str]) -> str:
-    """The caveat every surface gives with a temperature, naming the thermal photo when it is another file."""
-    return TEMPERATURE_NOTE + (f" Measured on the thermal photo \"{source}\"." if source else "")
+    """The caveat every surface gives with a temperature, saying when it comes from another photo."""
+    return TEMPERATURE_NOTE + (f" Measured on the thermal photo {source}, which may be from another day or hour "
+                               "than this photo." if source else "")
 
 
 SHORT_NOTE = "A lower index can be a younger crop, another crop, or bare ground. No cut-off has been tested."
