@@ -19,7 +19,7 @@ from typing import Any, Optional
 from shapely.geometry import shape
 from shapely.validation import make_valid
 
-from src.services import count_check, drone_plots, field_health, field_taps, plant_finder
+from src.services import count_check, drone_plots, field_flights, field_health, field_taps, plant_finder
 
 logger = logging.getLogger(__name__)
 
@@ -112,6 +112,9 @@ class FieldFacts:
     temperature_said: Optional[str] = None  # from a thermal band, beside the middle of the fields shown with it
     temperature_from: Optional[str] = None  # the thermal photo it was measured on, when not this photo itself
     health_from: Optional[str] = None  # the band files the index was measured on, when not this photo itself
+    # the field's same outline on the project's other flights of this place, oldest first, this photo's line among
+    # them (field_flights); () when this photo is the only one of the place
+    flights: tuple[dict[str, Any], ...] = ()
 
     def shown(self) -> dict[str, Any]:
         return asdict(self)
@@ -132,17 +135,26 @@ def _counted(entry: Optional[dict[str, Any]]) -> Optional[dict[str, Any]]:
 def _facts(number: int, label: str, area_ha: float, row: Optional[dict[str, Any]], cover: Optional[float],
            count: Optional[dict[str, Any]], check: Optional[dict[str, Any]],
            records: Optional[dict[int, list[str]]] = None,
-           health: Optional[field_health.FieldHealth] = None) -> FieldFacts:
+           health: Optional[field_health.FieldHealth] = None,
+           flights: Optional[list[dict[str, Any]]] = None, this_photo: Optional[dict[str, Any]] = None) -> FieldFacts:
+    cover_said = f"green cover {round(cover * 100)}%" if cover is not None else None
+    counted = plants_said(count["plants"], count.get("counted_share")) if count else None
+    own = (field_flights.line(this_photo.get("name"), this_photo.get("metadata") or {}, this_photo.get("uploaded"),
+                              [cover_said, counted,
+                               *field_flights.facts_of(health, health.index_from if health else None,
+                                                       health.temperature_from if health else None)],
+                              this=True, nothing="nothing measured on this photo yet")
+           if flights and this_photo else None)
     return FieldFacts(
+        flights=field_flights.with_this(own, flights or []),
         health_said=health.said if health else None, ndvi=health.ndvi if health else None,
         ndre=health.ndre if health else None, temperature_said=health.temperature_said if health else None,
         temperature_from=health.temperature_from if health else None,
         health_from=health.index_from if health else None,
         number=number, name=label, area_ha=area_ha, area_said=area_said(area_ha),
         kept_id=row["id"] if row is not None else None,
-        green_cover=cover, cover_said=f"green cover {round(cover * 100)}%" if cover is not None else None,
-        plants_about=about(count["plants"]) if count else None,
-        plants_said=plants_said(count["plants"], count.get("counted_share")) if count else None,
+        green_cover=cover, cover_said=cover_said,
+        plants_about=about(count["plants"]) if count else None, plants_said=counted,
         counted_share=count.get("counted_share") if count else None,
         checked_said=check["said"] if check else None, records_said=tuple((records or {}).get(number, ())))
 
@@ -175,7 +187,9 @@ async def _kept_and_counts(s3: Any, bucket: str, photo_key: str,
 
 async def of_plots(s3: Any, bucket: str, photo_key: str, layer_id: str, plots: Any,
                    records: Optional[dict[int, list[str]]] = None,
-                   health: Optional[dict[str, field_health.FieldHealth]] = None) -> list[FieldFacts]:
+                   health: Optional[dict[str, field_health.FieldHealth]] = None,
+                   flights: Optional[dict[str, list[dict[str, Any]]]] = None,
+                   this_photo: Optional[dict[str, Any]] = None) -> list[FieldFacts]:
     """The facts of every plot in a plot set, in the set's order. The reader's kept fields bring green cover and
     checks; a plot bears them only when it is that field (same number, same outline). `records`: what the farm's
     documents say per plot number, already linked by place (record_links.by_field)."""
@@ -192,13 +206,16 @@ async def of_plots(s3: Any, bucket: str, photo_key: str, layer_id: str, plots: A
         out.append(_facts(props["number"], name(props["number"], of_outlined, own_name(props)), props["area_ha"], row,
                           field_taps.cover_share(row) if row is not None and covered else None, count,
                           await _check(s3, bucket, photo_key, layer_id, row, count), records,
-                          (health or {}).get(field_health.key_of(feature["geometry"]))))
+                          (health or {}).get(field_health.key_of(feature["geometry"])),
+                          (flights or {}).get(field_health.key_of(feature["geometry"])), this_photo))
     return out
 
 
 async def of_kept(s3: Any, bucket: str, photo_key: str, layer_id: str,
                   records: Optional[dict[int, list[str]]] = None,
-                  health: Optional[dict[str, field_health.FieldHealth]] = None) -> dict[str, FieldFacts]:
+                  health: Optional[dict[str, field_health.FieldHealth]] = None,
+                  flights: Optional[dict[str, list[dict[str, Any]]]] = None,
+                  this_photo: Optional[dict[str, Any]] = None) -> dict[str, FieldFacts]:
     """The facts of the reader's kept fields, by field id, for the field panel: read from the fields themselves and
     the photo's record of counts, so nothing is measured and no plot set is built. A count is the field's when it
     was made on the field's own outline (same number, same outline)."""
@@ -211,5 +228,6 @@ async def of_kept(s3: Any, bucket: str, photo_key: str, layer_id: str,
         out[row["id"]] = _facts(row["number"], name(row["number"], True, row.get("name")), row.get("area_ha") or 0.0, row,
                                 field_taps.cover_share(row) if covered else None, count,
                                 await _check(s3, bucket, photo_key, layer_id, row, count), records,
-                                (health or {}).get(field_health.key_of(row["geometry"])))
+                                (health or {}).get(field_health.key_of(row["geometry"])),
+                                (flights or {}).get(field_health.key_of(row["geometry"])), this_photo)
     return out

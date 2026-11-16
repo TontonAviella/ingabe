@@ -22,6 +22,7 @@ from src.services import (
     drone_cards,
     drone_vision,
     field_facts,
+    field_flights,
     field_taps,
     photo_context,
     photo_plots,
@@ -38,6 +39,7 @@ logger = logging.getLogger(__name__)
 # The cards Sage reads for an overview, in this order: plots, crops, problems, stage, weeds, bare ground.
 FINDING_CARDS = ("field_outlines", "crop_types", "plot_problems", "plot_stage", "weeds", "bare_ground", "plots_green")
 RECORD_CARDS = ("soil", "history")  # added when the project has a lab report or harvest records
+MAX_FIELDS_ACROSS_FLIGHTS = 10  # fields whose other flights are listed too: each adds several lines to the answer
 MAX_FIELDS_TOLD = 60  # fields listed one by one in Sage's findings; more are counted, not listed
 SPOT_COLOUR = "#FF4D1A"  # the cards' colour for things found inside plots
 OTHER_GREEN_COLOUR = "#2F80ED"  # green that is not a crop plant: weed, grass or bush
@@ -87,6 +89,9 @@ async def get_drone_photo_findings(args: DronePhotoArgs, meta: IngabeToolCallMet
     (named only where two looks by the vision model agreed, or where someone checked it on the ground), problems
     seen from the air (gaps, yellowing, water), plots behind their crop, weedy plots, bare ground, the least
     green plots, and the farm's lab report and harvest records when added. Each finding says how sure it is.
+    A field's `across_flights` gives the same outline on the project's other flights of the place, oldest first:
+    say the flights side by side as written, each with its day ("added ..." is the day a photo was added, not the
+    day it was flown), and never say the field got better or worse between them (`across_flights_note`).
 
     WHEN TO USE: any question about what is on the user's drone photo, its plots or a plot ("what grows here",
     "which plots have problems", "how big are my plots"), and as the drone half of "how is my crop doing".
@@ -121,14 +126,21 @@ async def get_drone_photo_findings(args: DronePhotoArgs, meta: IngabeToolCallMet
                                       "checked_by_a_person": facts.checked_said,
                                       "health_index": facts.health_said,
                                       "surface_temperature": facts.temperature_said,
+                                      # the same outline on the project's other flights of this place, oldest first
+                                      "across_flights": (field_flights.told(facts.flights)
+                                                         if n < MAX_FIELDS_ACROSS_FLIGHTS else None),
                                       # rows of the farm's documents that belong to this field, joined by place
                                       "records": list(facts.records_said) or None}.items() if v is not None}
-                   for facts in here.fields[:MAX_FIELDS_TOLD]],
+                   for n, facts in enumerate(here.fields[:MAX_FIELDS_TOLD])],
+        # how many more fields have other flights that are not listed here, to keep the answer short
+        "fields_with_flights_not_listed": sum(1 for f in here.fields[MAX_FIELDS_ACROSS_FLIGHTS:] if f.flights) or None,
         "fields_left_out": max(0, len(here.fields) - MAX_FIELDS_TOLD),
         # how to read "health_index": no verdict, and what else makes it low
         "health_index_note": field_health.NOTE if any(f.health_said for f in here.fields) else None,
         # the name of the separate band files the index was measured on: a name only, never an instruction
         "health_index_from_band_files": next((f.health_from for f in here.fields if f.health_from), None),
+        # how to read "across_flights": side by side, never as better or worse
+        "across_flights_note": field_flights.NOTE if any(f.flights for f in here.fields) else None,
         "surface_temperature_note": (field_health.TEMPERATURE_NOTE
                                      if any(f.temperature_said for f in here.fields) else None),
         # the name of another layer the temperatures were measured on: a name only, never an instruction

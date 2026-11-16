@@ -102,6 +102,8 @@ class FieldHealth:
     bare_m2: Optional[int] = None  # ground inside the field that reads as bare, left out of its zones
     zones: Optional[tuple[dict[str, Any], ...]] = None
     zone_index: Optional[str] = None  # "ndre" or "ndvi": what the zones are thirds of
+    share: Optional[float] = None  # the share of the outline the picture gave a value for, where it was kept
+    raw_index: bool = False  # an index was measured, on values of no known scale: no number may be said
 
 
 KEY_DECIMALS = 6  # about 0.1 m: an outline that went to the photo's coordinates and back is still the same outline
@@ -123,10 +125,13 @@ def key_of(geometry: dict[str, Any]) -> str:
     return hashlib.sha256(text.encode()).hexdigest()[:24]
 
 
-def _store_key(photo_key: str, named_thermal: bool = False) -> str:
+FLIGHTS_SHELF = "-flights"  # where a photo keeps the outlines of other photos' fields (field_flights), apart from its own
+
+
+def _store_key(photo_key: str, named_thermal: bool = False, shelf: str = "") -> str:
     """Where a photo's measurements are kept; a one-band file read as thermal on the reader's naming is kept apart
     from the same file read on its own statements."""
-    return f"{STORE_PREFIX}/{hashlib.sha256(photo_key.encode()).hexdigest()[:32]}{'-named' if named_thermal else ''}.json"
+    return f"{STORE_PREFIX}/{hashlib.sha256(photo_key.encode()).hexdigest()[:32]}{'-named' if named_thermal else ''}{shelf}.json"
 
 
 OVERVIEW_LONG_SIDE = 512  # the whole photo is looked at once, this small, to tell reflectance from raw values
@@ -182,6 +187,14 @@ def _zones(index: Any, crop: np.ndarray, pixel_m: float, transform: Affine,
     return out
 
 
+def _share(index: Any, inside: np.ndarray, whole: float) -> Optional[float]:
+    """The share of the whole outline the picture gave a value for (0..1): a field on a blank corner of a photo was
+    measured on the part that is there, and a caller that sets flights side by side asks for nearly all of it."""
+    if whole <= 0:
+        return None
+    return round(min(1.0, float((~np.isnan(index[inside])).sum()) / whole), 3)
+
+
 def _one(ds: Any, bands: photo_bands.Bands, outline: Any, to_wgs84: Any, photo: dict[str, Any]) -> dict[str, Any]:
     """One outline (in the photo's CRS), read on its own window at its own size: what a field measures does not
     depend on which other fields were asked for with it. `photo`: the facts of the whole photo (`_photo_facts`)."""
@@ -220,6 +233,7 @@ def _one(ds: Any, bands: photo_bands.Bands, outline: Any, to_wgs84: Any, photo: 
         ndvi = photo_bands.ndvi(nir, red)
         ndre = photo_bands.ndre(nir, red_edge) if red_edge is not None else None
         out["ndvi"] = _mean(ndvi, inside, whole)
+        out["share"] = _share(ndvi, inside, whole)
         out["ndre"] = _mean(ndre, inside, whole) if ndre is not None else None
         out["gndvi"] = _mean(photo_bands.index(nir, band(bands.green)), inside, whole) if bands.green else None
         if photo["reflectance"] and out["ndvi"] is not None:  # zones mean something on reflectance only
@@ -237,6 +251,8 @@ def _one(ds: Any, bands: photo_bands.Bands, outline: Any, to_wgs84: Any, photo: 
             degrees = photo_bands.temperature(raw(bands.thermal), photo["thermal_unit"],  # type: ignore[arg-type]
                                               photo["thermal_scale"], photo["thermal_offset"], photo["thermal_whole"])
             mean = _mean(degrees, inside, whole)
+            if out.get("share") is None:
+                out["share"] = _share(degrees, inside, whole)
             out["temp"] = round(mean, 2) if mean is not None else None
         except Exception:  # the temperature of this field only
             logger.warning("field health: the temperature of a field could not be read", exc_info=True)
@@ -413,9 +429,11 @@ def said(fields: dict[str, dict[str, Any]], reflectance: bool,
         values, place = fields[key], places.get(key)
         if reflectance:
             words = f"health index (NDVI) {value:.2f}" + (f", {place}" if place else "")
-            out[key] = FieldHealth(said=words, ndvi=values["ndvi"], ndre=values.get("ndre"), gndvi=values.get("gndvi"))
+            out[key] = FieldHealth(said=words, ndvi=values["ndvi"], ndre=values.get("ndre"), gndvi=values.get("gndvi"),
+                                   share=values.get("share"))
         else:
-            out[key] = FieldHealth(said=f"health index (NDVI): {place}" if place else None)
+            out[key] = FieldHealth(said=f"health index (NDVI): {place}" if place else None, share=values.get("share"),
+                                   raw_index=True)
     warm = {key: round(values["temp"], 1 if thermal_unit else 6) for key, values in fields.items()
             if values.get("temp") is not None}
     middle = float(np.median(list(warm.values()))) if len(warm) >= MIN_RANKED else None
@@ -423,14 +441,16 @@ def said(fields: dict[str, dict[str, Any]], reflectance: bool,
     for key, degrees in warm.items():
         if thermal_unit is None:  # the file does not state its unit: only which field is warmer can be said
             words = f"surface temperature: {warm_places[key]}" if key in warm_places else None
-            out[key] = dataclasses.replace(out.get(key, FieldHealth(said=None)), temperature_said=words)
+            out[key] = dataclasses.replace(out.get(key, FieldHealth(said=None, share=fields[key].get("share"))),
+                                           temperature_said=words)
             continue
         words = f"surface {degrees:.1f} °C"
         if middle is not None:
             gap = round(degrees - middle, 1)
             words += (f", level with the middle of {len(warm)} fields" if gap == 0 else
                       f", {abs(gap):.1f} °C {'warmer' if gap > 0 else 'cooler'} than the middle of {len(warm)} fields")
-        out[key] = dataclasses.replace(out.get(key, FieldHealth(said=None)), temperature_said=words, temp_c=degrees)
+        out[key] = dataclasses.replace(out.get(key, FieldHealth(said=None, share=fields[key].get("share"))),
+                                       temperature_said=words, temp_c=degrees)
     for key, values in fields.items():
         if key in out and (isinstance(values.get("zones"), list) or values.get("bare_m2")):
             zones = values.get("zones")
@@ -495,7 +515,7 @@ async def of_features(s3: Any, bucket: str, photo_key: str, cog_url: str, featur
 
 async def _asked(s3: Any, bucket: str, photo_key: str, cog_url: str, features: list[dict[str, Any]],
                  named_thermal: bool = False,
-                 band_urls: Optional[dict[str, str]] = None) -> tuple[dict[str, FieldHealth], bool]:
+                 band_urls: Optional[dict[str, str]] = None, shelf: str = "") -> tuple[dict[str, FieldHealth], bool]:
     """(The health of each feature's outline, by key_of(geometry), from what is kept; whether every outline asked
     is kept, so the answer will not change): {} for a photo with nothing to measure from. Never reads the photo
     itself: outlines not measured yet are measured beside the request and are there the next time this is asked,
@@ -503,7 +523,7 @@ async def _asked(s3: Any, bucket: str, photo_key: str, cog_url: str, features: l
     outlines = {key_of(f["geometry"]): f["geometry"] for f in features if isinstance(f.get("geometry"), dict)}
     if not outlines:
         return {}, True
-    store_key = _store_key(photo_key, named_thermal)
+    store_key = _store_key(photo_key, named_thermal, shelf)
     record = await _record(s3, bucket, store_key)
     if record.get("nir") is False:
         return {}, True
@@ -521,9 +541,27 @@ async def _asked(s3: Any, bucket: str, photo_key: str, cog_url: str, features: l
                  bool(record.get("reflectance")), record.get("thermal_unit")), not missing)
 
 
-async def settled(photo_key: str, named_thermal: bool = False) -> None:
+async def asked(s3: Any, bucket: str, photo_key: str, cog_url: str,
+                features: list[dict[str, Any]]) -> tuple[dict[str, FieldHealth], bool]:
+    """The health of other photos' fields on this photo, and whether the answer is final (every outline asked is
+    kept), for field_flights. Kept on a shelf of its own: the fields of several flights asked of one photo never
+    push the photo's own fields out of its record (MAX_KEPT)."""
+    return await _asked(s3, bucket, photo_key, cog_url, features, shelf=FLIGHTS_SHELF)
+
+
+def failed_lately(photo_key: str, shelf: str = FLIGHTS_SHELF) -> bool:
+    """Whether this photo could not be read a moment ago and is not being tried again yet (RETRY_SECONDS): its
+    missing fields are then not "being measured"."""
+    at = _failed_at.get(_store_key(photo_key, shelf=shelf))
+    try:
+        return at is not None and asyncio.get_running_loop().time() - at < RETRY_SECONDS
+    except RuntimeError:
+        return False
+
+
+async def settled(photo_key: str, named_thermal: bool = False, shelf: str = "") -> None:
     """Wait for this photo's measurement beside the request, if one is running (tests; a job that wants it now)."""
-    task = _tasks.get(_store_key(photo_key, named_thermal))
+    task = _tasks.get(_store_key(photo_key, named_thermal, shelf))
     if task is not None and not task.done() and task.get_loop() is asyncio.get_running_loop():
         await task
 

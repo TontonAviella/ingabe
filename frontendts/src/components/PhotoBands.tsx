@@ -7,8 +7,10 @@ const UNITS = [
   { id: 'kelvin', label: 'Kelvin' },
 ];
 
-/** The reader says which band is which, for a photo whose file does not: one tap on the camera's usual order, or
- * each band named by hand. Shown in place of the question cards, which cannot read such a photo. */
+/** For a photo whose file does not say which band is which. A farmer or an insurer is not asked about bands: they
+ * are told, in plain words, that the photo cannot be measured yet and who can settle it. The question itself is one
+ * step away, for the person who flew or processed the photo: one tap on the camera's usual order, or each band
+ * named by hand. Shown in place of the question cards, which cannot read such a photo. */
 export function PhotoBandsForm({ layerId, bands }: { layerId: string; bands: PhotoBands }) {
   const say = useSayPhotoBands(layerId);
   // Nothing is chosen for the reader: a wrong order gives numbers that look right, so the choice must be theirs.
@@ -17,6 +19,8 @@ export function PhotoBandsForm({ layerId, bands }: { layerId: string; bands: Pho
   const hand = order ?? Array<string>(bands.band_count).fill('other');
   const [unit, setUnit] = useState('');
   const working = bands.working || say.isPending;
+  // closed until someone says they know the file; it stays open after a failed save, so the error is seen
+  const [mine, setMine] = useState(false);
 
   if (working) {
     return (
@@ -24,6 +28,30 @@ export function PhotoBandsForm({ layerId, bands }: { layerId: string; bands: Pho
         Ingabe is writing the band names into its copy of the photo. This takes a few minutes for a large photo; the questions appear when
         it is done.
       </p>
+    );
+  }
+  if (!mine && !say.error) {
+    return (
+      <div className="flex flex-col gap-3 py-2">
+        <h3 className="m-0 text-[20px] font-bold leading-tight text-fg">This photo cannot be measured yet</h3>
+        <p className="m-0 text-[14px] leading-snug text-fg-soft">
+          It comes from a camera that sees more than the eye, and its file is missing one detail from whoever made it. You do not need to
+          know anything about it: the person who flew or processed the photo can add that detail here in a minute. Until then Ingabe shows
+          the picture and measures nothing from it, rather than guess.
+        </p>
+        {bands.failed && (
+          <p role="alert" className="m-0 text-[13px] text-caramel-hi">
+            The last try to add it did not work.
+          </p>
+        )}
+        <button
+          type="button"
+          className="self-start cursor-pointer rounded-full border border-white/15 px-4 py-2 text-[14px] font-semibold text-fg"
+          onClick={() => setMine(true)}
+        >
+          I flew or processed this photo
+        </button>
+      </div>
     );
   }
   return (

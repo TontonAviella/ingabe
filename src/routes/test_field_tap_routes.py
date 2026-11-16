@@ -481,3 +481,63 @@ async def test_an_uploaded_document_is_removed_for_good_with_its_links(client, p
     with pytest.raises(Exception):
         await s3.get_object(Bucket=bucket, Key=doc.file_key)
     assert (await client.delete(f"{base}/records/{doc.id}")).status_code == 404  # already gone
+
+
+@pytest.mark.anyio
+async def test_a_field_is_followed_on_the_other_flights_of_its_place_by_the_day_the_reader_gives(client, photo, taps_on,
+                                                                                                 monkeypatch):
+    from src.services import field_health
+
+    ids = await photo()
+    base = f"/api/layer/{ids['layer']}/field-taps"
+    _as(ids["owner"])
+    kept = (await client.post(f"{base}/kept", json=_json(_tap(60, 10), pick=0))).json()
+    first = (await client.get(base)).json()
+    assert first["flown_on"] is None and first["kept"][0]["facts"]["flights"] == []  # one photo: nothing about flights
+    # the day of the flight is the reader's to give; not a day to come, and not a viewer's to give
+    assert (await client.put(f"{base}/flown-on", json={"day": "2999-01-01"})).status_code == 422
+    assert (await client.put(f"{base}/flown-on", json={"day": "soon"})).status_code == 422
+    assert (await client.put(f"{base}/flown-on", json={"day": "2026-04-02"})).json() == {"flown_on": "2026-04-02"}
+    _as(VIEWER)
+    assert (await client.put(f"{base}/flown-on", json={"day": "2026-04-03"})).status_code == 403
+    _as(ids["owner"])
+    # another flight of the same ground in the project, and one of another place
+    ring = kept["geometry"]["coordinates"][0]
+    west, south = min(x for x, _ in ring) - 0.001, min(y for _, y in ring) - 0.001
+    east, north = max(x for x, _ in ring) + 0.001, max(y for _, y in ring) + 0.001
+    other, far = f"LO{RUN_TAG}{uuid.uuid4().hex[:4]}"[:12], f"LF{RUN_TAG}{uuid.uuid4().hex[:4]}"[:12]
+    conn = await _admin()
+    try:
+        await conn.execute("UPDATE map_layers SET bounds = $2 WHERE layer_id = $1", ids["layer"], [west, south, east, north])
+        for layer_id, name, bounds, flown in ((other, "march flight", [west, south, east, north], "2026-03-14"),
+                                              (far, "another farm", [west + 1, south, east + 1, north], "2026-03-01")):
+            await conn.execute(
+                "INSERT INTO map_layers (layer_id, owner_uuid, name, type, metadata, bounds, source_map_id) "
+                "VALUES ($1, $2::uuid, $3, 'raster', $4::jsonb, $5, $6)", layer_id, ids["owner"], name,
+                json.dumps({"cog_key": f"test/field_taps/{layer_id}.tif", "cog_status": "ready", "band_count": 5,
+                            "flown_on": flown}), bounds, ids["map"])
+        await conn.execute("UPDATE user_mundiai_maps SET layers = layers || $2::text[] WHERE id = $1", ids["map"], [other, far])
+
+        async def asked(s3, bucket, photo_key, cog_url, features):
+            assert photo_key == f"test/field_taps/{other}.tif"  # the other place is never opened
+            return {field_health.key_of(f["geometry"]): field_health.FieldHealth(
+                said="health index (NDVI) 0.45, lowest of 3 fields", ndvi=0.45, share=1.0) for f in features}, True
+
+        monkeypatch.setattr(field_health, "asked", asked)
+        state = (await client.get(base)).json()
+        assert state["flown_on"] == "2026-04-02" and state["flights_measuring"] is False and state["flights_note"]
+        assert state["photos_not_told_apart"] == 0
+        flights = state["kept"][0]["facts"]["flights"]
+        assert [(f["day_said"], f["this"], f["photo"]) for f in flights] == [
+            ("14 March 2026", False, "march flight"), ("2 April 2026", True, "farm photo")]
+        assert flights[0]["said"] == "health index (NDVI) 0.45"
+        # taking the day off: this photo goes by the day it was added, and says so
+        assert (await client.put(f"{base}/flown-on", json={"day": None})).json() == {"flown_on": None}
+        # ... and the other photo, added the same day, is no longer known to be another flight
+        after = (await client.get(base)).json()
+        assert after["kept"][0]["facts"]["flights"] == [] and after["photos_not_told_apart"] == 1
+        given = await conn.fetchval("SELECT metadata FROM map_layers WHERE layer_id = $1", ids["layer"])
+        assert "flown_on" not in json.loads(given) and "flown_on_by" not in json.loads(given)
+    finally:
+        await conn.execute("DELETE FROM map_layers WHERE layer_id = ANY($1::text[])", [other, far])
+        await conn.close()

@@ -23,6 +23,7 @@ from src.services import (
     record_links,
     field_checks,
     field_facts,
+    field_flights,
     field_health,
     photo_plots,
     reader_roles,
@@ -71,6 +72,26 @@ SELECT l.layer_id, l.name, l.metadata, l.bounds, l.created_on,
         WHERE s.project_id IN (SELECT s2.project_id FROM ({SHOWN_MAPS_SQL}) s2 WHERE $1 = ANY(s2.layers)))
  ORDER BY l.created_on DESC
  LIMIT 60
+"""
+
+# The other pictures of this layer's place in its projects (their shown maps only), newest first: the other flights a
+# field is followed across (field_flights). Three bands or more; one-band files are a flight's parts, not a flight.
+_FLIGHTS_HERE_SQL = f"""
+SELECT l.layer_id, l.name, l.metadata, l.bounds, l.created_on
+  FROM map_layers l
+ WHERE l.type = 'raster'
+   AND l.layer_id <> $1
+   AND l.bounds IS NOT NULL
+   AND l.bounds[1] < $4 AND l.bounds[3] > $2 AND l.bounds[2] < $5 AND l.bounds[4] > $3
+   AND l.metadata->>'cog_key' IS NOT NULL
+   AND l.metadata->>'cog_status' = 'ready'
+   AND COALESCE(l.metadata->>'crs_missing', 'false') <> 'true'
+   AND CASE WHEN (l.metadata->>'band_count') ~ '^[0-9]+$' THEN (l.metadata->>'band_count')::int >= 3 ELSE false END
+   AND l.layer_id IN (
+       SELECT unnest(s.layers) FROM ({SHOWN_MAPS_SQL}) s
+        WHERE s.project_id IN (SELECT s2.project_id FROM ({SHOWN_MAPS_SQL}) s2 WHERE $1 = ANY(s2.layers)))
+ ORDER BY l.created_on DESC
+ LIMIT 40
 """
 
 _PROJECT_SQL = """
@@ -136,6 +157,34 @@ async def one_band_photos_here(conn: Any, layer_id: str, bounds: Any,
                         "hours_from_photo": (float(row["hours_from_photo"])
                                              if row["hours_from_photo"] is not None else None)})
     return out
+
+
+async def flights_here(conn: Any, layer_id: str, bounds: Any,
+                       own_cog_key: Optional[str] = None) -> tuple[Any, list[dict[str, Any]]]:
+    """(When this layer was added, the project's other pictures over its place as `conn` may see them, newest
+    first: {"name", "metadata", "bounds", "uploaded", "bands"}). Copies of one stored photo are one photo, and a
+    copy of this very photo is not another flight. (None, []) when the layer has no bounds."""
+    if not bounds or len(bounds) != 4:
+        return None, []
+    west, south, east, north = bounds
+    own = await conn.fetchval("SELECT created_on FROM map_layers WHERE layer_id = $1", layer_id)
+    out: list[dict[str, Any]] = []
+    own_metadata = await conn.fetchval("SELECT metadata FROM map_layers WHERE layer_id = $1", layer_id)
+    own_metadata = json.loads(own_metadata) if isinstance(own_metadata, str) else dict(own_metadata or {})
+    # this photo, and the file a named-bands copy of it was made from, are not other flights
+    seen: set[Any] = {k for k in (own_cog_key, own_metadata.get("cog_key"), own_metadata.get("cog_key_before_names"),
+                                  own_metadata.get("upload_etag")) if k}
+    for row in await conn.fetch(_FLIGHTS_HERE_SQL, layer_id, west, south, east, north):
+        metadata = row["metadata"]
+        metadata = json.loads(metadata) if isinstance(metadata, str) else dict(metadata or {})
+        # a copy the reader named the bands of is still the same flight as the file it was made from
+        marks = [k for k in (metadata.get("cog_key"), metadata.get("cog_key_before_names"), metadata.get("upload_etag")) if k]
+        if not metadata.get("cog_key") or any(mark in seen for mark in marks):  # the same file added twice is one photo
+            continue
+        seen.update(marks)
+        out.append({"name": row["name"], "metadata": metadata, "bounds": list(row["bounds"] or []),
+                    "uploaded": row["created_on"], "bands": int(metadata.get("band_count") or 0)})
+    return own, out
 
 
 async def long_cog_url(s3: Any, bucket: str, metadata: dict[str, Any]) -> str:
@@ -262,6 +311,11 @@ async def load(s3: Any, bucket: str, *, layer_id: str, name: str, bounds: Any, m
             thermal_photos = await one_band_photos_here(conn, layer_id, analysis.bounds, metadata.get("cog_key"))
         except Exception:  # the cards still answer, without a temperature from another photo
             logger.exception("photo context: the thermal photos of layer %s's place could not be listed", layer_id)
+        added, other_flights = None, []
+        try:
+            added, other_flights = await flights_here(conn, layer_id, analysis.bounds, metadata.get("cog_key"))
+        except Exception:  # the cards still answer, each field on this photo alone
+            logger.exception("photo context: the other flights of layer %s's place could not be listed", layer_id)
     records = await farm_records.load_records(s3, bucket, project_id) if project_id else []
     plots, plot_map, map_error = await photo_plots.plots_from_chosen_map(
         s3, bucket, layer_id, metadata, user_id, url, maps)
@@ -310,8 +364,18 @@ async def load(s3: Any, bucket: str, *, layer_id: str, name: str, bounds: Any, m
                 health = await field_health.with_thermal(
                     s3, bucket, health, plots.geojson["features"], thermal_photos,
                     lambda companion: long_cog_url(s3, bucket, companion))
+            flights: dict[str, list[dict[str, Any]]] = {}
+            this_photo = {"name": name, "metadata": metadata, "uploaded": added}
+            apart, _ = field_flights.other_flights(this_photo, other_flights)
+            if apart:  # the same outlines on the other flights of this place
+                try:
+                    flights = await field_flights.of_features(
+                        s3, bucket, plots.geojson["features"], apart,
+                        lambda companion: long_cog_url(s3, bucket, companion))
+                except Exception:
+                    logger.exception("photo context: the other flights could not be read for layer %s", layer_id)
             fields = await field_facts.of_plots(s3, bucket, photo_plots.photo_key(metadata), layer_id, plots,
-                                                record_links.by_field(linked), health)
+                                                record_links.by_field(linked), health, flights, this_photo)
             of_outlined = field_facts.outlined(plots)
             zoned = [(f["properties"]["number"],
                       field_facts.name(f["properties"]["number"], of_outlined, field_facts.own_name(f["properties"])),
