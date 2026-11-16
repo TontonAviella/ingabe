@@ -10,6 +10,11 @@ greenness worked out from the wrong two bands is a wrong number that looks right
 
 The health indices the extra bands allow are here too, one formula each:
 NDVI = (NIR - Red) / (NIR + Red), NDRE = (NIR - RedEdge) / (NIR + RedEdge).
+
+A thermal band is different in kind: it does not record sunlight thrown back but the heat the surface itself
+gives off (8 to 14 micrometres), which a radiometric camera turns into a temperature. Its values come in three
+scales that cannot be mistaken for each other on the ground: degrees Celsius, kelvin, and hundredths of a kelvin
+(`celsius`). A thermal picture saved as colours (a palette image) holds no temperature and is not a thermal band.
 """
 
 from __future__ import annotations
@@ -24,11 +29,14 @@ COLOUR = "colour"
 MULTISPECTRAL = "multispectral"
 UNKNOWN = "unknown"
 
-ROLES = ("red", "green", "blue", "red_edge", "nir")
+ROLES = ("red", "green", "blue", "red_edge", "nir", "thermal")
 
 # Centre wavelengths (nm) the cameras in use put their bands at; gaps between ranges stay unnamed.
 _WAVELENGTHS = (((430, 510), "blue"), ((520, 590), "green"), ((620, 690), "red"),
                 ((700, 760), "red_edge"), ((770, 900), "nir"))
+_THERMAL_NM = (8000, 14000)
+_LONG_NM = re.compile(r"(?<![\d.])(\d{4,5})(?:\.\d+)?\s*nm")  # 11000 nm
+_UM = re.compile(r"(?<![\d.])(\d{1,2}(?:\.\d+)?)\s*(?:um|µm|μm|micron)")  # 11 um, 10.5 µm
 _NM = re.compile(r"(?<![\d.])(\d{3})(?:\.\d+)?\s*nm")  # 842 nm, never the 550 inside 1550 nm
 # Whole-description names, after lower-casing and dropping everything but letters and digits
 # ("B1" or "NIR2" is no name we know, so it names nothing).
@@ -36,6 +44,8 @@ _NAMES = {
     "nir": "nir", "nearinfrared": "nir", "nearir": "nir", "infrared": "nir",
     "rededge": "red_edge", "re": "red_edge",
     "red": "red", "r": "red", "green": "green", "g": "green", "blue": "blue", "b": "blue",
+    "thermal": "thermal", "lwir": "thermal", "tir": "thermal", "thermalinfrared": "thermal",
+    "longwaveinfrared": "thermal", "temperature": "thermal",
 }
 
 
@@ -52,6 +62,7 @@ class Bands:
     blue: Optional[int] = 3
     red_edge: Optional[int] = None
     nir: Optional[int] = None
+    thermal: Optional[int] = None
     eight_bit: bool = True  # the bands hold 0 to 255, as a picture does
 
     @property
@@ -77,6 +88,10 @@ def _role_of_name(description: Optional[str]) -> Optional[str]:
     if not description:
         return None
     text = description.lower()
+    long_nm, um = _LONG_NM.search(text), _UM.search(text)
+    if long_nm or um:  # a wavelength beyond what sunlight cameras see
+        wavelength_nm = int(long_nm.group(1)) if long_nm else float(um.group(1)) * 1000  # type: ignore[union-attr]
+        return "thermal" if _THERMAL_NM[0] <= wavelength_nm <= _THERMAL_NM[1] else None
     nm = _NM.search(text)
     if nm:
         wavelength = int(nm.group(1))
@@ -124,16 +139,19 @@ def roles(descriptions: Any, interps: Any, count: int, dtypes: Any = ()) -> Band
         if clash or "red" not in said:
             return unknown
         found = {role: said.get(role) for role in ROLES}
-        return Bands(kind=MULTISPECTRAL, eight_bit=eight_bit([n for n in found.values() if n]), **found)
+        picture = [n for role, n in found.items() if n and role != "thermal"]
+        return Bands(kind=MULTISPECTRAL, eight_bit=eight_bit(picture), **found)
     if count >= 5 or count < 3:  # too many bands for a colour photo and no extra one described, or too few
         return unknown
     named = {**stamped, **said}
     if not clash and {"red", "green", "blue"} <= named.keys():  # a colour photo that says its own order
         order = [named["red"], named["green"], named["blue"]]
-        return Bands(kind=COLOUR, red=order[0], green=order[1], blue=order[2], eight_bit=eight_bit(order))
+        return Bands(kind=COLOUR, red=order[0], green=order[1], blue=order[2], eight_bit=eight_bit(order),
+                     thermal=said.get("thermal"))
     if not eight_bit([1, 2, 3]):  # not an ordinary picture, and it does not say what its bands are
         return unknown
-    return Bands()  # an ordinary colour photo: red, green, blue, then transparency
+    thermal = said.get("thermal") if not clash and said.get("thermal", 0) > 3 else None
+    return Bands(thermal=thermal)  # an ordinary colour photo: red, green, blue, then transparency or a described extra
 
 
 def of(ds: Any) -> Bands:
@@ -171,3 +189,27 @@ def ndvi(nir: Any, red: Any) -> Any:
 
 def ndre(nir: Any, red_edge: Any) -> Any:
     return index(nir, red_edge)
+
+
+CELSIUS, KELVIN, CENTIKELVIN = "degrees Celsius", "kelvin", "hundredths of a kelvin"
+# Where the middle value of a thermal band over land can lie, per scale. The three ranges do not touch, so the
+# scale is read from the values, and values in none of them are in no scale we know.
+_SCALES = ((CELSIUS, -40.0, 90.0), (KELVIN, 230.0, 365.0), (CENTIKELVIN, 23000.0, 36500.0))
+
+
+def celsius(band: Any) -> tuple[Optional[Any], Optional[str]]:
+    """(the band in degrees Celsius as a float array with NaN where empty, the scale it was stored in), or
+    (None, None) when its values are in no temperature scale we know: such a band has no temperature to say."""
+    data = np.ma.filled(np.ma.asarray(band, dtype="float32"), np.nan)
+    values = data[np.isfinite(data)]
+    if values.size == 0:
+        return None, None
+    middle = float(np.median(values))
+    for scale, low, high in _SCALES:
+        if low <= middle <= high:
+            if scale == KELVIN:
+                data = data - 273.15
+            elif scale == CENTIKELVIN:
+                data = data / 100.0 - 273.15
+            return np.where((data < -60) | (data > 120), np.nan, data), scale  # a dead pixel is no temperature
+    return None, None

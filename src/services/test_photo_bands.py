@@ -187,3 +187,32 @@ def test_camera_card_states_the_measured_index(tmp_path):
     assert "NDVI" in answer["what"] and "0.67" in answer["what"]
     assert {"label": "NDRE across the photo", "value": "0.20"} in answer["facts"]
     assert "not built yet" in answer["todo"]
+
+
+@pytest.mark.parametrize("name", ["LWIR", "Thermal", "Thermal Infrared", "TIR", "Band 6 (11000 nm)", "11 um", "10.5 µm"])
+def test_thermal_band_is_named(name):
+    bands = photo_bands.roles(["Blue", "Green", "Red", "RedEdge", "NIR", name], [], 6, ["uint16"] * 6)
+    assert bands.thermal == 6 and bands.nir == 5 and bands.kind == photo_bands.MULTISPECTRAL
+
+
+def test_short_wave_infrared_is_not_thermal():
+    assert photo_bands.roles(["Blue", "Green", "Red", "RedEdge", "NIR", "2200 nm"], [], 6).thermal is None
+    assert photo_bands.roles(["Blue", "Green", "Red", "RedEdge", "NIR", "1.6 um"], [], 6).thermal is None
+
+
+def test_colour_photo_with_a_described_thermal_band():
+    bands = photo_bands.roles([None, None, None, "Thermal"], [], 4)
+    assert bands.kind == photo_bands.COLOUR and bands.rgb == [1, 2, 3] and bands.thermal == 4
+    assert photo_bands.roles(["Thermal", None, None], [], 3).thermal is None  # one of the picture's own three
+
+
+@pytest.mark.parametrize("stored, scale", [([24.0, 31.5], photo_bands.CELSIUS), ([297.15, 304.65], photo_bands.KELVIN),
+                                           ([29715, 30465], photo_bands.CENTIKELVIN)])
+def test_temperature_scale_is_read_from_the_values(stored, scale):
+    degrees, how = photo_bands.celsius(np.array(stored, dtype="float32"))
+    assert how == scale and degrees == pytest.approx([24.0, 31.5], abs=0.01)
+
+
+def test_values_in_no_temperature_scale_say_nothing():
+    assert photo_bands.celsius(np.array([120, 200], dtype="uint8")) == (None, None)  # a picture of colours
+    assert photo_bands.celsius(np.ma.masked_all((2, 2))) == (None, None)

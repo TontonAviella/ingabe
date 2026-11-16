@@ -77,15 +77,36 @@ def test_raw_camera_values_get_a_place_and_no_number():
 
 def test_two_fields_are_too_few_for_a_place():
     out = field_health.said({"a": {"ndvi": 0.60}, "b": {"ndvi": 0.71}}, reflectance=True)
+    assert key_is_stable()
     assert out["a"].said == "health index (NDVI) 0.60"
     assert field_health.said({"a": {"ndvi": 0.60}, "b": {"ndvi": 0.71}}, reflectance=False)["a"].said is None
 
 
-@pytest.mark.parametrize("rank, total, words", [(1, 15, "lowest of 15 fields"), (3, 15, "3rd lowest of 15 fields"),
-                                                (11, 15, "11th lowest of 15 fields"), (12, 15, "12th lowest of 15 fields"),
-                                                (22, 30, "22nd lowest of 30 fields"), (15, 15, "highest of 15 fields")])
-def test_place_words(rank, total, words):
-    assert field_health._place(rank, total) == words
+def key_is_stable() -> bool:
+    """An outline that went through coordinates and back (a difference far below a millimetre) keeps its key."""
+    a = {"type": "Polygon", "coordinates": [[[30.4269721234, -1.6967691234], [30.4279, -1.6967], [30.4279, -1.6977],
+                                             [30.4269721234, -1.6967691234]]]}
+    b = {"type": "Polygon", "coordinates": [[[30.4269721234 + 1e-10, -1.6967691234 - 1e-10], [30.4279, -1.6967],
+                                             [30.4279, -1.6977], [30.4269721234 + 1e-10, -1.6967691234 - 1e-10]]]}
+    moved = {"type": "Polygon", "coordinates": [[[30.42698, -1.6967691234], [30.4279, -1.6967], [30.4279, -1.6977],
+                                                 [30.42698, -1.6967691234]]]}
+    return field_health.key_of(a) == field_health.key_of(b) != field_health.key_of(moved)
+
+
+def test_fields_that_show_the_same_index_share_a_place():
+    fields = {"a": {"ndvi": 0.601}, "b": {"ndvi": 0.604}, "c": {"ndvi": 0.71}, "d": {"ndvi": 0.80}}
+    out = field_health.said(fields, reflectance=True)
+    assert out["a"].said == out["b"].said == "health index (NDVI) 0.60, lowest of 4 fields, level with another"
+    assert out["c"].said == "health index (NDVI) 0.71, 3rd lowest of 4 fields"
+    same = field_health.said({k: {"ndvi": 0.5} for k in "abc"}, reflectance=False)
+    assert same["a"].said is None  # every field level: no place to say, and no number on raw values
+
+
+@pytest.mark.parametrize("below, above, total, words", [(0, 14, 15, "lowest of 15 fields"), (2, 12, 15, "3rd lowest of 15 fields"),
+                                                        (10, 4, 15, "11th lowest of 15 fields"), (11, 3, 15, "12th lowest of 15 fields"),
+                                                        (21, 8, 30, "22nd lowest of 30 fields"), (14, 0, 15, "highest of 15 fields")])
+def test_place_words(below, above, total, words):
+    assert field_health._place(below, above, False, total) == words
 
 
 class _Store:
@@ -119,36 +140,65 @@ class _Store:
         self.objects[Key], self.puts = Body, self.puts + 1
 
 
-def test_measured_once_then_read(tmp_path, monkeypatch):
+def _ask(store, key, path, features):
+    """One ask, then wait for the measurement it started beside it."""
+    async def run():
+        out = await field_health.of_features(store, "b", key, path, features)
+        await field_health.settled(key)
+        return out
+    return asyncio.run(run())
+
+
+def test_first_ask_starts_the_measurement_and_the_next_reads_it(tmp_path, monkeypatch):
     path = _photo(tmp_path / "ms.tif", [0.20, 0.30, 0.45, 0.45])
     store = _Store()
     features = [{"geometry": _field(c)} for c in range(3)]
-    first = asyncio.run(field_health.of_features(store, "b", "photo-1", path, features))
-    assert first[field_health.key_of(features[0]["geometry"])].said == "health index (NDVI) 0.60, lowest of 3 fields"
+    assert _ask(store, "photo-1", path, features) == {}  # nobody waits for the photo to be read
     monkeypatch.setattr(field_health, "measure", lambda *a: pytest.fail("measured twice"))
-    again = asyncio.run(field_health.of_features(store, "b", "photo-1", "unused", features))
-    assert again == first and store.puts == 1
+    again = _ask(store, "photo-1", "unused", features)
+    assert again[field_health.key_of(features[0]["geometry"])].said == "health index (NDVI) 0.60, lowest of 3 fields"
+    assert store.puts == 1
 
 
 def test_only_new_outlines_are_measured(tmp_path, monkeypatch):
     path = _photo(tmp_path / "ms.tif", [0.20, 0.30, 0.45, 0.45])
     store = _Store()
     features = [{"geometry": _field(c)} for c in range(4)]
-    asyncio.run(field_health.of_features(store, "b", "photo-2", path, features[:3]))
+    _ask(store, "photo-2", path, features[:3])
     asked = []
     real = field_health.measure
     monkeypatch.setattr(field_health, "measure", lambda url, outlines: asked.append(len(outlines)) or real(url, outlines))
-    out = asyncio.run(field_health.of_features(store, "b", "photo-2", path, features))
-    assert asked == [1] and len(out) == 4
+    assert len(_ask(store, "photo-2", path, features)) == 3  # the three kept; the fourth is being measured
+    assert asked == [1] and len(_ask(store, "photo-2", path, features)) == 4
 
 
-def test_colour_photo_is_asked_once(tmp_path, monkeypatch):
+def test_colour_photo_is_opened_once(tmp_path, monkeypatch):
     path = _photo(tmp_path / "rgb.tif", [60, 60, 60, 60], dtype="uint8", names=None)
     store = _Store()
     features = [{"geometry": _field(0)}]
-    assert asyncio.run(field_health.of_features(store, "b", "photo-3", path, features)) == {}
+    assert _ask(store, "photo-3", path, features) == {}
     monkeypatch.setattr(field_health, "measure", lambda *a: pytest.fail("a colour photo was opened again"))
-    assert asyncio.run(field_health.of_features(store, "b", "photo-3", path, features)) == {}
+    assert _ask(store, "photo-3", path, features) == {}
+
+
+def test_a_photo_that_cannot_be_read_is_not_tried_on_every_ask(tmp_path, monkeypatch):
+    store, calls = _Store(), []
+    features = [{"geometry": _field(0)}]
+
+    def broken(*_):
+        calls.append(1)
+        raise OSError("the photo could not be opened")
+
+    monkeypatch.setattr(field_health, "measure", broken)
+
+    async def run():
+        for _ in range(3):
+            assert await field_health.of_features(store, "b", "photo-4", "missing.tif", features) == {}
+            await field_health.settled("photo-4")
+
+    asyncio.run(run())
+    assert calls == [1] and store.puts == 0  # nothing wrong is kept, and it waits before trying again
+    field_health._failed_at.pop("photo-4", None)
 
 
 def test_a_field_says_its_health_in_its_one_line():

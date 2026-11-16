@@ -158,6 +158,7 @@ async def _with_facts(rows: list[dict[str, Any]], s3: Any, bucket: str, key: str
     return [{**row, "facts": {"name": known[row["id"]].name, "area_said": known[row["id"]].area_said, "plants_said": known[row["id"]].plants_said,
                               "checked_said": known[row["id"]].checked_said,
                               "health_said": known[row["id"]].health_said,
+                              "health_note": field_health.SHORT_NOTE if known[row["id"]].health_said else None,
                               "records_said": list(known[row["id"]].records_said)}} if row["id"] in known else row
             for row in rows]
 

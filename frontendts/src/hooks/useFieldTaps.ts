@@ -43,6 +43,7 @@ export interface KeptOutline {
     plants_said: string | null;
     checked_said: string | null;
     health_said?: string | null;
+    health_note?: string | null;
     records_said?: string[];
   };
 }
