@@ -156,6 +156,7 @@ import { addScale } from '@/lib/mapScale';
 import { createAnalyticsTurnId, track, trackDuration, trackError } from '../lib/analytics';
 import type { ErrorEntry, UploadingFile } from '../lib/frontend-types';
 import { isServerTileFailure, reportMapHealth, stopWatchingGraphics, watchGraphics } from '../lib/mapHealth';
+import { isConnectionFailure, NO_CONNECTION, serverFailureMessage } from '../lib/mapLoadError';
 import type {
   Conversation,
   EphemeralAction,
@@ -1050,6 +1051,17 @@ export default function MapLibreMap({
         if (!(e.error instanceof AJAXError)) reportMapHealth('map_error');
         else if (isServerTileFailure(e.error.status)) reportMapHealth('tile_error');
 
+        // No answer at all is the connection, not the map: one quiet line, however many tiles fail, taken away
+        // when the map loads again. (Each tile's message holds its own address, so they were never "the same
+        // error" and a weak connection covered the screen with one card per tile.)
+        if (isConnectionFailure(e.error instanceof AJAXError ? e.error.status : undefined, e.error?.message)) {
+          const lostId = (e as any).sourceId;
+          if (typeof lostId === 'string') lostSourcesRef.current.add(lostId);
+          addError(NO_CONNECTION, true);
+          watchForConnectionRef.current();
+          return;
+        }
+
         if (e.error instanceof AJAXError) {
           // 401 on tile requests = the sign-in session ended (tile requests carry
           // the session cookie). Say so instead of a confusing "Token expired".
@@ -1126,7 +1138,10 @@ export default function MapLibreMap({
               map_id: mapId,
               http_status: e.error.status,
             });
-            addError('Error loading map data: ' + e.error.message, true);
+            // a background map's tile (Esri, OSM, CARTO): a gap in someone else's map is not ours to report
+            const sourceId = 'sourceId' in e && typeof e.sourceId === 'string' ? e.sourceId : undefined;
+            if (sourceId && BASEMAP_SOURCE_IDS.has(sourceId)) return;
+            addError(serverFailureMessage(e.error.status), true, sourceId);
           }
         } else {
           // Non-AJAXError path: MapLibre often emits plain Error for tile requests.
@@ -1285,6 +1300,55 @@ export default function MapLibreMap({
   const styleUpdateCounterRef = useRef(0);
   const prevStyleActionCountRef = useRef(0);
   const lastPresignedRefreshRef = useRef<number | null>(null);
+
+  // A dropped connection: said once (NO_CONNECTION). While it lasts the server is asked every few seconds whether
+  // it answers; when it does the line is taken away and the map sources that lost tiles are loaded afresh, so
+  // nobody has to move the map to fill the holes. (Not map.refreshTiles nor source.setTiles: both make MapLibre
+  // 5.18 reload a failed tile in place, it is then drawn before it has a picture and every frame throws
+  // "Cannot read properties of undefined (reading 'bind')", seen in the browser test 2026-11-17.)
+  const lostSourcesRef = useRef(new Set<string>());
+  const connectionTimerRef = useRef<number | null>(null);
+  const errorsRef = useRef(errors);
+  errorsRef.current = errors;
+  const watchForConnectionRef = useRef<() => void>(() => undefined);
+  watchForConnectionRef.current = () => {
+    if (connectionTimerRef.current !== null) return;
+    const stop = () => {
+      if (connectionTimerRef.current !== null) window.clearInterval(connectionTimerRef.current);
+      connectionTimerRef.current = null;
+    };
+    const ask = async () => {
+      try {
+        const answer = await fetch('/healthz', { cache: 'no-store' });
+        if (!answer.ok) return;
+      } catch {
+        return; // still no connection
+      }
+      if (connectionTimerRef.current === null) return; // already handled, or the map is gone
+      stop();
+      for (const error of errorsRef.current) if (error.message === NO_CONNECTION) dismissError(error.id);
+      const map = mapRef.current;
+      const lost = [...lostSourcesRef.current];
+      lostSourcesRef.current.clear();
+      if (!map?.style) return;
+      // Each source that lost tiles forgets the tiles it holds and asks for them again as new ones.
+      for (const sourceId of lost) map.style.tileManagers[sourceId]?.clearTiles();
+      if (lost.length > 0) map.resize(); // the map then looks again at which tiles it needs
+    };
+    connectionTimerRef.current = window.setInterval(ask, 5000);
+    connectionAskRef.current = ask;
+  };
+  const connectionAskRef = useRef<() => void>(() => undefined);
+  useEffect(() => {
+    // the browser says it is online again: ask at once instead of waiting for the next turn
+    const onOnline = () => connectionAskRef.current();
+    window.addEventListener('online', onOnline);
+    return () => {
+      window.removeEventListener('online', onOnline);
+      if (connectionTimerRef.current !== null) window.clearInterval(connectionTimerRef.current);
+      connectionTimerRef.current = null;
+    };
+  }, []);
   const [presignedRefreshTrigger, setPresignedRefreshTrigger] = useState(0);
   const styleUpdateCounter = useMemo(() => {
     const currentCount = activeActions.filter((a) => a.updates.style_json).length;

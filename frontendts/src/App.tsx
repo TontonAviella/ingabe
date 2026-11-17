@@ -133,7 +133,7 @@ function OfflineBanner() {
   }, []);
   if (!isOffline) return null;
   return (
-    <div className="fixed top-0 left-0 right-0 z-[9999] bg-destructive text-destructive-foreground text-center py-2 text-sm font-medium">
+    <div className="pointer-events-none fixed top-0 left-0 right-0 z-[9999] bg-destructive text-destructive-foreground text-center py-2 text-sm font-medium">
       You are offline. Some features may be unavailable.
     </div>
   );
