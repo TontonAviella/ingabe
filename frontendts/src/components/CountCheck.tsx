@@ -1,5 +1,6 @@
 import type { GeoJSONSource, MapMouseEvent, Map as MLMap } from 'maplibre-gl';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { drawerPadding } from '@/components/MapDrawer';
 import {
   type CheckedSquare,
   type CountChecked,
@@ -191,7 +192,11 @@ export function CountCheck({
         [Math.min(...lons), Math.min(...lats)],
         [Math.max(...lons), Math.max(...lats)],
       ],
-      { padding: { top: 70, bottom: Math.max(260, Math.round(tall * 0.55)), left: 40, right: 40 }, maxZoom: 23, duration: 600 },
+      {
+        padding: drawerPadding() ?? { top: 70, bottom: Math.max(260, Math.round(tall * 0.55)), left: 40, right: 40 },
+        maxZoom: 23,
+        duration: 600,
+      },
     );
   }, [map, shown]);
 

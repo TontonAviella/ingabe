@@ -23,7 +23,7 @@ import type { MapLayer } from '@/lib/types';
 import { CountCheck } from './CountCheck';
 import { FieldFlights } from './FieldFlights';
 import { FieldRecords } from './FieldRecords';
-import { useInDrawer } from './MapDrawer';
+import { drawerPadding, useInDrawer } from './MapDrawer';
 import { MyCrop } from './MyCrop';
 
 // Tap a field on a prepared drone photo: up to three outlines come back, the reader picks one, may correct it
@@ -91,8 +91,6 @@ function features(
   ring: Corner[] | null = null,
   moving = false,
   selected: string | null = null,
-  /** The picked field carries its name on the map, where its details are no longer beside it (the one drawer). */
-  named = false,
 ): GeoJSON.FeatureCollection {
   const out: GeoJSON.Feature[] = kept.flatMap((k) => [
     {
@@ -103,7 +101,7 @@ function features(
     {
       type: 'Feature' as const,
       geometry: { type: 'Point' as const, coordinates: k.centre },
-      properties: { kind: 'label', label: named && k.id === selected ? (k.facts?.name ?? fieldName(k)) : String(k.number) },
+      properties: { kind: 'label', label: String(k.number) },
     },
   ]);
   const step = steps.at(-1);
@@ -262,9 +260,7 @@ export function FieldTaps({
   const checked = useCountChecked(layerId, selected?.id ?? null);
   const client = useQueryClient();
   const shown =
-    mode === 'off'
-      ? features([], null, kept, null, false, selected?.id ?? null, inDrawer)
-      : features(steps, pick, kept, ring, mode === 'move');
+    mode === 'off' ? features([], null, kept, null, false, selected?.id ?? null) : features(steps, pick, kept, ring, mode === 'move');
   useDrawn(map, prepared ? shown : EMPTY);
 
   const startAgain = useCallback((next: Mode) => {
@@ -870,7 +866,8 @@ export function FieldTaps({
                   setNaming(null);
                   setListed(false);
                   // the field lands above this panel, not under it
-                  map?.easeTo({ center: k.centre, offset: [0, -140] });
+                  const room = drawerPadding();
+                  map?.easeTo({ center: k.centre, offset: room ? [0, (room.top - room.bottom) / 2] : [0, -140] });
                 }}
               >
                 {k.facts?.name ?? fieldName(k)} · {ha(k.area_ha)}

@@ -224,7 +224,7 @@ export function SageReply({
       aria-live="polite"
       className={
         inDrawer
-          ? 'flex w-full shrink-0 flex-col overflow-hidden rounded-[18px] border border-white/[0.08] bg-panel text-fg'
+          ? 'order-1 flex w-full shrink-0 flex-col overflow-hidden rounded-[18px] border border-white/[0.08] bg-panel text-fg'
           : `z-30 absolute bottom-[100px] left-1/2 ${centered ? '' : 'xl:left-3/5'} -translate-x-1/2 w-[calc(100%-1rem)] sm:w-4/5 max-w-[34rem] flex flex-col overflow-hidden rounded-[22px] border border-white/[0.08] bg-panel/95 text-fg shadow-[0_18px_48px_rgba(0,0,0,0.5)] backdrop-blur-xl`
       }
       style={{ fontFamily: "-apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Helvetica Neue', system-ui, sans-serif" }}

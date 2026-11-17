@@ -51,4 +51,59 @@ test.describe('One drawer for the map tools', () => {
     await testInfo.attach('drawer-closed', { path: closedPicture, contentType: 'image/png' });
     expect(pageErrors).toHaveLength(0);
   });
+  test('while a field is outlined, what is drawn on the map for reading steps aside', async ({ page }) => {
+    await page.goto(`/project/${PROJECT}?drawer=1`);
+    const drawer = page.getByTestId('map-drawer');
+    await drawer.getByRole('navigation', { name: 'Map tools' }).getByRole('button', { name: 'Fields' }).click({ timeout: 30_000 });
+    const onMap = page.getByTestId('map-panels');
+    await expect(onMap).toHaveClass(/contents/);
+    await drawer.getByRole('button', { name: 'Outline a field' }).click({ timeout: 30_000 });
+    // a tap must reach the photo: legends and close-look bubbles are put away, as they were before the drawer
+    await expect(onMap).toHaveClass(/hidden/);
+    await expect(drawer.getByText('Tap inside the field.')).toBeVisible();
+    await drawer.getByRole('button', { name: 'Close', exact: true }).click();
+    await expect(onMap).toHaveClass(/contents/);
+  });
+
+  test('a closed drawer stays closed after a reload', async ({ page }) => {
+    await page.goto(`/project/${PROJECT}?drawer=1`);
+    const drawer = page.getByTestId('map-drawer');
+    const tools = drawer.getByRole('navigation', { name: 'Map tools' });
+    await tools.getByRole('button', { name: 'Layers' }).click({ timeout: 30_000 });
+    // whichever way it started, end with the drawer closed
+    if (await drawer.getByRole('button', { name: 'Close the drawer' }).isVisible()) {
+      await drawer.getByRole('button', { name: 'Close the drawer' }).click();
+    }
+    await expect(drawer.getByRole('button', { name: 'Close the drawer' })).toBeHidden();
+    await page.reload();
+    await expect(tools).toBeVisible({ timeout: 30_000 });
+    await expect(drawer.getByRole('button', { name: 'Close the drawer' })).toBeHidden();
+    // and the switch is kept without the address saying so again
+    expect(new URL(page.url()).searchParams.get('drawer')).toBe('1');
+  });
+});
+
+test.describe('One drawer on a narrow screen', () => {
+  test.use({ viewport: { width: 390, height: 780 } });
+
+  test('the tools are a bar along the bottom and the field is read in a sheet above it', async ({ page }, testInfo) => {
+    await page.goto(`/project/${PROJECT}?drawer=1`);
+    const drawer = page.getByTestId('map-drawer');
+    const tools = drawer.getByRole('navigation', { name: 'Map tools' });
+    await expect(tools).toBeVisible({ timeout: 30_000 });
+    const bar = await tools.boundingBox();
+    expect(bar && bar.y + bar.height >= 770 && bar.width >= 380).toBe(true);
+
+    await tools.getByRole('button', { name: 'Fields' }).click();
+    await drawer.getByRole('button', { name: /1 field outlined · show/ }).click({ timeout: 30_000 });
+    await drawer.getByRole('button', { name: /Field 1 · 0\.36 ha/ }).click();
+    await expect(drawer.getByText('This field on each flight')).toBeVisible();
+    // the sheet takes at most half the screen (and the bar): the upper half of the map stays free
+    const sheet = await drawer.boundingBox();
+    expect(sheet && sheet.y >= 780 * 0.4).toBe(true);
+
+    const picture = testInfo.outputPath('drawer-phone.png');
+    await page.screenshot({ path: picture });
+    await testInfo.attach('drawer-phone', { path: picture, contentType: 'image/png' });
+  });
 });

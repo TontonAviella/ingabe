@@ -352,6 +352,9 @@ export default function MapLibreMap({
     }
   };
   const mapClear = !oneDrawer && (panelsHidden || tappingField);
+  // With the one drawer the tools are beside the map, but what is drawn ON the map for reading (legends, close-look
+  // bubbles, the place names) still steps aside while a field is being outlined, as before: a tap must reach the photo.
+  const mapQuiet = mapClear || (oneDrawer && tappingField);
   const [isMapReady, setIsMapReady] = useState(false);
   // The drawer opens and closes beside the map, so the map's box changes width with no window resize: the map
   // is told, or it would keep drawing at its old size.
@@ -1790,9 +1793,9 @@ export default function MapLibreMap({
       {oneDrawer && <MapDrawer drawer={drawer} />}
       <div className={`relative map-container ${className} grow min-w-0 max-h-screen`} style={{ width, height }}>
         <div ref={mapContainerRef} style={{ width: '100%', height: '100%', minHeight: '100vh' }} className="bg-slate-950" />
-        <AdminLevelsOverlay key={`admin-${mapInstanceId}`} map={mapRef.current} projectId={project.id} quiet={mapClear} />
+        <AdminLevelsOverlay key={`admin-${mapInstanceId}`} map={mapRef.current} projectId={project.id} quiet={mapQuiet} />
         {/* put away, not unmounted: an open card or legend is as it was when the panels come back */}
-        <div className={mapClear ? 'hidden' : 'contents'} data-testid="map-panels">
+        <div className={mapQuiet ? 'hidden' : 'contents'} data-testid="map-panels">
           <MapLegends key={mapInstanceId} map={mapRef.current} />
           <ToolSlot tool="questions">
             <DroneCards
@@ -1824,6 +1827,30 @@ export default function MapLibreMap({
             hiddenLayerIDs={hiddenLayerIDs}
           />
         </div>
+        {/* With the one drawer Sage's side may be closed: what went wrong is still said on the map, where it
+            always was (at the top on a narrow screen, clear of the sheet). */}
+        {oneDrawer && criticalErrors.length > 0 && (
+          <div
+            role="alert"
+            className="absolute bottom-10 left-1/2 z-30 flex w-[min(92%,34rem)] -translate-x-1/2 flex-col gap-1.5 max-lg:top-16 max-lg:bottom-auto"
+          >
+            {criticalErrors.map((error) => (
+              <div
+                key={error.id}
+                className="flex items-start justify-between gap-3 rounded-[14px] border border-[#C2410C]/40 bg-panel px-3 py-2 shadow-lg"
+              >
+                <span className="text-[14px] leading-snug text-[#F3C9B4]">{error.message}</span>
+                <button
+                  type="button"
+                  onClick={() => dismissError(error.id)}
+                  className="shrink-0 cursor-pointer text-[12px] font-semibold text-caramel-hi hover:underline"
+                >
+                  Dismiss
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
         {!oneDrawer && !tappingField && (
           <button
             type="button"
@@ -2064,7 +2091,7 @@ export default function MapLibreMap({
         <div
           className={
             oneDrawer
-              ? 'min-h-0'
+              ? 'order-2 min-h-0'
               : `${mobileWorkspacePanel === 'history' ? 'fixed' : 'hidden'} inset-y-0 right-0 z-50 w-[min(22rem,calc(100%-1rem))] bg-background shadow-xl xl:static ${chatsHidden ? 'xl:hidden' : 'xl:block'} xl:w-96 xl:shrink-0 xl:shadow-none`
           }
         >

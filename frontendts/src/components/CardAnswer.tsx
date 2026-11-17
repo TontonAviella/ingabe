@@ -13,7 +13,7 @@ import {
   X,
 } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
-import { useInDrawer } from '@/components/MapDrawer';
+import { drawerPadding, useInDrawer } from '@/components/MapDrawer';
 import type { AnswerDownload, AnswerItem, AnswerProgress, AnswerTerm, AskSage, CardAnswerCore } from '@/lib/cardAnswer';
 
 // The pieces every card panel over the map shares: the drone photo cards (DroneCards.tsx) and the tower cards
@@ -27,6 +27,8 @@ const PHONE_SHEET_SHARE = 0.52;
 
 /** Room the panel takes on the map, so what an answer points at stays in view beside or above it. */
 export function panelPadding() {
+  const beside = drawerPadding(); // the one drawer is beside the map, not on it
+  if (beside) return beside;
   return window.innerWidth >= 640
     ? { top: 70, bottom: 170, left: 60, right: 440 }
     : { top: 70, bottom: Math.round(window.innerHeight * PHONE_SHEET_SHARE) + 110, left: 20, right: 20 };

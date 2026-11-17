@@ -13,6 +13,9 @@ import { createPortal } from 'react-dom';
 
 export type Tool = 'layers' | 'questions' | 'fields' | 'sage';
 
+/** From this width (Tailwind's `lg`) the drawer is a column beside the map; narrower, a sheet over its lower half:
+ * a column would leave a tablet held upright a map too narrow to read. */
+const WIDE_PX = 1024;
 const SWITCH_KEY = 'ingabe.oneDrawer';
 const TOOL_KEY = 'ingabe.oneDrawer.tool';
 const TOOLS: { id: Tool; label: string; icon: typeof Layers3; nothing: string }[] = [
@@ -52,6 +55,18 @@ export function useInDrawer(): boolean {
   return useContext(DrawerContext)?.on ?? false;
 }
 
+// Whether the drawer is open now, for code outside React that moves the map (drawerPadding).
+let openNow = false;
+
+/** Room to leave around what the map is moved to show, with the one drawer; null when the drawer is off (the
+ * old panels then say their own room). Wide screens: the drawer is beside the map, so the room is even. Phones:
+ * the open sheet covers the lower half, so what is shown is fitted into the part above it. */
+export function drawerPadding(): { top: number; bottom: number; left: number; right: number } | null {
+  if (!WANTED) return null;
+  if (window.innerWidth >= WIDE_PX) return { top: 60, bottom: 60, left: 60, right: 60 };
+  return { top: 70, bottom: (openNow ? Math.round(window.innerHeight * 0.5) : 0) + 90, left: 20, right: 20 };
+}
+
 // Read once, as the app loads: the router may rewrite the address (dropping ?drawer=1) before a map is shown.
 const WANTED = oneDrawerWanted();
 
@@ -66,6 +81,7 @@ export function useMapDrawer(): Drawer {
       return 'layers';
     }
   });
+  openNow = on && active !== null;
   const [slots, setSlots] = useState<Partial<Record<Tool, HTMLElement>>>({});
   const setActive = useCallback((tool: Tool | null) => {
     setActiveState(tool);
@@ -114,18 +130,18 @@ export function ToolSlot({ tool, children }: { tool: Tool; children: ReactNode }
 
 const tab = 'flex size-11 cursor-pointer flex-col items-center justify-center gap-0.5 rounded-[12px] text-[10px] font-semibold';
 
-/** The rail of tools and the one drawer beside the map. Wide screens: a column left of the map. Phones: a bar of
+/** The rail of tools and the one drawer beside the map. Wide screens: a column left of the map. Phones and upright tablets: a bar of
  * the same tools along the bottom and the drawer as a sheet above it, at most half the screen. */
 export function MapDrawer({ drawer }: { drawer: Drawer }) {
   const shown = TOOLS.find((t) => t.id === drawer.active) ?? null;
   return (
     <div
-      className="z-40 flex max-sm:fixed max-sm:inset-x-0 max-sm:bottom-0 max-sm:flex-col-reverse sm:h-screen sm:shrink-0 sm:flex-row"
+      className="z-40 flex max-lg:fixed max-lg:inset-x-0 max-lg:bottom-0 max-lg:flex-col-reverse lg:h-screen lg:shrink-0 lg:flex-row"
       data-testid="map-drawer"
     >
       <nav
         aria-label="Map tools"
-        className="flex shrink-0 items-center gap-1 border-line bg-panel p-1.5 max-sm:justify-around max-sm:border-t sm:flex-col sm:border-r"
+        className="flex shrink-0 items-center gap-1 border-line bg-panel p-1.5 max-lg:justify-around max-lg:border-t lg:flex-col lg:border-r"
       >
         {TOOLS.map(({ id, label, icon: Icon }) => (
           <button
@@ -143,7 +159,7 @@ export function MapDrawer({ drawer }: { drawer: Drawer }) {
       </nav>
       <section
         aria-label={shown ? shown.label : 'Map tools'}
-        className={`${shown ? 'flex' : 'hidden'} min-h-0 flex-col border-line bg-canvas text-fg max-sm:max-h-[50vh] max-sm:rounded-t-[18px] max-sm:border-t sm:w-[380px] sm:border-r`}
+        className={`${shown ? 'flex' : 'hidden'} min-h-0 flex-col border-line bg-canvas text-fg max-lg:max-h-[50vh] max-lg:rounded-t-[18px] max-lg:border-t lg:w-[380px] lg:border-r`}
       >
         <div className="flex shrink-0 items-center justify-between px-4 pt-3 pb-1">
           <h2 className="m-0 text-[15px] font-semibold">{shown?.label}</h2>
