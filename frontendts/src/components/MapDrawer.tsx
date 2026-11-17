@@ -50,6 +50,12 @@ interface Drawer {
 
 const DrawerContext = createContext<Drawer | null>(null);
 
+/** Opens a tool of the drawer; null when the drawer is off (the old panels are then where they always were). */
+export function useOpenTool(): ((tool: Tool) => void) | null {
+  const drawer = useContext(DrawerContext);
+  return drawer?.on ? drawer.open : null;
+}
+
 /** true inside the drawer: a tool then fills the drawer's width in the page's flow and does not place itself. */
 export function useInDrawer(): boolean {
   return useContext(DrawerContext)?.on ?? false;

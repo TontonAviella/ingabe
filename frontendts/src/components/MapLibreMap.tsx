@@ -1825,6 +1825,7 @@ export default function MapLibreMap({
             map={mapRef.current}
             layers={mapData?.layers ?? []}
             hiddenLayerIDs={hiddenLayerIDs}
+            quiet={tappingField}
           />
         </div>
         {/* With the one drawer Sage's side may be closed: what went wrong is still said on the map, where it
