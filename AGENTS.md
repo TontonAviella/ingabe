@@ -119,6 +119,7 @@ npm run watch                                  # Watch mode (tsc + vite)
 - **Fixtures** in `conftest.py`: `client` (async httpx), `auth_client` (requires `MUNDI_AUTH_MODE=edit`), `test_map_with_vector_layers` (pre-populated Barcelona/Idaho layers)
 - **Test data**: `test_fixtures/` contains FlatGeoBuf, GeoJSON, and reference images
 - Tests live alongside source in `src/` (pattern: `test_*.py`)
+- **Browser tests** (`frontendts/e2e/`, Playwright): before committing a change a person could see, run the `verify` skill (`.claude/skills/verify/SKILL.md`). `scripts/e2e_app.sh up` starts a no-sign-in copy of the app on `:8011` with its own database and seeds a test farm (`scripts/e2e_seed.py`); `scripts/e2e_app.sh test` runs the tests against it. The app on `:8000` cannot be used: its sign-in is fixed at build time and it reads `mundidb`.
 
 ## CI/CD
 
