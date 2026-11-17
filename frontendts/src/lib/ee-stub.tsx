@@ -1,4 +1,6 @@
 import type React from 'react';
+import { isConnectionFailure, NO_CONNECTION_TRY_AGAIN, TOOK_TOO_LONG } from './mapLoadError';
+import { ServerError } from './serverError';
 import {
   SIGNED_OUT_EVENT,
   useWorkOSSession,
@@ -94,16 +96,35 @@ export async function fetchMaybeAuth(input: RequestInfo | URL, init?: RequestIni
     if (fetchInit?.signal) return fetch(input, fetchInit);
 
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), DEFAULT_TIMEOUT_MS);
-    return fetch(input, { ...fetchInit, signal: controller.signal }).finally(() => clearTimeout(timeoutId));
+    let gaveUp = false;
+    const timeoutId = setTimeout(() => {
+      gaveUp = true;
+      controller.abort();
+    }, DEFAULT_TIMEOUT_MS);
+    return fetch(input, { ...fetchInit, signal: controller.signal })
+      .catch((error: unknown) => {
+        // our own timeout: say so, not the browser's "signal is aborted without reason"
+        if (gaveUp) throw new ServerError(0, TOOK_TOO_LONG);
+        throw error;
+      })
+      .finally(() => clearTimeout(timeoutId));
   };
+  // A request that never reached the server is said in plain words wherever its message is shown: the browser's
+  // own ("Failed to fetch", "Load failed") reached the field panel, the cards and Sage as they were.
+  const plain = (request: Promise<Response>) =>
+    request.catch((error: unknown) => {
+      if (!(error instanceof ServerError) && isConnectionFailure(undefined, error instanceof Error ? error.message : undefined)) {
+        throw new ServerError(0, NO_CONNECTION_TRY_AGAIN);
+      }
+      throw error;
+    });
 
   if (IS_WORKOS) {
     // The session cookie goes with every same-origin request; a 401 means it
     // ended, so tell the session provider (which sends the user to sign in).
-    const response = await doFetch({ credentials: 'same-origin', ...init });
+    const response = await plain(doFetch({ credentials: 'same-origin', ...init }));
     if (response.status === 401) window.dispatchEvent(new Event(SIGNED_OUT_EVENT));
     return response;
   }
-  return doFetch(init);
+  return plain(doFetch(init));
 }

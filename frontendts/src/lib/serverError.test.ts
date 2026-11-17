@@ -25,9 +25,11 @@ describe('serverError', () => {
     expect(error.message).toBe("Input should be 'tower_dish', 'tower_antenna' or 'tower_radio_unit'; Field required");
   });
 
-  it('falls back to the status when the server gave no words', async () => {
-    expect((await serverError(new Response('<html>Bad gateway</html>', { status: 502 }))).message).toBe('Request failed (502)');
-    expect((await serverError(json(500, { detail: { code: 7 } }))).message).toBe('Request failed (500)');
-    expect((await serverError(json(404, {}))).message).toBe('Request failed (404)');
+  it('says a plain line with the status when the server gave no words', async () => {
+    expect((await serverError(new Response('<html>Bad gateway</html>', { status: 502 }))).message).toBe(
+      'The server is not answering right now (502). Try again in a moment.',
+    );
+    expect((await serverError(json(500, { detail: { code: 7 } }))).message).toBe('That did not work (error 500). Try again.');
+    expect((await serverError(json(404, {}))).message).toBe('This was not found. It may have been removed.');
   });
 });

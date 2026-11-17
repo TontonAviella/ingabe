@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { isConnectionFailure, serverFailureMessage } from './mapLoadError';
+import { isConnectionFailure, refusedWithoutWords, serverFailureMessage } from './mapLoadError';
 
 describe('isConnectionFailure', () => {
   it('is true when the request got no answer', () => {
@@ -23,5 +23,18 @@ describe('serverFailureMessage', () => {
     expect(serverFailureMessage(500)).toBe(serverFailureMessage(500));
     expect(serverFailureMessage(500)).not.toContain('http');
     expect(serverFailureMessage(500)).not.toBe(serverFailureMessage(503));
+  });
+});
+
+describe('refusedWithoutWords', () => {
+  it('never shows a gateway\'s own words or a bare "Request failed"', () => {
+    for (const status of [400, 401, 403, 404, 500, 502, 503, 504]) {
+      const line = refusedWithoutWords(status);
+      expect(line).not.toMatch(/Request failed|Bad Gateway|HTTP|fetch/i);
+      expect(line.endsWith('.')).toBe(true);
+    }
+    expect(refusedWithoutWords(502)).toBe('The server is not answering right now (502). Try again in a moment.');
+    expect(refusedWithoutWords(401)).toBe('Your session ended. Refresh the page to sign in again.');
+    expect(refusedWithoutWords(500)).toBe('That did not work (error 500). Try again.');
   });
 });

@@ -19,6 +19,7 @@ import type { PaintOverrides } from '../hooks/useLayerPaintOverrides';
 import type { ErrorEntry } from '../lib/frontend-types';
 import type { EphemeralAction, MapData, MapLayer, MapProject } from '../lib/types';
 import { useInDrawer } from './MapDrawer';
+import { serverError } from '@/lib/serverError';
 
 interface UploadingFile {
   id: string;
@@ -144,9 +145,7 @@ const LayerList: React.FC<LayerListProps> = ({
       });
 
       if (!response.ok) {
-        const errorData = await response.json().catch(() => ({ detail: response.statusText }));
-        const d = errorData.detail;
-        throw new Error(typeof d === 'string' ? d : d ? JSON.stringify(d) : response.statusText);
+        throw await serverError(response);
       }
 
       return response.json();

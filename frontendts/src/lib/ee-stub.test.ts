@@ -79,6 +79,23 @@ describe('fetchMaybeAuth', () => {
     });
   });
 
+  describe('a request that never reaches the server', () => {
+    it('is said in plain words, not the browser\'s', async () => {
+      const mod = await import('./ee-stub');
+      for (const words of ['Failed to fetch', 'Load failed', 'NetworkError when attempting to fetch resource.']) {
+        mockFetch.mockRejectedValueOnce(new TypeError(words));
+        await expect(mod.fetchMaybeAuth('/api/data')).rejects.toMatchObject({ status: 0, message: 'No connection. Try again when it returns.' });
+      }
+    });
+
+    it('leaves a request the caller stopped as it is', async () => {
+      const mod = await import('./ee-stub');
+      const stopped = new DOMException('The user aborted a request.', 'AbortError');
+      mockFetch.mockRejectedValueOnce(stopped);
+      await expect(mod.fetchMaybeAuth('/api/data', { signal: new AbortController().signal })).rejects.toBe(stopped);
+    });
+  });
+
   describe('with WorkOS', () => {
     beforeEach(() => {
       vi.stubEnv('VITE_AUTH_PROVIDER', 'workos');

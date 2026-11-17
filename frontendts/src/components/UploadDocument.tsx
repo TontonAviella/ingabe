@@ -4,6 +4,7 @@ import React, { useRef, useState } from 'react';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
+import { refusedWithoutWords } from '@/lib/mapLoadError';
 
 const ALLOWED_EXTENSIONS = ['.pdf', '.docx', '.xlsx', '.pptx', '.txt', '.md', '.csv'];
 const MAX_FILE_SIZE = 50 * 1024 * 1024; // 50 MB
@@ -79,7 +80,7 @@ const UploadDocument: React.FC<UploadDocumentProps> = ({ isOpen, onClose, projec
 
       if (!response.ok) {
         const errorData = await response.json().catch(() => null);
-        throw new Error(errorData?.detail || `Upload failed (HTTP ${response.status})`);
+        throw new Error(errorData?.detail || refusedWithoutWords(response.status));
       }
 
       const result = await response.json();

@@ -8,7 +8,7 @@ describe('map response contract regression', () => {
       headers: { 'content-type': 'application/json' },
     });
 
-    await expect(parseMapResponse(response)).rejects.toThrow('Failed to fetch map: 401');
+    await expect(parseMapResponse(response)).rejects.toThrow('Your session ended. Refresh the page to sign in again.');
   });
 
   it('rejects malformed success payloads before MapLibre renders', async () => {

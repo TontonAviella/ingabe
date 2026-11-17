@@ -157,6 +157,8 @@ import { createAnalyticsTurnId, track, trackDuration, trackError } from '../lib/
 import type { ErrorEntry, UploadingFile } from '../lib/frontend-types';
 import { isServerTileFailure, reportMapHealth, stopWatchingGraphics, watchGraphics } from '../lib/mapHealth';
 import { isConnectionFailure, NO_CONNECTION, serverFailureMessage } from '../lib/mapLoadError';
+import { serverError } from '../lib/serverError';
+import { useIsMobile } from '../hooks/use-mobile';
 import type {
   Conversation,
   EphemeralAction,
@@ -311,6 +313,7 @@ export default function MapLibreMap({
   // The one drawer beside the map (components/MapDrawer.tsx), when this device asked for it: the tools then live
   // in it and nothing is placed over the photo.
   const drawer = useMapDrawer();
+  const narrowScreen = useIsMobile();
   const { on: oneDrawer, open: openTool } = drawer;
   const showFields = useCallback(() => openTool('fields'), [openTool]);
   // hasZoomed is tracked via hasZoomedRef (line ~1087) to avoid triggering setStyle re-runs
@@ -1368,7 +1371,7 @@ export default function MapLibreMap({
       url.searchParams.set('only_show_inline_sources', 'true');
       const response = await apiFetch(url.toString());
       if (!response.ok) {
-        throw new Error(`Failed to fetch style: ${response.statusText}`);
+        throw await serverError(response);
       }
       const style = await response.json();
       // Resolve relative tile URLs to absolute (MapLibre requires absolute URLs)
@@ -1507,7 +1510,7 @@ export default function MapLibreMap({
       }
     } catch (err) {
       console.error('Error updating style:', err);
-      addError('Failed to update map style: ' + (err instanceof Error ? err.message : String(err)), true);
+      addError('The map did not update. ' + (err instanceof Error ? err.message : String(err)), true);
     }
   }, [styleData, addError, mapId, project.id]); // Only re-run when actual style data changes
 
@@ -1684,9 +1687,7 @@ export default function MapLibreMap({
           body: JSON.stringify({ project_id: project.id }),
         });
         if (!createResp.ok) {
-          const err = await createResp.json().catch(() => ({ detail: createResp.statusText }));
-          const d = err.detail;
-          throw new Error(typeof d === 'string' ? d : d ? JSON.stringify(d) : createResp.statusText);
+          throw await serverError(createResp);
         }
         const newConv = (await createResp.json()) as Conversation;
         conversationIdToUse = newConv.id;
@@ -1756,11 +1757,8 @@ export default function MapLibreMap({
         addError('Your session has expired. Please refresh the page to continue chatting.', true);
         return;
       } else {
-        const errorData = await response.json().catch(() => ({ detail: response.statusText }));
-        const d = errorData.detail;
-        const error = new Error(typeof d === 'string' ? d : d ? JSON.stringify(d) : response.statusText);
-        (error as Error & { status?: number }).status = response.status;
-        throw error;
+        // the server's own words, or a plain line with the status (never a gateway's "Bad Gateway")
+        throw await serverError(response);
       }
     } catch (error) {
       const msg = error instanceof Error ? error.message : 'Network error';
@@ -1780,7 +1778,8 @@ export default function MapLibreMap({
       }
     } finally {
       // Remove the ephemeral action when done
-      setActiveActions((prev) => prev.filter((a) => a.action_id !== actionId));
+      // and the "Creating new conversation..." line, which stayed (Sage "working...") when making it failed
+      setActiveActions((prev) => prev.filter((a) => a.action_id !== actionId && !a.action_id.startsWith('create-conversation-')));
     }
   };
 
@@ -1836,6 +1835,8 @@ export default function MapLibreMap({
   // especially chat disconnected errors happen all the time and shouldn't
   // override the text box
   const criticalErrors = errors.filter((e) => e.shouldOverrideMessages);
+  // where they are said: see the strip on the map below
+  const errorsOnMap = oneDrawer ? drawer.active !== 'sage' : narrowScreen;
 
   // The chat as the photo screen sees it: it asks Sage here and shows the answer next to the photo.
   const sageLink: SageLink = {
@@ -1893,8 +1894,10 @@ export default function MapLibreMap({
           />
         </div>
         {/* With the one drawer Sage's side may be closed: what went wrong is still said on the map, where it
-            always was (at the top on a narrow screen, clear of the sheet). */}
-        {oneDrawer && criticalErrors.length > 0 && (
+            always was (at the top on a narrow screen, clear of the sheet). Not while Sage's side is open:
+            it says it there, and twice is noise. Without the drawer, on a phone: Sage's card sits under the
+            field bar there and the line was half covered, so it is said at the top instead. */}
+        {errorsOnMap && criticalErrors.length > 0 && (
           <div
             role="alert"
             className="absolute bottom-10 left-1/2 z-30 flex w-[min(92%,34rem)] -translate-x-1/2 flex-col gap-1.5 max-lg:top-16 max-lg:bottom-auto"
@@ -2107,6 +2110,7 @@ export default function MapLibreMap({
               streamingText={streamingText}
               actions={activeActions}
               errors={criticalErrors}
+              errorsElsewhere={errorsOnMap}
               cancelling={isCancelling}
               onCancel={() => setIsCancelling(true)}
               onDismissError={dismissError}

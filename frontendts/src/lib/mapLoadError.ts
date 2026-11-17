@@ -22,3 +22,19 @@ export function isConnectionFailure(status: number | undefined, message: string 
 export function serverFailureMessage(status: number): string {
   return `Part of the map did not load (the server answered ${status}). Move the map to try again.`;
 }
+
+/** A request of the app (not a map tile) that got no answer. */
+export const NO_CONNECTION_TRY_AGAIN = 'No connection. Try again when it returns.';
+
+/** A request the app itself gave up on after waiting. */
+export const TOOK_TOO_LONG = 'The server took too long to answer. Try again.';
+
+/** The line for a request the server refused without saying why in words. A gateway's 502, 503 or 504 is the
+ * server not answering (a restart, an overload); anything else is named by its number, for whoever is asked. */
+export function refusedWithoutWords(status: number): string {
+  if (status === 502 || status === 503 || status === 504) return `The server is not answering right now (${status}). Try again in a moment.`;
+  if (status === 401) return 'Your session ended. Refresh the page to sign in again.';
+  if (status === 403) return 'You do not have access to this.';
+  if (status === 404) return 'This was not found. It may have been removed.';
+  return `That did not work (error ${status}). Try again.`;
+}

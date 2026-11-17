@@ -175,6 +175,7 @@ export function SageReply({
   onDismissError,
   actionIcon,
   centered = false,
+  errorsElsewhere = false,
 }: {
   reply?: string;
   /** The answer's id, for 👍/👎 (absent while it is still being written). */
@@ -191,6 +192,9 @@ export function SageReply({
   actionIcon: (action: string) => ReactNode;
   /** The chats panel is hidden: centre on the whole map instead of the space left of the panel. */
   centered?: boolean;
+  /** The errors are said somewhere else on the screen (the top of the map on a phone, where this card can be
+   * covered): they still end the wait here, but are not listed twice. */
+  errorsElsewhere?: boolean;
 }) {
   const inDrawer = useInDrawer();
   const [expanded, setExpanded] = useState(false);
@@ -215,8 +219,9 @@ export function SageReply({
     setOverflows(!!el && el.scrollHeight > el.clientHeight + 4);
   }, [text, expanded]);
 
-  if (hidden && !working && errors.length === 0) return null;
-  if (!text && !working && errors.length === 0) return null;
+  const listed = errorsElsewhere ? [] : errors;
+  if (hidden && !working && listed.length === 0) return null;
+  if (!text && !working && listed.length === 0) return null;
 
   return (
     <section
@@ -263,7 +268,7 @@ export function SageReply({
         </span>
       </header>
 
-      {errors.map((error) => (
+      {listed.map((error) => (
         <div
           key={error.id}
           className="mx-4 mb-2 flex items-start justify-between gap-3 rounded-[14px] border border-[#C2410C]/40 bg-[#C2410C]/10 px-3 py-2"

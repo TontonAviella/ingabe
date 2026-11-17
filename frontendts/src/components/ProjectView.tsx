@@ -19,6 +19,7 @@ import { getProjectViewLoadState, shouldRetryProjectQuery } from '../lib/project
 import { addSageGeoJsonLayer } from '../lib/sageGeoJsonLayer';
 import type { Conversation, EphemeralAction, GeoJsonLayerUpdate, MapProject, MapTreeResponse, TileLayerUpdate } from '../lib/types';
 import { usePersistedState } from '../lib/usePersistedState';
+import { refusedWithoutWords } from '@/lib/mapLoadError';
 
 type UploadResponse = {
   name: string;
@@ -70,7 +71,7 @@ export default function ProjectView() {
         throw new Error('Project not found');
       }
       if (!res.ok) {
-        throw new Error(`Failed to fetch project: ${res.status}`);
+        throw new Error(refusedWithoutWords(res.status));
       }
       return (await res.json()) as MapProject;
     },
@@ -887,9 +888,9 @@ export default function ProjectView() {
             });
             xhr.addEventListener('load', () => {
               if (xhr.status >= 200 && xhr.status < 300) resolve(xhr);
-              else reject(new Error(`HTTP ${xhr.status}`));
+              else reject(new Error(refusedWithoutWords(xhr.status)));
             });
-            xhr.addEventListener('error', () => reject(new Error('network error')));
+            xhr.addEventListener('error', () => reject(new Error('The connection dropped during the upload. Try again.')));
             xhr.addEventListener('timeout', () => reject(new Error('timeout')));
             xhr.addEventListener('abort', () => reject(new Error('aborted')));
             xhr.open('PUT', partUrl);
@@ -1093,9 +1094,9 @@ export default function ProjectView() {
         });
         xhr.addEventListener('load', () => {
           if (xhr.status >= 200 && xhr.status < 300) resolve();
-          else reject(new Error(`S3 upload failed (HTTP ${xhr.status})`));
+          else reject(new Error(`The upload was refused (error ${xhr.status}). Try again.`));
         });
-        xhr.addEventListener('error', () => reject(new Error('Upload failed due to network error')));
+        xhr.addEventListener('error', () => reject(new Error('The connection dropped during the upload. Try again.')));
         xhr.open('PUT', presign.upload_url);
         xhr.send(file);
       });
