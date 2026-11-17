@@ -18,6 +18,7 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/comp
 import type { PaintOverrides } from '../hooks/useLayerPaintOverrides';
 import type { ErrorEntry } from '../lib/frontend-types';
 import type { EphemeralAction, MapData, MapLayer, MapProject } from '../lib/types';
+import { useInDrawer } from './MapDrawer';
 
 interface UploadingFile {
   id: string;
@@ -160,8 +161,15 @@ const LayerList: React.FC<LayerListProps> = ({
     },
   });
 
+  const inDrawer = useInDrawer();
   return (
-    <Card className="absolute top-4 left-4 max-h-[60vh] overflow-auto py-2 rounded-xl border border-line bg-panel gap-2 max-w-72 w-full">
+    <Card
+      className={
+        inDrawer
+          ? 'w-full gap-2 rounded-xl border border-line bg-panel py-2'
+          : 'absolute top-4 left-4 max-h-[60vh] overflow-auto py-2 rounded-xl border border-line bg-panel gap-2 max-w-72 w-full'
+      }
+    >
       <CardHeader className="px-2">
         <CardTitle className="text-base flex justify-between items-center gap-2">
           <div className="flex items-center gap-2">

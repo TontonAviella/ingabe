@@ -23,6 +23,7 @@ import type { MapLayer } from '@/lib/types';
 import { CountCheck } from './CountCheck';
 import { FieldFlights } from './FieldFlights';
 import { FieldRecords } from './FieldRecords';
+import { useInDrawer } from './MapDrawer';
 import { MyCrop } from './MyCrop';
 
 // Tap a field on a prepared drone photo: up to three outlines come back, the reader picks one, may correct it
@@ -90,6 +91,8 @@ function features(
   ring: Corner[] | null = null,
   moving = false,
   selected: string | null = null,
+  /** The picked field carries its name on the map, where its details are no longer beside it (the one drawer). */
+  named = false,
 ): GeoJSON.FeatureCollection {
   const out: GeoJSON.Feature[] = kept.flatMap((k) => [
     {
@@ -100,7 +103,7 @@ function features(
     {
       type: 'Feature' as const,
       geometry: { type: 'Point' as const, coordinates: k.centre },
-      properties: { kind: 'label', label: String(k.number) },
+      properties: { kind: 'label', label: named && k.id === selected ? (k.facts?.name ?? fieldName(k)) : String(k.number) },
     },
   ]);
   const step = steps.at(-1);
@@ -190,6 +193,7 @@ export function FieldTaps({
   layers,
   hiddenLayerIDs,
   onTapping,
+  onBusy,
   onAskSage,
 }: {
   map: MLMap | null;
@@ -197,9 +201,12 @@ export function FieldTaps({
   hiddenLayerIDs: string[];
   /** Told true while the panel is open, so other map cards can stay out of the way of the taps. */
   onTapping?: (tapping: boolean) => void;
+  /** Told true when a field is picked or being outlined: the map's drawer then shows this panel. */
+  onBusy?: (busy: boolean) => void;
   /** Sends a question to Sage on this map. */
   onAskSage?: (prompt: string) => void;
 }) {
+  const inDrawer = useInDrawer();
   const photo = useMemo(() => layers.find((l) => l.type === 'raster' && !hiddenLayerIDs.includes(l.id)) ?? null, [layers, hiddenLayerIDs]);
   const layerId = photo?.id ?? null;
   const state = useFieldTapState(layerId);
@@ -255,7 +262,9 @@ export function FieldTaps({
   const checked = useCountChecked(layerId, selected?.id ?? null);
   const client = useQueryClient();
   const shown =
-    mode === 'off' ? features([], null, kept, null, false, selected?.id ?? null) : features(steps, pick, kept, ring, mode === 'move');
+    mode === 'off'
+      ? features([], null, kept, null, false, selected?.id ?? null, inDrawer)
+      : features(steps, pick, kept, ring, mode === 'move');
   useDrawn(map, prepared ? shown : EMPTY);
 
   const startAgain = useCallback((next: Mode) => {
@@ -464,6 +473,11 @@ export function FieldTaps({
     return () => onTapping?.(false);
   }, [open, counting, onTapping]);
 
+  const inUse = mode !== 'off' || !!selectedId;
+  useEffect(() => {
+    if (inUse) onBusy?.(true);
+  }, [inUse, onBusy]);
+
   if (!layerId || !prepared) return null;
 
   /** Leave the field being outlined without keeping it. */
@@ -500,11 +514,15 @@ export function FieldTaps({
 
   return (
     <div
-      className={`absolute flex flex-col gap-2 rounded-[18px] border border-caramel/30 bg-panel p-3 text-fg shadow-lg ${
-        docked
-          ? 'z-40 bottom-36 left-4 w-[min(92vw,340px)]'
-          : `z-30 bottom-28 left-1/2 -translate-x-1/2 ${open ? 'w-[min(92vw,460px)]' : 'w-[min(92vw,340px)]'}`
-      }`}
+      className={
+        inDrawer
+          ? 'flex w-full flex-col gap-2 rounded-[18px] border border-caramel/30 bg-panel p-3 text-fg'
+          : `absolute flex flex-col gap-2 rounded-[18px] border border-caramel/30 bg-panel p-3 text-fg shadow-lg ${
+              docked
+                ? 'z-40 bottom-36 left-4 w-[min(92vw,340px)]'
+                : `z-30 bottom-28 left-1/2 -translate-x-1/2 ${open ? 'w-[min(92vw,460px)]' : 'w-[min(92vw,340px)]'}`
+            }`
+      }
       data-docked={docked}
     >
       {selected && cropping && layerId && <MyCrop map={map} layerId={layerId} field={selected} onClose={() => setCropping(false)} />}
