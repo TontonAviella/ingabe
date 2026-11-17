@@ -13,6 +13,7 @@ import {
   X,
 } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
+import { drawerPadding, useInDrawer } from '@/components/MapDrawer';
 import type { AnswerDownload, AnswerItem, AnswerProgress, AnswerTerm, AskSage, CardAnswerCore } from '@/lib/cardAnswer';
 
 // The pieces every card panel over the map shares: the drone photo cards (DroneCards.tsx) and the tower cards
@@ -26,6 +27,8 @@ const PHONE_SHEET_SHARE = 0.52;
 
 /** Room the panel takes on the map, so what an answer points at stays in view beside or above it. */
 export function panelPadding() {
+  const beside = drawerPadding(); // the one drawer is beside the map, not on it
+  if (beside) return beside;
   return window.innerWidth >= 640
     ? { top: 70, bottom: 170, left: 60, right: 440 }
     : { top: 70, bottom: Math.round(window.innerHeight * PHONE_SHEET_SHARE) + 110, left: 20, right: 20 };
@@ -432,9 +435,19 @@ export function CardsPanel({
   belowChatsButton?: boolean;
   children: React.ReactNode;
 }) {
+  const inDrawer = useInDrawer();
   // Full class names, so Tailwind finds them in the source.
   const buttonTop = belowChatsButton ? 'top-16' : 'top-16 xl:top-4';
   const panelTop = belowChatsButton ? 'sm:top-16' : 'sm:top-16 xl:top-4 xl:max-h-[calc(100%-280px)]';
+  if (inDrawer) {
+    // In the map's one drawer the panel is not placed and not folded away: the drawer holds it and closes it.
+    return (
+      <section aria-label={ariaLabel} style={{ fontFamily: PANEL_FONT }} className="flex flex-col text-fg">
+        {heading && <span className="px-1 pb-2 text-[12px] font-semibold uppercase tracking-[0.08em] text-caramel">{heading}</span>}
+        <div className="px-1">{children}</div>
+      </section>
+    );
+  }
   if (collapsed) {
     return (
       <CollapsedPanelButton

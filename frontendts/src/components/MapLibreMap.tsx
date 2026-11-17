@@ -142,6 +142,7 @@ import { DroneCards } from '@/components/DroneCards';
 import { FieldTaps } from '@/components/FieldTaps';
 import { useFollowProjectIndustry } from '@/components/IndustryGate';
 import LayerList from '@/components/LayerList';
+import { MapDrawer, MapDrawerProvider, ToolSlot, useMapDrawer } from '@/components/MapDrawer';
 import { MapLegends } from '@/components/MapLegends';
 import { TerrainOverlay } from '@/components/TerrainOverlay';
 import { TowerCards } from '@/components/towers/TowerCards';
@@ -306,6 +307,11 @@ export default function MapLibreMap({
   // (controls, basemap, click handler) re-attach to the new map instance.
   const [mapInstanceId, setMapInstanceId] = useState(0);
   const [tappingField, setTappingField] = useState(false);
+  // The one drawer beside the map (components/MapDrawer.tsx), when this device asked for it: the tools then live
+  // in it and nothing is placed over the photo.
+  const drawer = useMapDrawer();
+  const { on: oneDrawer, open: openTool } = drawer;
+  const showFields = useCallback(() => openTool('fields'), [openTool]);
   // hasZoomed is tracked via hasZoomedRef (line ~1087) to avoid triggering setStyle re-runs
   const [layerSymbols, setLayerSymbols] = useState<{
     [layerId: string]: JSX.Element;
@@ -345,8 +351,21 @@ export default function MapLibreMap({
       // private window or blocked storage: the choice lasts for this visit only
     }
   };
-  const mapClear = panelsHidden || tappingField;
+  const mapClear = !oneDrawer && (panelsHidden || tappingField);
+  // With the one drawer the tools are beside the map, but what is drawn ON the map for reading (legends, close-look
+  // bubbles, the place names) still steps aside while a field is being outlined, as before: a tap must reach the photo.
+  const mapQuiet = mapClear || (oneDrawer && tappingField);
   const [isMapReady, setIsMapReady] = useState(false);
+  // The drawer opens and closes beside the map, so the map's box changes width with no window resize: the map
+  // is told, or it would keep drawing at its old size.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: a new map instance must be watched again
+  useEffect(() => {
+    const box = mapContainerRef.current;
+    if (!oneDrawer || !box) return;
+    const watcher = new ResizeObserver(() => mapRef.current?.resize());
+    watcher.observe(box);
+    return () => watcher.disconnect();
+  }, [oneDrawer, mapInstanceId]);
 
   const {
     overrides: paintOverrides,
@@ -1701,6 +1720,12 @@ export default function MapLibreMap({
     }
   };
 
+  /** A question from a card or a field: it is sent, and with the one drawer Sage's side is shown for the answer. */
+  const askSage = (prompt: string) => {
+    if (oneDrawer) openTool('sage');
+    void sendMessage(prompt);
+  };
+
   // Handle input submission
   const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.key === 'Enter' && inputValue.trim()) {
@@ -1764,32 +1789,37 @@ export default function MapLibreMap({
   const selectedPhotoUrl = selectedFeature ? inspectionPhotoUrl(selectedFeature.source, selectedFeature.properties) : null;
 
   return (
-    <>
-      <div className={`relative map-container ${className} grow max-h-screen`} style={{ width, height }}>
+    <MapDrawerProvider drawer={drawer}>
+      {oneDrawer && <MapDrawer drawer={drawer} />}
+      <div className={`relative map-container ${className} grow min-w-0 max-h-screen`} style={{ width, height }}>
         <div ref={mapContainerRef} style={{ width: '100%', height: '100%', minHeight: '100vh' }} className="bg-slate-950" />
-        <AdminLevelsOverlay key={`admin-${mapInstanceId}`} map={mapRef.current} projectId={project.id} quiet={mapClear} />
+        <AdminLevelsOverlay key={`admin-${mapInstanceId}`} map={mapRef.current} projectId={project.id} quiet={mapQuiet} />
         {/* put away, not unmounted: an open card or legend is as it was when the panels come back */}
-        <div className={mapClear ? 'hidden' : 'contents'} data-testid="map-panels">
+        <div className={mapQuiet ? 'hidden' : 'contents'} data-testid="map-panels">
           <MapLegends key={mapInstanceId} map={mapRef.current} />
-          <DroneCards
-            key={`cards-${mapInstanceId}`}
-            map={mapRef.current}
-            layers={mapData?.layers ?? []}
-            hiddenLayerIDs={hiddenLayerIDs}
-            historyOpen={mobileWorkspacePanel === 'history'}
-            chatsHidden={chatsHidden}
-            onAskSage={(prompt) => void sendMessage(prompt)}
-          />
-          <TowerCards
-            key={`towers-${mapInstanceId}`}
-            map={mapRef.current}
-            layers={mapData?.layers ?? []}
-            hiddenLayerIDs={hiddenLayerIDs}
-            historyOpen={mobileWorkspacePanel === 'history'}
-            chatsHidden={chatsHidden}
-            onAskSage={(prompt) => void sendMessage(prompt)}
-            sage={sageLink}
-          />
+          <ToolSlot tool="questions">
+            <DroneCards
+              key={`cards-${mapInstanceId}`}
+              map={mapRef.current}
+              layers={mapData?.layers ?? []}
+              hiddenLayerIDs={hiddenLayerIDs}
+              historyOpen={mobileWorkspacePanel === 'history'}
+              chatsHidden={chatsHidden}
+              onAskSage={askSage}
+            />
+          </ToolSlot>
+          <ToolSlot tool="questions">
+            <TowerCards
+              key={`towers-${mapInstanceId}`}
+              map={mapRef.current}
+              layers={mapData?.layers ?? []}
+              hiddenLayerIDs={hiddenLayerIDs}
+              historyOpen={mobileWorkspacePanel === 'history'}
+              chatsHidden={chatsHidden}
+              onAskSage={askSage}
+              sage={sageLink}
+            />
+          </ToolSlot>
           <CloseLookBubbles
             key={`close-look-${mapInstanceId}`}
             map={mapRef.current}
@@ -1797,7 +1827,31 @@ export default function MapLibreMap({
             hiddenLayerIDs={hiddenLayerIDs}
           />
         </div>
-        {!tappingField && (
+        {/* With the one drawer Sage's side may be closed: what went wrong is still said on the map, where it
+            always was (at the top on a narrow screen, clear of the sheet). */}
+        {oneDrawer && criticalErrors.length > 0 && (
+          <div
+            role="alert"
+            className="absolute bottom-10 left-1/2 z-30 flex w-[min(92%,34rem)] -translate-x-1/2 flex-col gap-1.5 max-lg:top-16 max-lg:bottom-auto"
+          >
+            {criticalErrors.map((error) => (
+              <div
+                key={error.id}
+                className="flex items-start justify-between gap-3 rounded-[14px] border border-[#C2410C]/40 bg-panel px-3 py-2 shadow-lg"
+              >
+                <span className="text-[14px] leading-snug text-[#F3C9B4]">{error.message}</span>
+                <button
+                  type="button"
+                  onClick={() => dismissError(error.id)}
+                  className="shrink-0 cursor-pointer text-[12px] font-semibold text-caramel-hi hover:underline"
+                >
+                  Dismiss
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+        {!oneDrawer && !tappingField && (
           <button
             type="button"
             className="absolute bottom-24 left-4 z-40 flex h-9 items-center gap-2 rounded-full border border-white/10 bg-panel/95 px-3.5 text-[13px] font-semibold text-fg shadow-md hover:border-caramel/60 cursor-pointer"
@@ -1809,14 +1863,17 @@ export default function MapLibreMap({
             {panelsHidden ? 'Show panels' : 'Hide panels'}
           </button>
         )}
-        <FieldTaps
-          key={`field-taps-${mapInstanceId}`}
-          map={mapRef.current}
-          layers={mapData?.layers ?? []}
-          hiddenLayerIDs={hiddenLayerIDs}
-          onTapping={setTappingField}
-          onAskSage={(prompt) => void sendMessage(prompt)}
-        />
+        <ToolSlot tool="fields">
+          <FieldTaps
+            key={`field-taps-${mapInstanceId}`}
+            map={mapRef.current}
+            layers={mapData?.layers ?? []}
+            hiddenLayerIDs={hiddenLayerIDs}
+            onTapping={setTappingField}
+            onBusy={oneDrawer ? showFields : undefined}
+            onAskSage={askSage}
+          />
+        </ToolSlot>
         <TerrainOverlay key={`terrain-${mapInstanceId}`} map={mapRef.current} />
 
         {/* Render the attribute table if showAttributeTable is true */}
@@ -1830,6 +1887,7 @@ export default function MapLibreMap({
           <>
             <button
               type="button"
+              hidden={oneDrawer}
               className="absolute top-4 left-4 z-40 flex size-9 items-center justify-center rounded-md bg-background text-foreground shadow-md sm:hidden"
               onClick={() => setMobileWorkspacePanel((current) => toggleMobileWorkspacePanel(current, 'layers'))}
               aria-label={mobileWorkspacePanel === 'layers' ? 'Close layers' : 'Open layers'}
@@ -1837,36 +1895,43 @@ export default function MapLibreMap({
             >
               {mobileWorkspacePanel === 'layers' ? <X className="size-5" /> : <Layers3 className="size-5" />}
             </button>
-            <div className={mapClear ? 'hidden' : `${mobileWorkspacePanel === 'layers' ? 'block' : 'hidden'} sm:block`}>
-              <LayerList
-                project={project}
-                currentMapData={mapData}
-                mapRef={mapRef}
-                openDropzone={openDropzone}
-                isInConversation={conversationId !== null}
-                readyState={readyState}
-                activeActions={activeActions}
-                setShowAttributeTable={setShowAttributeTable}
-                setSelectedLayer={setSelectedLayer}
-                updateMapData={invalidateMapData}
-                layerSymbols={layerSymbols}
-                zoomHistory={zoomHistory}
-                zoomHistoryIndex={zoomHistoryIndex}
-                setZoomHistoryIndex={setZoomHistoryIndex}
-                uploadingFiles={uploadingFiles}
-                hiddenLayerIDs={hiddenLayerIDs}
-                toggleLayerVisibility={toggleLayerVisibility}
-                errors={errors}
-                loadingLayerIDs={loadingLayerIDs}
-                paintOverrides={paintOverrides}
-                onLayerOpacityChange={setLayerOpacity}
-                onLayerColorChange={setLayerColor}
-              />
+            <div
+              className={
+                oneDrawer ? 'contents' : mapClear ? 'hidden' : `${mobileWorkspacePanel === 'layers' ? 'block' : 'hidden'} sm:block`
+              }
+            >
+              <ToolSlot tool="layers">
+                <LayerList
+                  project={project}
+                  currentMapData={mapData}
+                  mapRef={mapRef}
+                  openDropzone={openDropzone}
+                  isInConversation={conversationId !== null}
+                  readyState={readyState}
+                  activeActions={activeActions}
+                  setShowAttributeTable={setShowAttributeTable}
+                  setSelectedLayer={setSelectedLayer}
+                  updateMapData={invalidateMapData}
+                  layerSymbols={layerSymbols}
+                  zoomHistory={zoomHistory}
+                  zoomHistoryIndex={zoomHistoryIndex}
+                  setZoomHistoryIndex={setZoomHistoryIndex}
+                  uploadingFiles={uploadingFiles}
+                  hiddenLayerIDs={hiddenLayerIDs}
+                  toggleLayerVisibility={toggleLayerVisibility}
+                  errors={errors}
+                  loadingLayerIDs={loadingLayerIDs}
+                  paintOverrides={paintOverrides}
+                  onLayerOpacityChange={setLayerOpacity}
+                  onLayerColorChange={setLayerColor}
+                />
+              </ToolSlot>
             </div>
           </>
         )}
         <button
           type="button"
+          hidden={oneDrawer}
           className="absolute top-4 right-16 z-40 flex size-9 items-center justify-center rounded-md bg-background text-foreground shadow-md xl:hidden"
           onClick={() => setMobileWorkspacePanel((current) => toggleMobileWorkspacePanel(current, 'history'))}
           aria-label="Open chat history"
@@ -1874,7 +1939,7 @@ export default function MapLibreMap({
         >
           <History className="size-5" />
         </button>
-        {chatsHidden && (
+        {!oneDrawer && chatsHidden && (
           <button
             type="button"
             className="absolute top-4 right-16 z-40 hidden h-9 items-center gap-2 rounded-full border border-white/10 bg-panel/95 px-3.5 text-[13.5px] font-semibold text-fg shadow-md hover:border-caramel/60 xl:flex cursor-pointer"
@@ -1965,79 +2030,94 @@ export default function MapLibreMap({
         )}
         {/* Sage's answer steps aside only while a field is being outlined: with "Hide panels" it stays, since a
             question asked about a field still needs its answer seen */}
-        <div className={tappingField ? 'hidden' : 'contents'}>
-          <SageReply
-            reply={lastAssistantMsg}
-            replyMessageId={lastMsg && lastMsg.role === 'assistant' ? lastMsg.id : undefined}
-            mapId={mapId}
-            waiting={
-              !!lastMsg && (lastMsg.role === 'user' || lastMsg.role === 'tool' || (lastMsg.role === 'assistant' && !lastMsg.content))
-            }
-            streamingText={streamingText}
-            actions={activeActions}
-            errors={criticalErrors}
-            cancelling={isCancelling}
-            onCancel={() => setIsCancelling(true)}
-            onDismissError={dismissError}
-            actionIcon={getActionIcon}
-            centered={chatsHidden}
-          />
+        <div className={!oneDrawer && tappingField ? 'hidden' : 'contents'}>
+          <ToolSlot tool="sage">
+            <SageReply
+              reply={lastAssistantMsg}
+              replyMessageId={lastMsg && lastMsg.role === 'assistant' ? lastMsg.id : undefined}
+              mapId={mapId}
+              waiting={
+                !!lastMsg && (lastMsg.role === 'user' || lastMsg.role === 'tool' || (lastMsg.role === 'assistant' && !lastMsg.content))
+              }
+              streamingText={streamingText}
+              actions={activeActions}
+              errors={criticalErrors}
+              cancelling={isCancelling}
+              onCancel={() => setIsCancelling(true)}
+              onDismissError={dismissError}
+              actionIcon={getActionIcon}
+              centered={chatsHidden}
+            />
+          </ToolSlot>
         </div>
-        <div
-          className={`z-30 absolute bottom-12 left-1/2 ${chatsHidden ? '' : 'xl:left-3/5'} transform -translate-x-1/2 w-[calc(100%-1rem)] sm:w-4/5 max-w-[34rem] ${mapClear ? 'hidden' : 'flex'} items-center min-h-12 rounded-[18px] border border-white/10 bg-panel/95 shadow-[0_12px_32px_rgba(0,0,0,0.45)] backdrop-blur-xl focus-within:border-caramel/60`}
-        >
-          <Input
-            className={`flex-1 h-12 border-none shadow-none !bg-transparent px-4 text-[15px] text-fg placeholder:text-fg-subtle focus:!ring-0 focus:!ring-offset-0 focus-visible:!ring-0 focus-visible:!ring-offset-0 focus-visible:!outline-none`}
-            placeholder={
-              conversationId !== null
-                ? 'Continue this chat…'
-                : farmProject
-                  ? 'Ask Sage about this photo, a plot or a place…'
-                  : 'Ask Sage about this photo, the map or a place…'
+        <ToolSlot tool="sage">
+          <div
+            className={
+              oneDrawer
+                ? 'order-first flex min-h-12 w-full shrink-0 items-center rounded-[18px] border border-white/10 bg-panel focus-within:border-caramel/60'
+                : `z-30 absolute bottom-12 left-1/2 ${chatsHidden ? '' : 'xl:left-3/5'} transform -translate-x-1/2 w-[calc(100%-1rem)] sm:w-4/5 max-w-[34rem] ${mapClear ? 'hidden' : 'flex'} items-center min-h-12 rounded-[18px] border border-white/10 bg-panel/95 shadow-[0_12px_32px_rgba(0,0,0,0.45)] backdrop-blur-xl focus-within:border-caramel/60`
             }
-            value={inputValue}
-            onChange={(e) => setInputValue(e.target.value)}
-            onKeyDown={handleKeyDown}
-          />
-          {selectedFeature && (
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <span onClick={() => selectFeature(null)} className={`px-2 hover:cursor-pointer text-gray-400 hover:text-gray-200`}>
-                  <MousePointerClick className="h-6 w-6 inline-block" />
-                </span>
-              </TooltipTrigger>
-              <TooltipContent>
-                <p>Sage can see your selected feature</p>
-              </TooltipContent>
-            </Tooltip>
-          )}
-        </div>
+          >
+            <Input
+              className={`flex-1 h-12 border-none shadow-none !bg-transparent px-4 text-[15px] text-fg placeholder:text-fg-subtle focus:!ring-0 focus:!ring-offset-0 focus-visible:!ring-0 focus-visible:!ring-offset-0 focus-visible:!outline-none`}
+              placeholder={
+                conversationId !== null
+                  ? 'Continue this chat…'
+                  : farmProject
+                    ? 'Ask Sage about this photo, a plot or a place…'
+                    : 'Ask Sage about this photo, the map or a place…'
+              }
+              value={inputValue}
+              onChange={(e) => setInputValue(e.target.value)}
+              onKeyDown={handleKeyDown}
+            />
+            {selectedFeature && (
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <span onClick={() => selectFeature(null)} className={`px-2 hover:cursor-pointer text-gray-400 hover:text-gray-200`}>
+                    <MousePointerClick className="h-6 w-6 inline-block" />
+                  </span>
+                </TooltipTrigger>
+                <TooltipContent>
+                  <p>Sage can see your selected feature</p>
+                </TooltipContent>
+              </Tooltip>
+            )}
+          </div>
+        </ToolSlot>
       </div>
 
-      <div
-        className={`${mobileWorkspacePanel === 'history' ? 'fixed' : 'hidden'} inset-y-0 right-0 z-50 w-[min(22rem,calc(100%-1rem))] bg-background shadow-xl xl:static ${chatsHidden ? 'xl:hidden' : 'xl:block'} xl:w-96 xl:shrink-0 xl:shadow-none`}
-      >
-        <button
-          type="button"
-          className="absolute top-4 right-4 z-10 flex size-8 items-center justify-center rounded-md bg-gray-700 text-gray-100 shadow xl:hidden"
-          onClick={() => setMobileWorkspacePanel(null)}
-          aria-label="Close chat history"
-          title="Close chat history"
+      <ToolSlot tool="sage">
+        <div
+          className={
+            oneDrawer
+              ? 'order-2 min-h-0'
+              : `${mobileWorkspacePanel === 'history' ? 'fixed' : 'hidden'} inset-y-0 right-0 z-50 w-[min(22rem,calc(100%-1rem))] bg-background shadow-xl xl:static ${chatsHidden ? 'xl:hidden' : 'xl:block'} xl:w-96 xl:shrink-0 xl:shadow-none`
+          }
         >
-          <X className="size-4" />
-        </button>
-        <VersionVisualization
-          mapTree={mapTree}
-          conversationId={conversationId}
-          currentMapId={mapId}
-          conversations={conversations}
-          conversationsEnabled={conversationsEnabled}
-          setConversationId={setConversationId}
-          activeActions={activeActions}
-          farmControls={farmProject}
-          onClose={() => setChatsHidden(true)}
-        />
-      </div>
-    </>
+          <button
+            type="button"
+            hidden={oneDrawer}
+            className="absolute top-4 right-4 z-10 flex size-8 items-center justify-center rounded-md bg-gray-700 text-gray-100 shadow xl:hidden"
+            onClick={() => setMobileWorkspacePanel(null)}
+            aria-label="Close chat history"
+            title="Close chat history"
+          >
+            <X className="size-4" />
+          </button>
+          <VersionVisualization
+            mapTree={mapTree}
+            conversationId={conversationId}
+            currentMapId={mapId}
+            conversations={conversations}
+            conversationsEnabled={conversationsEnabled}
+            setConversationId={setConversationId}
+            activeActions={activeActions}
+            farmControls={farmProject}
+            onClose={() => (oneDrawer ? drawer.close() : setChatsHidden(true))}
+          />
+        </div>
+      </ToolSlot>
+    </MapDrawerProvider>
   );
 }

@@ -23,6 +23,7 @@ import type { MapLayer } from '@/lib/types';
 import { CountCheck } from './CountCheck';
 import { FieldFlights } from './FieldFlights';
 import { FieldRecords } from './FieldRecords';
+import { drawerPadding, useInDrawer } from './MapDrawer';
 import { MyCrop } from './MyCrop';
 
 // Tap a field on a prepared drone photo: up to three outlines come back, the reader picks one, may correct it
@@ -190,6 +191,7 @@ export function FieldTaps({
   layers,
   hiddenLayerIDs,
   onTapping,
+  onBusy,
   onAskSage,
 }: {
   map: MLMap | null;
@@ -197,9 +199,12 @@ export function FieldTaps({
   hiddenLayerIDs: string[];
   /** Told true while the panel is open, so other map cards can stay out of the way of the taps. */
   onTapping?: (tapping: boolean) => void;
+  /** Told true when a field is picked or being outlined: the map's drawer then shows this panel. */
+  onBusy?: (busy: boolean) => void;
   /** Sends a question to Sage on this map. */
   onAskSage?: (prompt: string) => void;
 }) {
+  const inDrawer = useInDrawer();
   const photo = useMemo(() => layers.find((l) => l.type === 'raster' && !hiddenLayerIDs.includes(l.id)) ?? null, [layers, hiddenLayerIDs]);
   const layerId = photo?.id ?? null;
   const state = useFieldTapState(layerId);
@@ -464,6 +469,11 @@ export function FieldTaps({
     return () => onTapping?.(false);
   }, [open, counting, onTapping]);
 
+  const inUse = mode !== 'off' || !!selectedId;
+  useEffect(() => {
+    if (inUse) onBusy?.(true);
+  }, [inUse, onBusy]);
+
   if (!layerId || !prepared) return null;
 
   /** Leave the field being outlined without keeping it. */
@@ -500,11 +510,15 @@ export function FieldTaps({
 
   return (
     <div
-      className={`absolute flex flex-col gap-2 rounded-[18px] border border-caramel/30 bg-panel p-3 text-fg shadow-lg ${
-        docked
-          ? 'z-40 bottom-36 left-4 w-[min(92vw,340px)]'
-          : `z-30 bottom-28 left-1/2 -translate-x-1/2 ${open ? 'w-[min(92vw,460px)]' : 'w-[min(92vw,340px)]'}`
-      }`}
+      className={
+        inDrawer
+          ? 'flex w-full flex-col gap-2 rounded-[18px] border border-caramel/30 bg-panel p-3 text-fg'
+          : `absolute flex flex-col gap-2 rounded-[18px] border border-caramel/30 bg-panel p-3 text-fg shadow-lg ${
+              docked
+                ? 'z-40 bottom-36 left-4 w-[min(92vw,340px)]'
+                : `z-30 bottom-28 left-1/2 -translate-x-1/2 ${open ? 'w-[min(92vw,460px)]' : 'w-[min(92vw,340px)]'}`
+            }`
+      }
       data-docked={docked}
     >
       {selected && cropping && layerId && <MyCrop map={map} layerId={layerId} field={selected} onClose={() => setCropping(false)} />}
@@ -852,7 +866,8 @@ export function FieldTaps({
                   setNaming(null);
                   setListed(false);
                   // the field lands above this panel, not under it
-                  map?.easeTo({ center: k.centre, offset: [0, -140] });
+                  const room = drawerPadding();
+                  map?.easeTo({ center: k.centre, offset: room ? [0, (room.top - room.bottom) / 2] : [0, -140] });
                 }}
               >
                 {k.facts?.name ?? fieldName(k)} · {ha(k.area_ha)}

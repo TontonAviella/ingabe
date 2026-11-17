@@ -5,6 +5,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { Components } from 'react-markdown';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import { useInDrawer } from '@/components/MapDrawer';
 import { splitSources } from '@/lib/sageReplyText';
 
 // Sage's reply over the map, in the question cards' look (night and chocolate glass, caramel accent, the
@@ -191,6 +192,7 @@ export function SageReply({
   /** The chats panel is hidden: centre on the whole map instead of the space left of the panel. */
   centered?: boolean;
 }) {
+  const inDrawer = useInDrawer();
   const [expanded, setExpanded] = useState(false);
   const [overflows, setOverflows] = useState(false);
   const [hidden, setHidden] = useState(false);
@@ -220,7 +222,11 @@ export function SageReply({
     <section
       aria-label="Sage's answer"
       aria-live="polite"
-      className={`z-30 absolute bottom-[100px] left-1/2 ${centered ? '' : 'xl:left-3/5'} -translate-x-1/2 w-[calc(100%-1rem)] sm:w-4/5 max-w-[34rem] flex flex-col overflow-hidden rounded-[22px] border border-white/[0.08] bg-panel/95 text-fg shadow-[0_18px_48px_rgba(0,0,0,0.5)] backdrop-blur-xl`}
+      className={
+        inDrawer
+          ? 'order-1 flex w-full shrink-0 flex-col overflow-hidden rounded-[18px] border border-white/[0.08] bg-panel text-fg'
+          : `z-30 absolute bottom-[100px] left-1/2 ${centered ? '' : 'xl:left-3/5'} -translate-x-1/2 w-[calc(100%-1rem)] sm:w-4/5 max-w-[34rem] flex flex-col overflow-hidden rounded-[22px] border border-white/[0.08] bg-panel/95 text-fg shadow-[0_18px_48px_rgba(0,0,0,0.5)] backdrop-blur-xl`
+      }
       style={{ fontFamily: "-apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Helvetica Neue', system-ui, sans-serif" }}
     >
       <header className="flex items-center justify-between gap-3 px-4 pt-3 pb-1.5">

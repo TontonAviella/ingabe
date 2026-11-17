@@ -48,7 +48,18 @@ paid call), serving this checkout's `src/` and this checkout's frontend.
 5. Check the test can fail: change the expected value once, see it fail, put it back. A test that cannot fail
    proves nothing.
 
-6. Stop the copy when done: `scripts/e2e_app.sh down`.
+6. A change to how a photo is shown or worked on is also tried on a real photo (local only; there is none in CI).
+   `docker exec mundi-app-e2e python scripts/e2e_real_photo.py --project PE2EREALAGRI --industry agriculture LAYER_ID`
+   shows a layer of this laptop's own database in a test project of the copy, under a new layer id: it reads the
+   live database and writes only to the test one, and fields kept in the test never appear on the real layer.
+   Open `http://localhost:8011/project/PE2EREALAGRI` with Playwright and walk the change by hand: every tool, at
+   desktop, tablet and phone size, and for each industry (`--industry telecom`). Remove what the walk kept.
+
+7. Stop the copy when done: `scripts/e2e_app.sh down`.
+
+Two switches of `scripts/e2e_app.sh up`: `E2E_SKIP_BUILD=1` when the frontend was not touched since the last
+`up`; `E2E_MODEL=1` keeps the model key so a real answer from Sage can be seen (it costs money: one question,
+not a loop). A frontend change needs `up` again: the copy serves the build it was started with.
 
 ## Rules
 

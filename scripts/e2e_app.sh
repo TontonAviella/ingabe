@@ -19,6 +19,8 @@ TEMPLATE="${E2E_TEMPLATE_DATABASE:-mundidb_pytest_wos}"
 PROJECT="${E2E_COMPOSE_PROJECT:-mundiai}"
 POSTGRES="${E2E_POSTGRES_CONTAINER:-mundiai-postgresdb-1}"
 # The stack's settings (database password, storage keys) live in the main checkout's .env; a worktree has none.
+# The same image as the app you use, when it runs: an older local image may lack what the code now needs.
+export APP_IMAGE="${APP_IMAGE:-$(docker inspect mundi-app --format '{{.Config.Image}}' 2>/dev/null || echo mundi-public:local)}"
 ENV_FILE="${E2E_ENV_FILE:-$(cd "$(git -C "$ROOT" rev-parse --git-common-dir)/.." && pwd)/.env}"
 
 if [ "$DATABASE" = "mundidb" ]; then
@@ -36,14 +38,21 @@ case "${1:-}" in
       docker exec "$POSTGRES" sh -c 'createdb -U "$POSTGRES_USER" -T '"$TEMPLATE $DATABASE"
       echo "[e2e] made database $DATABASE from $TEMPLATE"
     fi
-    echo "[e2e] building the frontend without sign-in..."
-    (cd "$ROOT/frontendts" && VITE_AUTH_PROVIDER= VITE_POSTHOG_KEY= npm run build >/dev/null)
+    # E2E_SKIP_BUILD=1: the frontend was not touched since the last "up" (a backend-only change).
+    if [ "${E2E_SKIP_BUILD:-0}" != "1" ] || [ ! -f "$ROOT/frontendts/dist/index.html" ]; then
+      echo "[e2e] building the frontend without sign-in..."
+      (cd "$ROOT/frontendts" && VITE_AUTH_PROVIDER= VITE_POSTHOG_KEY= npm run build >/dev/null)
+    fi
     docker rm -f "$NAME" >/dev/null 2>&1 || true
-    # No sign-in provider, its own database, the field switch on, and no model key: a browser test never pays
+    # E2E_MODEL=1: keep the model key, to see a real answer from Sage. It costs money, so it is asked for by hand.
+    MODEL=(-e OPENAI_API_KEY=)
+    if [ "${E2E_MODEL:-0}" = "1" ]; then MODEL=(-e E2E_MODEL=1); fi
+    # No sign-in provider, its own database, the field and tower switches on, and no model key: a browser test never pays
     # for a model call.
     (cd "$ROOT" && docker compose -p "$PROJECT" --env-file "$ENV_FILE" run -d --no-deps --name "$NAME" \
       -p "$PORT:8000" -e AUTH_PROVIDER= -e MUNDI_AUTH_MODE=edit -e POSTGRES_DB="$DATABASE" -e FIELD_TAPS=1 \
-      -e OPENAI_API_KEY= -e NTFY_TOPIC= -e OTEL_EXPORTER_OTLP_ENDPOINT= \
+      -e TOWERS=1 -e PHOTO_INSPECTIONS=1 \
+      "${MODEL[@]}" -e NTFY_TOPIC= -e OTEL_EXPORTER_OTLP_ENDPOINT= \
       -v "$ROOT/frontendts/dist:/app/frontendts/dist:ro" app >/dev/null)
     for _ in $(seq 1 90); do
       if curl -sf "http://localhost:$PORT/healthz" >/dev/null 2>&1; then
