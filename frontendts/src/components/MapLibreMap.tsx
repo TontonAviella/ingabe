@@ -153,12 +153,12 @@ import VersionVisualization from '@/components/VersionVisualization';
 import { featureFieldRows } from '@/lib/featureFields';
 import { inspectionPhotoUrl } from '@/lib/inspectionPhoto';
 import { addScale } from '@/lib/mapScale';
+import { useIsMobile } from '../hooks/use-mobile';
 import { createAnalyticsTurnId, track, trackDuration, trackError } from '../lib/analytics';
 import type { ErrorEntry, UploadingFile } from '../lib/frontend-types';
 import { isServerTileFailure, reportMapHealth, stopWatchingGraphics, watchGraphics } from '../lib/mapHealth';
 import { isConnectionFailure, NO_CONNECTION, serverFailureMessage } from '../lib/mapLoadError';
 import { serverError } from '../lib/serverError';
-import { useIsMobile } from '../hooks/use-mobile';
 import type {
   Conversation,
   EphemeralAction,

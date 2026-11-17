@@ -15,11 +15,11 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardFooter, CardHeader, CardTitle } from '@/components/ui/card';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
+import { serverError } from '@/lib/serverError';
 import type { PaintOverrides } from '../hooks/useLayerPaintOverrides';
 import type { ErrorEntry } from '../lib/frontend-types';
 import type { EphemeralAction, MapData, MapLayer, MapProject } from '../lib/types';
 import { useInDrawer } from './MapDrawer';
-import { serverError } from '@/lib/serverError';
 
 interface UploadingFile {
   id: string;

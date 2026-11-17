@@ -1,5 +1,5 @@
-import type { MapData } from './types';
 import { refusedWithoutWords } from './mapLoadError';
+import type { MapData } from './types';
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === 'object' && !Array.isArray(value);

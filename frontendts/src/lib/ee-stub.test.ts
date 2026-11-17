@@ -80,11 +80,14 @@ describe('fetchMaybeAuth', () => {
   });
 
   describe('a request that never reaches the server', () => {
-    it('is said in plain words, not the browser\'s', async () => {
+    it("is said in plain words, not the browser's", async () => {
       const mod = await import('./ee-stub');
       for (const words of ['Failed to fetch', 'Load failed', 'NetworkError when attempting to fetch resource.']) {
         mockFetch.mockRejectedValueOnce(new TypeError(words));
-        await expect(mod.fetchMaybeAuth('/api/data')).rejects.toMatchObject({ status: 0, message: 'No connection. Try again when it returns.' });
+        await expect(mod.fetchMaybeAuth('/api/data')).rejects.toMatchObject({
+          status: 0,
+          message: 'No connection. Try again when it returns.',
+        });
       }
     });
 

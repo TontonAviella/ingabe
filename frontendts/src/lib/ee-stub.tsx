@@ -1,6 +1,4 @@
 import type React from 'react';
-import { isConnectionFailure, NO_CONNECTION_TRY_AGAIN, TOOK_TOO_LONG } from './mapLoadError';
-import { ServerError } from './serverError';
 import {
   SIGNED_OUT_EVENT,
   useWorkOSSession,
@@ -9,6 +7,8 @@ import {
   WorkOSRequireAuth,
   WorkOSSessionProvider,
 } from '@/components/auth/WorkOSSession';
+import { isConnectionFailure, NO_CONNECTION_TRY_AGAIN, TOOK_TOO_LONG } from './mapLoadError';
+import { ServerError } from './serverError';
 
 // Sign-in provider, fixed at build time. "workos": the backend keeps the
 // session in an HTTP-only cookie (no tokens in the browser). Anything else:

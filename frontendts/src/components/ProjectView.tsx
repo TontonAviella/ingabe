@@ -11,6 +11,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Map as MLMap } from 'maplibre-gl';
 import { toast } from 'sonner';
 import { CHAT_CONNECTION_TOAST, chatShouldConnect } from '@/lib/chatConnection';
+import { refusedWithoutWords } from '@/lib/mapLoadError';
 import { fileAnalytics, track, trackDuration, trackError } from '../lib/analytics';
 import type { ErrorEntry, UploadingFile } from '../lib/frontend-types';
 import { decodeGeoJsonLayerData, geoJsonFeatureCount } from '../lib/geojsonTransport';
@@ -19,7 +20,6 @@ import { getProjectViewLoadState, shouldRetryProjectQuery } from '../lib/project
 import { addSageGeoJsonLayer } from '../lib/sageGeoJsonLayer';
 import type { Conversation, EphemeralAction, GeoJsonLayerUpdate, MapProject, MapTreeResponse, TileLayerUpdate } from '../lib/types';
 import { usePersistedState } from '../lib/usePersistedState';
-import { refusedWithoutWords } from '@/lib/mapLoadError';
 
 type UploadResponse = {
   name: string;
