@@ -13,6 +13,9 @@ export default defineConfig({
     baseURL: process.env.E2E_BASE_URL || 'http://localhost:8000',
     trace: 'on-first-retry',
     screenshot: 'only-on-failure',
+    // E2E_CHROMIUM: a Chromium already on this machine, when the one this Playwright version asks for is not
+    // installed. Unset (CI), Playwright uses its own.
+    launchOptions: process.env.E2E_CHROMIUM ? { executablePath: process.env.E2E_CHROMIUM } : {},
   },
 
   projects: [

@@ -131,6 +131,9 @@ jobs:
           sudo dmesg -T | grep -iE "out of memory|oom-kill|killed process|segfault|general protection" || echo "no OOM/segfault lines in dmesg"
 
       - name: Start services for E2E
+        # FIELD_TAPS=1: the field panel the browser test opens (e2e/field-flights.spec.ts) is behind this switch.
+        env:
+          FIELD_TAPS: "1"
         run: |
           docker compose up -d app
           # Wait for the app to be healthy
@@ -143,6 +146,12 @@ jobs:
             sleep 2
           done
         timeout-minutes: 5
+
+      - name: Seed the browser test farm
+        # Two flights of one field whose right answer is known beforehand (scripts/e2e_seed.py). It refuses the
+        # live database and an app with a sign-in provider.
+        run: docker compose exec -T app python scripts/e2e_seed.py
+        timeout-minutes: 2
 
       - name: Install frontend dependencies
         working-directory: frontendts
