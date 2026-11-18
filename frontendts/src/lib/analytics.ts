@@ -61,11 +61,14 @@ export const track = (event: string, properties: AnalyticsProperties = {}) => {
 
 export const httpStatusFromError = (error: unknown): number | null => {
   const status = (error as { status?: unknown })?.status;
-  if (typeof status === 'number') return status;
+  // 0 is "no answer at all" (lib/mapLoadError.ts), not a status: it is sorted by its words below
+  if (typeof status === 'number' && status !== 0) return status;
+  if (status === 0) return null;
 
+  // the app's own plain lines carry the status as "error 500" or "(502)"
   const message = getErrorMessage(error);
-  const match = message.match(/\b(?:HTTP|status)\s*(\d{3})\b/i);
-  return match ? Number.parseInt(match[1], 10) : null;
+  const match = message.match(/\b(?:HTTP|status|error)\s*(\d{3})\b|\((\d{3})\)/i);
+  return match ? Number.parseInt(match[1] ?? match[2], 10) : null;
 };
 
 export const classifyError = (error: unknown): string => {
@@ -75,8 +78,8 @@ export const classifyError = (error: unknown): string => {
   const message = getErrorMessage(error).toLowerCase();
   if (!message) return 'unknown';
   if (message.includes('token') || message.includes('unauthorized') || message.includes('session expired')) return 'auth';
-  if (message.includes('timeout') || message.includes('timed out')) return 'timeout';
-  if (message.includes('network') || message.includes('failed to fetch')) return 'network';
+  if (message.includes('timeout') || message.includes('timed out') || message.includes('took too long')) return 'timeout';
+  if (message.includes('network') || message.includes('failed to fetch') || message.includes('no connection')) return 'network';
   if (message.includes('raster')) return 'raster';
   if (message.includes('postgis') || message.includes('.mvt')) return 'vector_tile';
   if (message.includes('s3') || message.includes('upload')) return 'upload';

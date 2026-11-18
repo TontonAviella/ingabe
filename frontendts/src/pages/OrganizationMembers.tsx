@@ -4,6 +4,7 @@ import { toast } from 'sonner';
 import { roleLabel, useWorkOSSession } from '@/components/auth/WorkOSSession';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { refusedWithoutWords } from '@/lib/mapLoadError';
 
 // The people of the active WorkOS organization. Admins invite people by email,
 // see whether each invitation was taken up, send it again or as a ready message
@@ -77,7 +78,7 @@ async function call<T>(path: string, init?: RequestInit): Promise<T> {
   });
   if (!res.ok) {
     const body = await res.json().catch(() => null);
-    throw new Error(body?.detail ?? `Request failed (${res.status})`);
+    throw new Error(body?.detail ?? refusedWithoutWords(res.status));
   }
   return res.json();
 }

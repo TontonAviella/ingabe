@@ -15,6 +15,7 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardFooter, CardHeader, CardTitle } from '@/components/ui/card';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
+import { serverError } from '@/lib/serverError';
 import type { PaintOverrides } from '../hooks/useLayerPaintOverrides';
 import type { ErrorEntry } from '../lib/frontend-types';
 import type { EphemeralAction, MapData, MapLayer, MapProject } from '../lib/types';
@@ -144,9 +145,7 @@ const LayerList: React.FC<LayerListProps> = ({
       });
 
       if (!response.ok) {
-        const errorData = await response.json().catch(() => ({ detail: response.statusText }));
-        const d = errorData.detail;
-        throw new Error(typeof d === 'string' ? d : d ? JSON.stringify(d) : response.statusText);
+        throw await serverError(response);
       }
 
       return response.json();

@@ -70,22 +70,27 @@ async def main() -> None:
     conn = await asyncpg.connect(test_url)
     try:
         await conn.execute("SELECT set_config('app.user_id', '', false)")  # seeding: the admin branch of RLS
-        await conn.execute("DELETE FROM map_layers WHERE source_map_id = $1", map_id)
-        await conn.execute("DELETE FROM user_mundiai_maps WHERE id = $1", map_id)
-        await conn.execute("DELETE FROM user_mundiai_projects WHERE id = $1", args.project)
         title = args.title or f"Real photo, {industries.INDUSTRIES[args.industry]['label']}"
-        await conn.execute(
-            "INSERT INTO user_mundiai_projects (id, owner_uuid, editor_uuids, viewer_uuids, title, industry, maps) "
-            "VALUES ($1, $2::uuid, '{}', '{}', $3, $4, ARRAY[$5])", args.project, owner, title, args.industry, map_id)
-        await conn.execute(
-            "INSERT INTO user_mundiai_maps (id, project_id, owner_uuid, title, layers) "
-            "VALUES ($1, $2, $3::uuid, $4, $5::text[])", map_id, args.project, owner, title, new_ids)
-        for new_id, row in zip(new_ids, rows):
-            values = [row[c] for c in COLUMNS]
+        # All or nothing, and the project and its map are kept when they exist: a map someone asked Sage about
+        # cannot be deleted (its chat points at it), and a half-done run left the project without its photo.
+        async with conn.transaction():
+            await conn.execute("DELETE FROM map_layers WHERE source_map_id = $1", map_id)
             await conn.execute(
-                f"INSERT INTO map_layers (layer_id, owner_uuid, source_map_id, {', '.join(COLUMNS)}) "
-                f"VALUES ($1, $2::uuid, $3, {', '.join(f'${i}' for i in range(4, 4 + len(COLUMNS)))})",
-                new_id, owner, map_id, *values)
+                "INSERT INTO user_mundiai_projects (id, owner_uuid, editor_uuids, viewer_uuids, title, industry, maps) "
+                "VALUES ($1, $2::uuid, '{}', '{}', $3, $4, ARRAY[$5]) "
+                "ON CONFLICT (id) DO UPDATE SET title = EXCLUDED.title, industry = EXCLUDED.industry, maps = EXCLUDED.maps",
+                args.project, owner, title, args.industry, map_id)
+            await conn.execute(
+                "INSERT INTO user_mundiai_maps (id, project_id, owner_uuid, title, layers) "
+                "VALUES ($1, $2, $3::uuid, $4, $5::text[]) "
+                "ON CONFLICT (id) DO UPDATE SET title = EXCLUDED.title, layers = EXCLUDED.layers",
+                map_id, args.project, owner, title, new_ids)
+            for new_id, row in zip(new_ids, rows):
+                values = [row[c] for c in COLUMNS]
+                await conn.execute(
+                    f"INSERT INTO map_layers (layer_id, owner_uuid, source_map_id, {', '.join(COLUMNS)}) "
+                    f"VALUES ($1, $2::uuid, $3, {', '.join(f'${i}' for i in range(4, 4 + len(COLUMNS)))})",
+                    new_id, owner, map_id, *values)
     finally:
         await conn.close()
     print(json.dumps({"project": args.project, "map": map_id, "industry": args.industry,

@@ -20,6 +20,7 @@ import { toast } from 'sonner';
 import { useWorkOSSession } from '@/components/auth/WorkOSSession';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { refusedWithoutWords } from '@/lib/mapLoadError';
 
 // Ingabe staff: every partner company, whether its admin has joined, and the
 // one action each state needs. Companies manage their own people afterwards
@@ -337,7 +338,7 @@ async function call<T>(path: string, init?: RequestInit): Promise<T> {
   });
   if (!res.ok) {
     const body = await res.json().catch(() => null);
-    throw new Error(body?.detail ?? `Request failed (${res.status})`);
+    throw new Error(body?.detail ?? refusedWithoutWords(res.status));
   }
   return res.json();
 }

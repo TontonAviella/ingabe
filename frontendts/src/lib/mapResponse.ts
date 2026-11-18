@@ -1,3 +1,4 @@
+import { refusedWithoutWords } from './mapLoadError';
 import type { MapData } from './types';
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -29,7 +30,7 @@ export async function parseMapResponse(response: Response): Promise<MapData> {
     throw new Error('Map not found');
   }
   if (!response.ok) {
-    throw new Error(`Failed to fetch map: ${response.status}`);
+    throw new Error(refusedWithoutWords(response.status));
   }
 
   const payload: unknown = await response.json();

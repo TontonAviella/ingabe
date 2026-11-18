@@ -4,6 +4,7 @@ import { Loader2 } from 'lucide-react';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { toast } from 'sonner';
 import { Input } from '@/components/ui/input';
+import { serverError } from '@/lib/serverError';
 
 interface EditableTitleProps {
   projectId: string;
@@ -29,9 +30,7 @@ const EditableTitle: React.FC<EditableTitleProps> = ({ projectId, title = '', pl
       });
 
       if (!response.ok) {
-        const errorData = await response.json().catch(() => ({ detail: response.statusText }));
-        const d = errorData.detail;
-        throw new Error(typeof d === 'string' ? d : d ? JSON.stringify(d) : response.statusText);
+        throw await serverError(response);
       }
 
       return response.json();
@@ -43,7 +42,7 @@ const EditableTitle: React.FC<EditableTitleProps> = ({ projectId, title = '', pl
       setIsDebouncing(false);
     },
     onError: (error: Error) => {
-      toast.error(`Failed to update title: ${error.message}`);
+      toast.error(`The title was not changed. ${error.message}`);
       setTitleValue(title);
       setIsDebouncing(false);
     },

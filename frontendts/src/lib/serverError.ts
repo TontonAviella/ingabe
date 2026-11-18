@@ -1,6 +1,8 @@
 // A request the server refused, in the server's own words. The panels show `message` as it is: the server
 // explains why (a photo still processing, objects too small for the finder), so the words are never rewritten here.
 
+import { refusedWithoutWords } from './mapLoadError';
+
 export class ServerError extends Error {
   constructor(
     public status: number,
@@ -20,7 +22,7 @@ function detailText(detail: unknown): string | null {
   return null;
 }
 
-/** The server's own words for a failed request, or its status. */
+/** The server's own words for a failed request; without any, a plain line that names its status. */
 export async function serverError(res: Response): Promise<ServerError> {
   let detail: string | null = null;
   try {
@@ -28,5 +30,5 @@ export async function serverError(res: Response): Promise<ServerError> {
   } catch {
     /* not JSON: keep the status */
   }
-  return new ServerError(res.status, detail ?? `Request failed (${res.status})`);
+  return new ServerError(res.status, detail ?? refusedWithoutWords(res.status));
 }
