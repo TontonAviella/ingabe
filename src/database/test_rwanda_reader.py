@@ -57,6 +57,23 @@ async def test_only_agriculture_reads_the_farm_caches():
 
 
 @pytest.mark.anyio
+async def test_no_login_is_shown_the_crop_classification_table():
+    """Its job was removed and it holds no rows; Sage queried it step after step because it was listed."""
+    from src.database.rwanda_reader import INTERNAL_RWANDA_ALLOWED_TABLES
+
+    assert "crop_classification_cache" not in INTERNAL_RWANDA_ALLOWED_TABLES
+    farm = await _login("agriculture")
+    try:
+        with pytest.raises(asyncpg.exceptions.InsufficientPrivilegeError):
+            await farm.fetch("SELECT * FROM crop_classification_cache LIMIT 1")
+        listed = await farm.fetch(
+            "SELECT table_name FROM information_schema.tables WHERE table_name = 'crop_classification_cache'")
+        assert listed == []  # the list Sage is shown is read through this login
+    finally:
+        await farm.close()
+
+
+@pytest.mark.anyio
 @pytest.mark.parametrize("industry, role", [("agriculture", READER_ROLE), ("telecom", GENERAL_READER_ROLE)])
 async def test_internal_connections_log_in_as_their_industrys_reader(industry, role):
     from src.routes.message_routes import (

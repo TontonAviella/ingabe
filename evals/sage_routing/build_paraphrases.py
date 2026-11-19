@@ -129,7 +129,15 @@ INTENTS: list[tuple] = [
 # A wording whose right answer differs from its intent's: the layer it names is on the map, and what that layer
 # does not hold is read first (Roger's styling cases, 2026-11-19: with no such layer on the map, answering in
 # words was right and the cases were wrong).
+_FOOD = {"expect": {"no_tool": True, "lookup_ok": ["search_brain", "get_drought_status", "get_yield_risk"]},
+         "notes": "followed to Sage's final words 2026-11-19: it reads drought or the brain, then says it has no "
+                  "food-security data (reports/sage_routing/prereg-no-tool-requests-2026-11-19.md)"}
+_WATER = {"expect": {"no_tool": True, "lookup_ok": ["query_worldcover_stats", "search_location"]},
+          "notes": "followed to Sage's final words 2026-11-19: it gives land-cover water hectares as such, or says "
+                   "it has no water-body data (reports/sage_routing/prereg-no-tool-requests-2026-11-19.md)"}
 OVERRIDES: dict[str, dict] = {
+    **{f"p-food-security-{i}": _FOOD for i in (1, 2, 3)},
+    **{f"p-water-bodies-{i}": _WATER for i in (1, 2, 3)},
     "p-style-1": {
         "map_state": {"layers": [{"name": "sectors", "type": "vector"}]},
         "expect": {"any_of": ["set_layer_style", "get_cell_ndvi_stats", "get_agri_indices"]},

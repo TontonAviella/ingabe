@@ -106,6 +106,10 @@ def validate_case(case: dict[str, Any], known_tools: set[str] | None = None) -> 
 
     if any_of is not None:
         check_tools(any_of, "any_of")
+    if "lookup_ok" in expect:
+        if not no_tool:
+            raise CorpusError(f"{cid}: lookup_ok only goes with no_tool")
+        check_tools(expect["lookup_ok"], "lookup_ok")
     for tool, params in (expect.get("args") or {}).items():
         if not any_of or tool not in any_of:
             raise CorpusError(f"{cid}: expect.args names {tool!r}, which is not in any_of")
@@ -310,7 +314,9 @@ def classify_attempt(expect: dict[str, Any], first_tool: str) -> str:
     if first_tool.startswith(ERROR_PREFIX):
         return ERROR
     if expect.get("no_tool"):
-        return CORRECT if first_tool == TEXT_ONLY else FALSE_TOOL
+        # lookup_ok: looking something up first is right when the answer that follows was read and found plain
+        # (the case's notes say when and where); any other tool is still a false tool.
+        return CORRECT if first_tool == TEXT_ONLY or first_tool in (expect.get("lookup_ok") or ()) else FALSE_TOOL
     if first_tool == TEXT_ONLY:
         # A clarifying question is right when the request lacks what the tool needs.
         return CORRECT if expect.get("allow_clarify") else ABDICATED

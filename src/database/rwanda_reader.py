@@ -39,13 +39,14 @@ BOUNDARY_TABLES = frozenset(
         "weather_daily_cache",
     }
 )
+# crop_classification_cache is not here: its job was removed and it holds no rows, and Sage queries every table
+# it is shown (migration c8e1f4a7d2b5 takes the readers' permission away).
 AGRICULTURE_TABLES = frozenset(
     {
         "ndvi_cell_cache",
         "ndvi_field_cache",
         "agri_indices_cache",
         "anomaly_alerts_cache",
-        "crop_classification_cache",
         "drought_cache",
         "emissions_annual_cache",
         "phenology_cache",

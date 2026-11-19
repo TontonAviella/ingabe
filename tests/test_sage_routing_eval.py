@@ -63,6 +63,24 @@ def test_non_agriculture_cases_exist_and_farm_wording_is_scored_wrong() -> None:
     assert harness.FARM_WORDS.search("The maize fields look stressed") and not harness.FARM_WORDS.search(
         "The mast is 40 m tall and the access road floods after heavy rain.")
     assert scoring.classify_attempt({"no_tool": True}, scoring.FARM_WORDING) == scoring.FALSE_TOOL
+    # Repeating the person's own word to decline is not farm talk; bringing up a new farm word is.
+    asked = "How healthy are the farms around the Bugesera mast?"
+    assert not harness.farm_talk("Farm health isn't something I can assess in this project.", asked)
+    assert harness.farm_talk("Farm health looks fine, and the maize is green.", asked)
+    assert harness.farm_talk("I can check crop stress near the mast.", "How tall is the Bugesera mast?")
+
+
+def test_a_lookup_before_a_plain_answer_is_right_only_for_the_tools_the_case_names() -> None:
+    """Food security has no tool: reading drought first, then saying so, was read and found plain (2026-11-19).
+    Any other tool is still a false tool, and lookup_ok cannot be put on a case that expects a tool."""
+    expect = {"no_tool": True, "lookup_ok": ["get_drought_status"]}
+    assert scoring.classify_attempt(expect, scoring.TEXT_ONLY) == scoring.CORRECT
+    assert scoring.classify_attempt(expect, "get_drought_status") == scoring.CORRECT
+    assert scoring.classify_attempt(expect, "get_ndvi_stats") == scoring.FALSE_TOOL
+    base = {"id": "x", "intent": "x", "text": "t", "category": "unsupported", "stratum": "coverage", "lang": "en"}
+    scoring.validate_case({**base, "expect": expect})
+    with pytest.raises(scoring.CorpusError):
+        scoring.validate_case({**base, "expect": {"any_of": ["get_ndvi_stats"], "lookup_ok": ["get_drought_status"]}})
 
 
 def test_a_case_without_an_industry_runs_as_agriculture() -> None:
