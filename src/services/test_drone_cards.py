@@ -275,6 +275,26 @@ def test_plots_that_are_the_readers_outlined_fields_are_called_that(photo):
     assert options[drone_plots.OUTLINED_FIELDS]["detail"] == "Outlined by you on this photo · 10 fields"
 
 
+def test_the_list_of_questions_says_where_the_plots_come_from_with_the_way_back(photo):
+    """With fields outlined, every plot card is about those fields alone. The list itself carries the choice, so the
+    plots Ingabe found are one tap away and not inside an opened card (the live site, 2026-11-19)."""
+    fields = dataclasses.replace(_plot_set(), source=drone_plots.OUTLINED_FIELDS_NAME)
+    choice = drone_plots.PlotMap(layer_id=drone_plots.OUTLINED_FIELDS, name=drone_plots.OUTLINED_FIELDS_NAME, shapes=1)
+    here = drone_cards.Here(photos=1, plots=fields, plot_maps=(choice,), plot_map=drone_plots.OUTLINED_FIELDS)
+    deck = drone_cards.build_deck(_analysis(photo), "farmer", here)
+    options = {o["id"]: o for o in deck["choices"]["options"]}
+    assert options[drone_plots.OUTLINED_FIELDS]["selected"] is True and options["found"]["selected"] is False
+    assert options[drone_plots.OUTLINED_FIELDS]["detail"] == "Outlined by you on this photo · 1 field"
+    assert deck["choices"]["href"].endswith("/plots/source")
+    # a photo with no other source of plots offers no choice
+    assert drone_cards.build_deck(_analysis(photo), "farmer", drone_cards.Here(photos=1, plots=_plot_set()))["choices"] is None
+
+
+def test_one_plot_is_one_plot_and_one_field_is_one_field():
+    assert drone_cards._count(1, "plot") == "1 plot" and drone_cards._count(2, "plot") == "2 plots"
+    assert drone_cards._count(1, "field") == "1 field" and drone_cards._count(0, "field") == "0 fields"
+
+
 @pytest.mark.parametrize("audience", ["farmer", "insurer", "agronomist", "scientist"])
 def test_no_plot_card_talks_about_money(photo, audience):
     here = drone_cards.Here(photos=1, plots=_plot_set())

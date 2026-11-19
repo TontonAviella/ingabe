@@ -73,7 +73,7 @@ def _square(west: float, south: float) -> dict:
 
 
 @pytest.mark.anyio
-async def test_outlined_fields_are_the_plots_until_the_reader_chooses_otherwise(monkeypatch):
+async def test_outlined_fields_are_the_plots_only_when_the_reader_chooses_them(monkeypatch):
     from src.services import drone_plots, field_taps
     from src.services.test_farm_records import _FakeS3
 
@@ -89,8 +89,10 @@ async def test_outlined_fields_are_the_plots_until_the_reader_chooses_otherwise(
     own_map = (drone_plots.PlotMap(layer_id="Lmap", name="Farm map", shapes=4), "Lmap:v1")
     maps = [(source, version), own_map]
 
-    # nothing chosen: the fields; a chosen map wins; "found" goes back to Ingabe's plots; a map that is gone, too
-    assert photo_plots.chosen_source(metadata, maps) == photo_plots.FIELDS
+    # nothing chosen: the plots Ingabe found, also with fields outlined (one outlined field must not empty the
+    # analysis of a whole photo); the fields when chosen; a chosen map; "found" and a map that is gone go back
+    assert photo_plots.chosen_source(metadata, maps) is None
+    assert photo_plots.chosen_source({**metadata, photo_plots.PLOT_MAP_KEY: photo_plots.FIELDS}, maps) == photo_plots.FIELDS
     assert photo_plots.chosen_source({**metadata, photo_plots.PLOT_MAP_KEY: "Lmap"}, maps) == "Lmap"
     assert photo_plots.chosen_source({**metadata, photo_plots.PLOT_MAP_KEY: photo_plots.FOUND}, maps) is None
     assert photo_plots.chosen_source({**metadata, photo_plots.PLOT_MAP_KEY: "Lgone"}, maps) is None

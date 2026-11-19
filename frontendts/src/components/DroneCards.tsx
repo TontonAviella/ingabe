@@ -556,6 +556,9 @@ function DeckView({
         </select>
       </label>
 
+      {/* with fields outlined, the plot questions are about those fields alone: said here, with the way back */}
+      {deck.choices && <Choices layerId={layerId} choices={deck.choices} />}
+
       <div className="flex flex-col gap-2.5">
         {deck.for_you.map((card) => (
           <DroneCardButton key={card.id} card={card} onOpen={onOpen} />

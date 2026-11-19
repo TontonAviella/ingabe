@@ -270,7 +270,7 @@ describe('outlining a field by tapping it', () => {
     expect(server.turnedDown).toEqual([]);
   });
 
-  it('lets the reader pull the line to the true edge, undo a pull, and keeps it marked as moved by hand', async () => {
+  it('lets the reader drag the corners to the true edge, undo a drag, and keeps it marked as moved by hand', async () => {
     const server = fakeServer(true);
     const m = fakeMap();
     mount(<FieldTaps map={m.map} layers={[photo]} hiddenLayerIDs={[]} />);
@@ -282,7 +282,7 @@ describe('outlining a field by tapping it', () => {
     click(byButton(/^A · /) as HTMLButtonElement); // the square from (30, -2) to (31, -1)
     await vi.waitFor(() => expect(byButton('Move the line')).not.toBeNull());
     click(byButton('Move the line') as HTMLButtonElement);
-    await vi.waitFor(() => expect(byText('Press on the line and pull it to the true edge. Let go anywhere.')).not.toBeNull());
+    await vi.waitFor(() => expect(byText('Drag a dot to the true corner. Drag the line itself to add a corner.')).not.toBeNull());
     const has = (ring: number[][], lng: number, lat: number, within = 1e-6) =>
       ring.some((c) => Math.abs(c[0] - lng) < within && Math.abs(c[1] - lat) < within);
     const east = (ring: number[][]) => Math.max(...ring.map((c) => c[0]));
@@ -292,23 +292,38 @@ describe('outlining a field by tapping it', () => {
     expect(m.draw([30.5, -1.5], [30.6, -1.5])).toBe(false);
     expect(server.measured).toEqual([]);
 
-    // press the east side and pull it 100 px out, letting go in open ground: the map holds still, that stretch of
-    // the side follows the finger, the far side stays, and the server measures the new line
+    // while the line is moved, each corner of the outline carries a dot to take hold of
+    const dots = () => m.drawn().features.filter((f) => f.properties?.kind === 'corner');
+    expect(dots()).toHaveLength(4);
+
+    // press the middle of the east side, away from the dots, and drag 100 px out, letting go in open ground: the
+    // map holds still, a corner is made there and follows the finger, and the server measures the new line
     expect(m.draw([31, -1.5], [31.05, -1.5], [31.1, -1.5])).toBe(true);
     await vi.waitFor(() => expect(server.measured).toHaveLength(1));
     const moved = server.measured[0].moved;
+    expect(moved).toHaveLength(5); // the four corners and the new one: the sides between them stay straight
     expect(has(moved, 31.1, -1.5)).toBe(true); // the pressed place went where the finger went
     expect(east(moved)).toBeCloseTo(31.1, 6); // and nothing went further
-    // the west side's corners are exactly where they were, to the last digit
-    expect(moved.some((c) => c[0] === 30 && c[1] === -2) && moved.some((c) => c[0] === 30 && c[1] === -1)).toBe(true);
+    // every other corner is exactly where it was, to the last digit
+    for (const [lng, lat] of [
+      [30, -2],
+      [30, -1],
+      [31, -2],
+      [31, -1],
+    ])
+      expect(moved.some((c) => c[0] === lng && c[1] === lat)).toBe(true);
+    await vi.waitFor(() => expect(dots()).toHaveLength(5));
     expect(server.measured[0].first_tap.lon).toBe(30.1);
     await vi.waitFor(() => expect(byText('0.42 ha')).not.toBeNull());
 
-    // a press a finger's width off the line still takes hold of it (20 px away), and pulls it inwards
-    expect(m.draw([30.5, -2.02], [30.5, -1.95])).toBe(true);
+    // a press a finger's width off a dot still takes hold of it (20 px away), and the corner goes as far as the
+    // finger did (70 px), not to the finger: no corner is added
+    expect(m.draw([31.02, -2], [31.02, -1.93])).toBe(true);
     await vi.waitFor(() => expect(server.measured).toHaveLength(2));
-    expect(Math.min(...server.measured[1].moved.map((c) => c[1]))).toBeCloseTo(-2, 6); // the corners of that side stayed
-    expect(has(server.measured[1].moved, 30.5, -1.93)).toBe(true); // its middle came in by the 70 px of the pull
+    expect(server.measured[1].moved).toHaveLength(5);
+    expect(has(server.measured[1].moved, 31, -1.93)).toBe(true);
+    expect(has(server.measured[1].moved, 31, -2)).toBe(false);
+    expect(server.measured[1].moved.some((c) => c[0] === 30 && c[1] === -2)).toBe(true); // its neighbour stayed
 
     // "Undo last" takes back one pull, and the server measures the line that is back
     click(byButton('Undo last') as HTMLButtonElement);
@@ -328,7 +343,7 @@ describe('outlining a field by tapping it', () => {
     await vi.waitFor(() => expect(byText('Your field: 0.10 ha')).not.toBeNull());
 
     click(byButton('Move the line') as HTMLButtonElement);
-    await vi.waitFor(() => expect(byText('Press on the line and pull it to the true edge. Let go anywhere.')).not.toBeNull());
+    await vi.waitFor(() => expect(byText('Drag a dot to the true corner. Drag the line itself to add a corner.')).not.toBeNull());
     m.draw([30.5, -1], [30.5, -0.8]);
     await vi.waitFor(() => expect(server.measured).toHaveLength(5));
     click(byButton('Done') as HTMLButtonElement);
@@ -340,7 +355,7 @@ describe('outlining a field by tapping it', () => {
     await vi.waitFor(() => expect(byText(/Field 1 · 0\.42 ha · by hand/)).not.toBeNull());
   });
 
-  it('keeps a pull wherever it is let go, ignores a press with no pull, and ends a pull when the button is let go off the map', async () => {
+  it('keeps a drag wherever it is let go, ignores a press with no drag, and ends a drag when the button is let go off the map', async () => {
     const server = fakeServer(true);
     const m = fakeMap();
     mount(<FieldTaps map={m.map} layers={[photo]} hiddenLayerIDs={[]} />);
@@ -352,7 +367,7 @@ describe('outlining a field by tapping it', () => {
     click(byButton(/^A · /) as HTMLButtonElement); // the square from (30, -2) to (31, -1)
     await vi.waitFor(() => expect(byButton('Move the line')).not.toBeNull());
     click(byButton('Move the line') as HTMLButtonElement);
-    await vi.waitFor(() => expect(byText('Press on the line and pull it to the true edge. Let go anywhere.')).not.toBeNull());
+    await vi.waitFor(() => expect(byText('Drag a dot to the true corner. Drag the line itself to add a corner.')).not.toBeNull());
     const sq = square; // the fake server's square of a given size
     const drawnNow = () => m.drawn().features.find((f) => f.geometry.type === 'Polygon')?.geometry as GeoJSON.Polygon;
     const before = JSON.stringify(drawnNow());
@@ -461,7 +476,7 @@ describe('outlining a field by tapping it', () => {
     click(byButton('Ask') as HTMLButtonElement);
     await vi.waitFor(() => expect(asked).toHaveLength(1));
     expect(asked[0]).toBe(
-      'About Field 7 on the drone photo "Cyampirita" (plot 7 of my outlined fields: 200 m², centred at latitude -1.75, longitude 30.25): what is planted here?',
+      'About Field 7, a field I outlined myself on the drone photo "Cyampirita" (not a plot Ingabe found; Field 7 of my outlined fields: 200 m², centred at latitude -1.75, longitude 30.25): what is planted here?',
     );
 
     // removing asks first, and "Keep" leaves the field where it is
@@ -692,7 +707,7 @@ describe('outlining a field by tapping it', () => {
     await vi.waitFor(() => expect((byButton('Ask') as HTMLButtonElement).disabled).toBe(false));
     click(byButton('Ask') as HTMLButtonElement);
     await vi.waitFor(() => expect(asked).toHaveLength(1));
-    expect(asked[0]).toContain('(plot 3 of my outlined fields: 0.18 ha, green cover 62%, centred');
+    expect(asked[0]).toContain('Field 3 of my outlined fields: 0.18 ha, green cover 62%, centred');
     // a field it was not measured on shows no figure, and says why
     m.clickOn('b');
     await vi.waitFor(() => expect(byText('Field 4 · 0.90 ha')).not.toBeNull());

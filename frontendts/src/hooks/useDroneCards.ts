@@ -40,6 +40,8 @@ export interface DroneDeck {
   /** Questions for Sage built from what this photo shows. */
   ask_sage: AskSage[];
   seed: number;
+  /** Where the plots come from, when the reader has more than one source (their outlined fields, a plot map). */
+  choices?: DroneCardAnswer['choices'];
 }
 
 export interface DroneCardAnswer extends DroneCard, CardAnswerCore {
