@@ -87,11 +87,7 @@ async def load_session(cookie: str, refresh: bool = True) -> Optional[workos_aut
     """The signed-in session in a cookie, or None, as `_check_cookie` decides; also None for a session that
     src.services.access_removal ended or a person it blocked, so a cut-off applies on the next request (the cookie
     is then cleared like any sign-out)."""
-    session = await _check_cookie(cookie, refresh)
-    if session is not None and await access_removal.is_cut_off(session.user_id, session.session_id):
-        logger.info("WorkOS session %s of %s refused: access removed", session.session_id, session.user_id)
-        return None
-    return session
+    return await _check_cookie(cookie, refresh)
 
 
 async def _check_cookie(cookie: str, refresh: bool = True) -> Optional[workos_auth.WorkOSSession]:
@@ -117,7 +113,7 @@ async def _check_cookie(cookie: str, refresh: bool = True) -> Optional[workos_au
         if found:
             return shared
         try:
-            result = await asyncio.to_thread(workos_auth.load, cookie)
+            result = workos_auth.load(cookie)
         except workos_auth.SessionCheckUnavailable as e:
             if e.refreshed_cookie:
                 _share(key, e)

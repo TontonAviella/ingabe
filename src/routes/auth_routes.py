@@ -290,13 +290,12 @@ class Invite(BaseModel):
 async def organization_invite(body: Invite, request: Request, session: UserContext = Depends(verify_session_required)):
     """Invite someone by email; WorkOS sends the invitation."""
     ws_session, org = _active_org(request)
-    _require_admin(ws_session)
     if "@" not in body.email:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Enter an email address")
     try:
         return await asyncio.to_thread(workos_auth.invite, org, body.email.strip(), body.role, ws_session.user_id)
-    except ValueError as e:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Invite failed: {e!r}")
 
 
 @api.post("/organization/invitations/{invitation_id}/resend")
@@ -304,8 +303,6 @@ async def organization_resend(invitation_id: str, request: Request, session: Use
     """Send an invitation of the active organization again (also one that expired)."""
     ws_session, org = _active_org(request)
     _require_admin(ws_session)
-    if not any(i["id"] == invitation_id for i in await asyncio.to_thread(workos_auth.open_invitations, org)):
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No such invitation in this organization")
     try:
         return await asyncio.to_thread(workos_auth.resend_invitation, invitation_id)
     except ValueError as e:

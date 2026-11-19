@@ -50,9 +50,8 @@ logger = logging.getLogger(__name__)
 
 COOKIE_NAME = "wos_session"
 COOKIE_MAX_AGE = 30 * 24 * 3600  # the refresh token, not the cookie, bounds the session
-# Clocks drift: on 2026-10-06 WorkOS ran 0.5-0.9 s ahead of this server, and with no
-# leeway PyJWT rejects a token whose issue time (iat) is a fraction of a second ahead.
-JWT_LEEWAY_SECONDS = 60
+# Tokens are checked strictly against this server's clock.
+JWT_LEEWAY_SECONDS = 0
 
 
 class SessionCheckUnavailable(Exception):
