@@ -53,3 +53,17 @@ async def test_a_count_carries_the_persons_own_check_only_for_the_field_they_che
     assert await tools._checked_by_a_person(None, "b", "photo", "L1", plot(4, square)) is None
     monkeypatch.setattr(field_taps, "enabled", lambda: False)
     assert await tools._checked_by_a_person(None, "b", "photo", "L1", plot(3, square)) is None
+
+
+def test_a_count_must_say_whether_the_number_is_a_field_or_a_plot():
+    """Field 7 (outlined by the person) and Plot 7 (found by Ingabe) are different pieces of land: the tool cannot be
+    called without saying which, so a number is never looked up in the wrong set by default."""
+    import pydantic
+    import pytest
+
+    from src.tools.drone_photo_tools import CountPlantsArgs
+
+    assert CountPlantsArgs.model_fields["outlined_field"].is_required()
+    with pytest.raises(pydantic.ValidationError):
+        CountPlantsArgs(layer_id="L1", plot_number=7, show_other_green=False)  # type: ignore[call-arg]
+    assert CountPlantsArgs(layer_id="L1", plot_number=7, show_other_green=False, outlined_field=True).outlined_field is True

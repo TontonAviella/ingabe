@@ -729,7 +729,7 @@ export function FieldTaps({
                 if (!asked) return;
                 const [lon, lat] = selected.centre;
                 onAskSage(
-                  `About Field ${selected.number} on the drone photo "${photo?.name ?? ''}" (plot ${selected.number} of my outlined fields: ${ha(selected.area_ha)}${coverText(selected) ? `, ${coverText(selected)}` : ''}, centred at latitude ${lat}, longitude ${lon}): ${asked}`,
+                  `About Field ${selected.number}, a field I outlined myself on the drone photo "${photo?.name ?? ''}" (not a plot Ingabe found; Field ${selected.number} of my outlined fields: ${ha(selected.area_ha)}${coverText(selected) ? `, ${coverText(selected)}` : ''}, centred at latitude ${lat}, longitude ${lon}): ${asked}`,
                 );
                 setQuestion('');
               }}

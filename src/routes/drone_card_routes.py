@@ -222,7 +222,7 @@ async def choose_drone_plot_source(
     if choice.source == photo_plots.FOUND and fields is None:
         sql, args = "UPDATE map_layers SET metadata = metadata - $2::text WHERE layer_id = $1", (layer.layer_id, photo_plots.PLOT_MAP_KEY)
     else:
-        # With outlined fields on the photo, "found" is kept as a choice: with nothing chosen the fields are used.
+        # With outlined fields on the photo the choice is kept, "found" too: it says the reader chose.
         maps = [fields] if fields else []
         if choice.source not in (photo_plots.FOUND, photo_plots.FIELDS):
             if not layer.bounds:

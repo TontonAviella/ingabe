@@ -58,7 +58,13 @@ class DronePhotoArgs(BaseModel):
 
 class CountPlantsArgs(BaseModel):
     layer_id: str = Field(..., description="The layer_id of the drone photo (a raster layer on the map).")
-    plot_number: int = Field(..., description="The plot's number as shown on the photo and in the question cards.")
+    plot_number: int = Field(..., description=("The number of the plot as shown on the photo and in the question cards, "
+                                               "or of the field when outlined_field is true."))
+    outlined_field: bool = Field(
+        ...,
+        description=("true when the person means a field they outlined themselves on the photo (they say 'Field 7', "
+                     "'my field', 'the field I outlined'). false for a plot ('Plot 7'). Field 7 and Plot 7 are "
+                     "different pieces of land, so never guess: when it is not clear which they mean, ask."))
     show_other_green: bool = Field(
         ...,
         description=("true ONLY when the person asks where the weeds, grass or other green are. Otherwise false: the "
@@ -113,6 +119,7 @@ async def get_drone_photo_findings(args: DronePhotoArgs, meta: IngabeToolCallMet
 
     findings = await asyncio.to_thread(lambda: [finding(c) for c in cards])
     look = analysis.look
+    own_fields = await _own_fields_apart(row, meta, here)
     return {
         "status": "success",
         "photo": {"name": row["name"], "place": look.place,
@@ -120,6 +127,12 @@ async def get_drone_photo_findings(args: DronePhotoArgs, meta: IngabeToolCallMet
                   "cm_per_pixel": round(look.resolution_cm, 1) if look.resolution_cm is not None else None,
                   "camera": analysis.camera},
         "plots": here.plots.count if here.plots else None,
+        # the fields the person outlined themselves, when the plots above are not those fields: "Field 7" is one of
+        # these, "Plot 7" one of the plots; the same number is a different piece of land
+        "fields_the_person_outlined": own_fields,
+        "fields_the_person_outlined_note": (
+            "These are the person's own fields ('Field N'). The plots in this answer ('Plot N') were found by Ingabe "
+            "and are numbered apart: Field N is not Plot N." if own_fields else None),
         # each field's own facts, the same ones the cards and the field panel show, in the same words
         "fields": [{k: v for k, v in {"field": facts.name, "size": facts.area_said, "green_cover": facts.cover_said,
                                       "plants": facts.plants_said, "counted_share_of_field": facts.counted_share,
@@ -153,6 +166,26 @@ async def get_drone_photo_findings(args: DronePhotoArgs, meta: IngabeToolCallMet
     }
 
 
+async def _own_fields_apart(row: dict[str, Any], meta: IngabeToolCallMetaArgs,
+                            here: drone_cards.Here) -> Optional[list[str]]:
+    """The fields the person outlined, one line each as every surface says them, when the cards' plots are not
+    those fields (then `fields` already holds them). None when they outlined none. Never fails the answer."""
+    if field_facts.outlined(here.plots):
+        return None
+    try:
+        s3, bucket = await get_async_s3_client(), get_bucket_name()
+        metadata = row["metadata"]
+        own = await photo_plots.outlined_plots(s3, bucket, row["layer_id"], metadata, meta.user_uuid,
+                                               await photo_context.cog_url(s3, bucket, metadata))
+        if own is None:
+            return None
+        facts = await field_facts.of_plots(s3, bucket, photo_plots.photo_key(metadata), row["layer_id"], own)
+        return [field_facts.said(f) for f in facts[:MAX_FIELDS_TOLD]] or None
+    except Exception:  # the findings are still given, without the person's own fields
+        logger.exception("drone photo findings: the outlined fields of layer %s could not be read", row["layer_id"])
+        return None
+
+
 async def count_plants_in_plot(args: CountPlantsArgs, meta: IngabeToolCallMetaArgs) -> dict[str, Any]:
     """Estimate the crop plants in one plot of a drone photo and draw them on the map, with the other green
     (weeds, grass, bush) drawn apart. Plants are found by their shape, not their colour, so green that is not
@@ -181,13 +214,31 @@ async def count_plants_in_plot(args: CountPlantsArgs, meta: IngabeToolCallMetaAr
     s3, bucket = await get_async_s3_client(), get_bucket_name()
     metadata = row["metadata"]
     url = await photo_context.cog_url(s3, bucket, metadata)
-    plots = await photo_plots.current_plots(s3, bucket, row["layer_id"], list(row["bounds"]) if row["bounds"] else None,
-                                            metadata, meta.user_uuid, url)
+    own = await photo_plots.outlined_plots(s3, bucket, row["layer_id"], metadata, meta.user_uuid, url)
+    if args.outlined_field:
+        if own is None:
+            return {"status": "error", "error": "The person has outlined no field on this photo; ask which plot they mean."}
+        plots = own
+    else:
+        plots = await photo_plots.current_plots(s3, bucket, row["layer_id"],
+                                                list(row["bounds"]) if row["bounds"] else None, metadata,
+                                                meta.user_uuid, url)
     if plots is None:
         return {"status": "error", "error": "The plots of this photo are not found yet; open the question cards first."}
     feature = next((f for f in plots.geojson["features"] if f["properties"]["number"] == args.plot_number), None)
     if feature is None:
+        if args.outlined_field:
+            numbers = ", ".join(str(f["properties"]["number"]) for f in plots.geojson["features"][:20])
+            return {"status": "error",
+                    "error": f"The person outlined no Field {args.plot_number} on this photo (their fields: {numbers})."}
         return {"status": "error", "error": f"No plot {args.plot_number} on this photo (plots 1-{plots.count})."}
+    # The same number can name two pieces of land: a plot Ingabe found and a field the person outlined.
+    other_meaning = None
+    if (not field_facts.outlined(plots) and own is not None
+            and any(f["properties"]["number"] == args.plot_number for f in own.geojson["features"])):
+        other_meaning = (f"This is Plot {args.plot_number}, a plot Ingabe found. The person has also outlined a Field "
+                         f"{args.plot_number}, which is a different piece of land: if they meant their own field, call "
+                         "again with outlined_field true, and say which one this answer is about.")
     key = photo_plots.photo_key(metadata)
     found = await plant_finder.load_found(s3, bucket, key, feature)
     if found is None:
@@ -234,6 +285,7 @@ async def count_plants_in_plot(args: CountPlantsArgs, meta: IngabeToolCallMetaAr
     return {
         "status": "success",
         "plot": name,
+        "same_number_other_land": other_meaning,
         "crop_seen": look,
         "plants_about": about,
         "say_it_as": said,

@@ -476,7 +476,7 @@ describe('outlining a field by tapping it', () => {
     click(byButton('Ask') as HTMLButtonElement);
     await vi.waitFor(() => expect(asked).toHaveLength(1));
     expect(asked[0]).toBe(
-      'About Field 7 on the drone photo "Cyampirita" (plot 7 of my outlined fields: 200 m², centred at latitude -1.75, longitude 30.25): what is planted here?',
+      'About Field 7, a field I outlined myself on the drone photo "Cyampirita" (not a plot Ingabe found; Field 7 of my outlined fields: 200 m², centred at latitude -1.75, longitude 30.25): what is planted here?',
     );
 
     // removing asks first, and "Keep" leaves the field where it is
@@ -707,7 +707,7 @@ describe('outlining a field by tapping it', () => {
     await vi.waitFor(() => expect((byButton('Ask') as HTMLButtonElement).disabled).toBe(false));
     click(byButton('Ask') as HTMLButtonElement);
     await vi.waitFor(() => expect(asked).toHaveLength(1));
-    expect(asked[0]).toContain('(plot 3 of my outlined fields: 0.18 ha, green cover 62%, centred');
+    expect(asked[0]).toContain('Field 3 of my outlined fields: 0.18 ha, green cover 62%, centred');
     // a field it was not measured on shows no figure, and says why
     m.clickOn('b');
     await vi.waitFor(() => expect(byText('Field 4 · 0.90 ha')).not.toBeNull());

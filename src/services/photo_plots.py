@@ -23,8 +23,10 @@ from src.structures import async_read_conn
 logger = logging.getLogger(__name__)
 
 PLOT_MAP_KEY = "plot_map_layer_id"  # in the photo layer's metadata: the reader's chosen plot source
-# Besides a map layer's id, the chosen source can be one of these two. With nothing chosen, the reader's outlined
-# fields are the plots as soon as one is kept (Roger, 2026-11-13); FOUND is how a reader goes back to Ingabe's.
+# Besides a map layer's id, the chosen source can be one of these two. With nothing chosen the plots are the ones
+# Ingabe found, also when the reader has outlined fields (Roger, 2026-11-19: one outlined field must not empty the
+# analysis of a whole photo; from 2026-11-13 until then a kept field made the fields the plots). FIELDS is how a
+# reader chooses their own fields, FOUND how they go back.
 FIELDS = drone_plots.OUTLINED_FIELDS
 FOUND = "found"
 FIELDS_NAME = drone_plots.OUTLINED_FIELDS_NAME
@@ -99,9 +101,9 @@ async def plot_sources(conn: Any, s3: Any, bucket: str, layer_id: str, bounds: l
 
 
 def chosen_source(metadata: dict[str, Any], maps: list[tuple[drone_plots.PlotMap, str]]) -> Optional[str]:
-    """The id of the source in use: the reader's choice, else their outlined fields when they have any, else None
-    (the plots Ingabe found)."""
-    wanted = metadata.get(PLOT_MAP_KEY) or (FIELDS if any(m.layer_id == FIELDS for m, _ in maps) else None)
+    """The id of the source in use: the reader's choice when it is one of `maps`, else None (the plots Ingabe
+    found)."""
+    wanted = metadata.get(PLOT_MAP_KEY)
     return wanted if wanted != FOUND and any(m.layer_id == wanted for m, _ in maps) else None
 
 
@@ -158,10 +160,23 @@ async def plots_from_chosen_map(
     return plots, plot_map.layer_id, None
 
 
+async def outlined_plots(s3: Any, bucket: str, layer_id: str, metadata: dict[str, Any], user_id: str,
+                         cog_url: str) -> Optional[drone_plots.PlotSet]:
+    """The fields the reader outlined on this photo, as plots under their field numbers, whichever source the cards
+    use. None when there are none. For a question about "Field 7" while the cards show the plots Ingabe found:
+    Field 7 and Plot 7 are different pieces of land."""
+    fields = await outlined_fields(s3, bucket, layer_id, metadata)
+    if fields is None:
+        return None
+    plots, _, _ = await plots_from_chosen_map(s3, bucket, layer_id, {**metadata, PLOT_MAP_KEY: FIELDS}, user_id,
+                                              cog_url, [fields])
+    return plots
+
+
 async def current_plots(s3: Any, bucket: str, layer_id: str, bounds: Optional[list[float]], metadata: dict[str, Any],
                         user_id: str, cog_url: str) -> Optional[drone_plots.PlotSet]:
-    """The photo's plots as the cards use them: from the chosen plot map, else the reader's outlined fields, else
-    those Ingabe found (None if not yet)."""
+    """The photo's plots as the cards use them: from the plot source the reader chose (a plot map, or the fields
+    they outlined), else those Ingabe found (None if not yet)."""
     fields = await outlined_fields(s3, bucket, layer_id, metadata)
     maps = [fields] if fields else []
     if metadata.get(PLOT_MAP_KEY) not in (None, FIELDS, FOUND) and bounds:
