@@ -17,8 +17,9 @@ import {
   useNameField,
   useRemoveOutline,
 } from '@/hooks/useFieldTaps';
+import { fewCorners, grabbed, merged } from '@/lib/cornerEdit';
 import type { ServerError } from '@/lib/serverError';
-import { capped, nearestOnRing, type Pixel, pulled } from '@/lib/traceEdge';
+import { inside, type Pixel } from '@/lib/traceEdge';
 import type { MapLayer } from '@/lib/types';
 import { CountCheck } from './CountCheck';
 import { FieldFlights } from './FieldFlights';
@@ -78,11 +79,23 @@ const link = 'inline-flex min-h-11 cursor-pointer items-center px-2 text-[12.5px
 
 const closed = (ring: Corner[]): GeoJSON.Polygon => ({ type: 'Polygon', coordinates: [[...ring, ring[0]]] });
 
-// Pulling the line: the reader presses on the outline (within GRAB_PX), drags it to where the edge of the field is,
-// and lets go anywhere; the line around the press follows smoothly (lib/traceEdge). No start or end to hit.
-const GRAB_PX = 28; // a finger is wide: a press this close to the line takes hold of it
+// Moving the line: the outline shows a dot on each of its corners; the reader drags a dot (a press within GRAB_PX
+// of it) to the true corner and lets go anywhere, and the sides that meet there stay straight. A press on a side
+// away from the dots makes a corner there (lib/cornerEdit).
+const GRAB_PX = 28; // a finger is wide: a press this close to a dot or the line takes hold of it
 const PULL_START_PX = 3; // a press that moves less than this is not a pull
-const MAX_CORNERS = 560; // under the server's limit; an outline with more is thinned evenly
+const MERGE_PX = 12; // a corner let go this close to its neighbour is removed
+const MOST_HANDLES = 24; // an outline to drag by hand has no more corners than this
+const CORNER_TOLERANCE_M = 1.0; // a point this close to a straight side is not a corner
+
+/** The outline's corners to drag: the model draws hundreds of small steps, a field has a handful of corners. An
+ * outline that already has few (one the reader has moved) is its own corners. The corners are the ring's own. */
+function handles(ring: Corner[]): Corner[] {
+  if (ring.length <= MOST_HANDLES) return ring;
+  const east = 111_320 * Math.cos((ring[0][1] * Math.PI) / 180);
+  const metres = ring.map((c, i) => ({ x: c[0] * east, y: c[1] * 110_540, i }));
+  return fewCorners(metres, CORNER_TOLERANCE_M, MOST_HANDLES).map((m) => ring[m.i]);
+}
 
 function features(
   steps: Step[],
@@ -110,6 +123,13 @@ function features(
       if (pick !== null && o.choice !== pick) return;
       const geometry = ring && pick !== null ? closed(ring) : o.geometry;
       out.push({ type: 'Feature', geometry, properties: { colour: CHOICE_COLOURS[i], width: ring && moving ? 5 : 3 } });
+      if (ring && moving && pick !== null)
+        for (const corner of handles(ring))
+          out.push({
+            type: 'Feature',
+            geometry: { type: 'Point', coordinates: corner },
+            properties: { kind: 'corner', colour: CHOICE_COLOURS[i] },
+          });
     });
     for (const t of step.taps) {
       out.push({
@@ -161,8 +181,14 @@ function useDrawn(map: MLMap | null, data: GeoJSON.FeatureCollection) {
           id: LAYERS.taps,
           type: 'circle',
           source: SOURCE,
-          filter: ['==', ['get', 'kind'], 'tap'],
-          paint: { 'circle-radius': 6, 'circle-color': ['get', 'colour'], 'circle-stroke-color': '#ffffff', 'circle-stroke-width': 2 },
+          // the taps, and the corner dots of a line being moved (larger: they are what the reader takes hold of)
+          filter: ['in', ['get', 'kind'], ['literal', ['tap', 'corner']]],
+          paint: {
+            'circle-radius': ['case', ['==', ['get', 'kind'], 'corner'], 8, 6],
+            'circle-color': ['case', ['==', ['get', 'kind'], 'corner'], '#ffffff', ['get', 'colour']],
+            'circle-stroke-color': ['case', ['==', ['get', 'kind'], 'corner'], ['get', 'colour'], '#ffffff'],
+            'circle-stroke-width': ['case', ['==', ['get', 'kind'], 'corner'], 3, 2],
+          },
         });
       }
       (map.getSource(SOURCE) as GeoJSONSource).setData(data);
@@ -250,7 +276,7 @@ export function FieldTaps({
   };
   // Each start-again makes earlier answers stale: one that arrives late is dropped, not shown.
   const round = useRef(0);
-  const measuring = useRef(0); // the latest request to measure a pulled line
+  const measuring = useRef(0); // the latest request to measure a moved line
 
   const prepared = !!state.data?.prepared;
   const kept = state.data?.kept ?? [];
@@ -377,32 +403,63 @@ export function FieldTaps({
     [layerId, firstTap],
   );
 
-  // Pulling the line of the picked outline. The corners live here while the reader pulls.
+  // Moving the picked outline by its corners. The corners live here while the reader drags one.
   useEffect(() => {
     if (!map || mode !== 'move' || !layerId || !firstTap || !ringRef.current) return;
-    let pull: { before: Corner[]; base: Pixel[]; grab: Pixel; keep: Pixel; now: Corner[] | null } | null = null;
+    let pull: {
+      before: Corner[]; // the outline as it was, for Undo
+      shape: Corner[]; // its corners, with the new one when the press made one
+      base: Pixel[]; // their places on the screen at the press
+      index: number; // the corner held
+      grab: Pixel;
+      keep: Pixel;
+      now: Corner[] | null;
+      nowAt: Pixel | null;
+    } | null = null;
     const several = (e: MapMouseEvent | MapTouchEvent) => 'points' in e && e.points.length > 1;
     const onDown = (e: MapMouseEvent | MapTouchEvent) => {
       const before = ringRef.current;
       if (!before || several(e)) return; // two fingers zoom the map
-      const base = before.map((c) => map.project(c) as Pixel);
-      if (nearestOnRing(base, e.point).far > GRAB_PX) return; // not on the line: the map pans as usual
-      e.preventDefault(); // the map stays still while the line is pulled
+      const corners = handles(before);
+      const held = grabbed(
+        corners.map((c) => map.project(c) as Pixel),
+        e.point,
+        GRAB_PX,
+      );
+      if (!held) return; // not on the line: the map pans as usual
+      e.preventDefault(); // the map stays still while a corner is dragged
       setProblem(null);
-      pull = { before, base, grab: { x: e.point.x, y: e.point.y }, keep: map.project([firstTap.lon, firstTap.lat]), now: null };
+      const shape = [...corners];
+      if (held.added) {
+        const { lng, lat } = map.unproject([held.ring[held.index].x, held.ring[held.index].y]);
+        shape.splice(held.index, 0, [lng, lat]);
+      }
+      pull = {
+        before,
+        shape,
+        base: held.ring,
+        index: held.index,
+        grab: { x: e.point.x, y: e.point.y },
+        keep: map.project([firstTap.lon, firstTap.lat]),
+        now: null,
+        nowAt: null,
+      };
     };
     const end = () => {
       if (!pull) return;
-      const { before, now } = pull;
+      const { before, now, nowAt, base, index } = pull;
       pull = null;
-      if (!now) return; // a press on the line with no pull changes nothing
+      if (!now || !nowAt) return; // a press with no drag changes nothing
+      const places = base.map((p, i) => (i === index ? nowAt : p));
+      const line = merged(now, places, index, MERGE_PX);
       setUndo((earlier) => [...earlier, before]);
-      measure(now);
+      if (line !== now) setRing(line);
+      measure(line);
     };
     const onMove = (e: MapMouseEvent | MapTouchEvent) => {
       if (!pull) return;
       if (several(e)) {
-        // a second finger came down: the pull is dropped and the outline is as it was
+        // a second finger came down: the drag is dropped and the outline is as it was
         setRing(pull.before);
         pull = null;
         return;
@@ -411,16 +468,16 @@ export function FieldTaps({
         end(); // the button was let go somewhere the map did not see (over a panel, outside the window)
         return;
       }
-      if (Math.hypot(e.point.x - pull.grab.x, e.point.y - pull.grab.y) < PULL_START_PX) return; // a press, not yet a pull
-      const next = pulled(pull.base, pull.grab, e.point, pull.keep);
-      if (!next) return; // this far the pull would leave the tapped spot outside: the last good line stays
-      const { base, before } = pull;
-      pull.now = capped(next, MAX_CORNERS).map((p) => {
-        const kept = base.indexOf(p); // a corner the pull did not reach keeps its own place, to the last digit
-        if (kept >= 0) return before[kept];
-        const { lng, lat } = map.unproject([p.x, p.y]);
-        return [lng, lat] as Corner;
-      });
+      if (Math.hypot(e.point.x - pull.grab.x, e.point.y - pull.grab.y) < PULL_START_PX) return; // a press, not yet a drag
+      const { base, index, shape } = pull;
+      // the corner goes as far as the finger went: it does not jump to the finger
+      const to = { x: base[index].x + e.point.x - pull.grab.x, y: base[index].y + e.point.y - pull.grab.y };
+      const places = base.map((p, i) => (i === index ? to : p));
+      if (!inside(places, pull.keep)) return; // this far would leave the tapped spot outside: the last good line stays
+      const { lng, lat } = map.unproject([to.x, to.y]);
+      // every other corner keeps its own place, to the last digit
+      pull.now = shape.map((c, i) => (i === index ? ([lng, lat] as Corner) : c));
+      pull.nowAt = to;
       setRing(pull.now);
     };
     // the view changed under a pull (a wheel or pinch zoom, a rotated phone): its screen places are stale, so the
@@ -725,7 +782,7 @@ export function FieldTaps({
                       : mode === 'remove'
                         ? 'Tap a part the outline should not cover.'
                         : mode === 'move'
-                          ? 'Press on the line and pull it to the true edge. Let go anywhere.'
+                          ? 'Drag a dot to the true corner. Drag the line itself to add a corner.'
                           : ring
                             ? `Your field: ${ringArea === null ? 'not an outline' : ha(ringArea)} · line moved by hand`
                             : `Your field: ${picked ? ha(picked.area_ha) : 'no outline'}`}

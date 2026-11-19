@@ -711,7 +711,7 @@ def _preview(card_id: str, analysis: PhotoAnalysis, here: Here) -> str:
     if card_id == "plots_green" and plots is not None:
         least = _least_green(plots)
         if not least:
-            return f"{plots.count} plots found; too few with a crop to compare."
+            return f"{_count(plots.count, 'plot')} found; too few with a crop to compare."
         return f"Of the plots with a crop, {_plot_names(least[:3])} are the least green."
     if card_id == "weak_spots":
         hot = look.green.hotspots
@@ -735,7 +735,7 @@ def _preview(card_id: str, analysis: PhotoAnalysis, here: Here) -> str:
         return "Spots that look different, ranked; a leaf close-up names the cause."
     if card_id == "field_outlines" and plots is not None:
         if plots.source == drone_plots.OUTLINED_FIELDS_NAME:
-            return f"{plots.count} fields you outlined, measured, {_ha(plots.total_ha)} in all."
+            return f"{_count(plots.count, 'field')} you outlined, measured, {_ha(plots.total_ha)} in all."
         if plots.source != "found":
             return f"{plots.count} plots from your map {plots.source}, measured, {_ha(plots.total_ha)} in all."
         return f"{plots.count} plots, numbered and measured, {_ha(plots.total_ha)} in all."
@@ -866,6 +866,11 @@ def statuses(analysis: PhotoAnalysis, here: Here) -> dict[str, str]:
     return {card.id: _status(card.id, analysis, here) for card in _CARDS}
 
 
+def _count(n: int, thing: str) -> str:
+    """'1 plot', '2 plots'."""
+    return f"{n} {thing}{'' if n == 1 else 's'}"
+
+
 def build_deck(analysis: PhotoAnalysis, audience: Optional[str], here: Here) -> dict[str, Any]:
     """The photo's summary, the cards to show first, and every card grouped by service. `audience` is the reader's
     role (reader_roles; an unknown one reads as the default): the questions are worded and ranked for it."""
@@ -898,6 +903,10 @@ def build_deck(analysis: PhotoAnalysis, audience: Optional[str], here: Here) -> 
         "for_you": ranked[:FOR_YOU_COUNT - 1] + [learn],
         "ask_sage": _deck_asks(analysis, here),
         "seed": here.seed,
+        # Where the plots come from, said on the list itself: with one field outlined, every plot card is about that
+        # field alone, and the way back to the plots Ingabe found was inside an opened card (the live site,
+        # 2026-11-19: the cards looked empty and the map showed nothing).
+        "choices": _plot_choices(analysis, here),
         "services": [
             {"service": number, "name": name, "cards": [card for card in cards if card["service"] == number]}
             for number, name in SERVICES.items()
@@ -1181,7 +1190,7 @@ def _plots_green(analysis: PhotoAnalysis, audience: str, here: Here) -> dict[str
     if not least:
         return _answer(
             "plots_green", analysis, here,
-            what=f"{plots.count} plots found, but too few have a crop to compare them.",
+            what=f"{_count(plots.count, 'plot')} found, but too few have a crop to compare them.",
             why="Comparing needs at least 5 plots with a crop that lie fully on the photo.",
             todo="Fly a wider area, or ask about the whole photo instead.",
             how_sure=_how_sure("low", ["Too few plots measured"], None),

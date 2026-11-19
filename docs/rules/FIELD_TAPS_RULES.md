@@ -27,19 +27,20 @@ with up to six more taps ("this part too" / "not this part"), and keep it with i
 7. Areas are hectares on the ellipsoid (`ground_area.area_ha`): map area, as seen from above. On a slope the ground
    surface is larger (6% at 20 degrees); the caveat text says so.
 8. The text about what was measured comes from `field_taps.MEASURED`; screens do not write their own.
-9. The reader may pull the line of the picked outline ("Move the line"): a press on the line (within 28 px, a
-   finger's width) takes hold of it, the drag moves it, and letting go anywhere ends the pull; there is no place a
-   pull must start or end (`lib/traceEdge.ts`). The line around the press follows, fully at the press and falling
-   smoothly to nothing along the line both ways, over a stretch that grows with the length of the pull (twice the
-   pull, at least 40 px, never most of the outline), so a pull bends the line and never tears it. A pull that
-   would leave the first tap outside the outline changes nothing. "Undo last" takes back one pull, "Undo all"
-   every one. Only the pulled stretch gets new corners: every corner out of reach stays exactly where it was,
-   however many pulls are made. A pull longer than the line can follow is shortened so the line bends and does
-   not fold over itself. If the view changes under a pull (a wheel or pinch zoom, a rotated phone) the pull is
-   dropped and the outline is as it was. A press away from the line, or with two fingers, moves the map as usual. Freehand drawing of the
-   edge was removed on 2026-11-14: Roger found it hard on the live site (start on the line, trace, end on the
-   line). The
-   server measures the moved line. A pull can slip the line a hair past its neighbour at a tight bend and make a
+9. The reader may move the line of the picked outline by its corners ("Move the line"): the outline shows a dot
+   on each corner (`FieldTaps.handles`: points within 1 m of a straight side are not corners; at most 24). A press
+   on a dot (within 28 px, a finger's width) takes hold of that corner, the drag moves it by as far as the finger
+   goes, and letting go anywhere ends the drag; the two sides that meet there stay straight. A press on a side away
+   from the dots makes a corner there and drags it. A corner let go on its neighbour (within 12 px) is removed.
+   Every other corner stays exactly where it was. A drag that would leave the first tap outside the outline
+   changes nothing. "Undo last" takes back one drag, "Undo all" every one. If the view changes under a drag (a
+   wheel or pinch zoom, a rotated phone) the drag is dropped and the outline is as it was. A press away from the
+   line, or with two fingers, moves the map as usual (`lib/cornerEdit.ts`). Before the first drag the outline is
+   the model's, to the last point; from the first drag it is its corners. Two earlier ways were removed: freehand
+   drawing of the edge on 2026-11-14 (Roger found it hard on the live site: start on the line, trace, end on the
+   line), and pulling a stretch of line like rubber on 2026-11-19 (a straight side bulged where it was pulled;
+   one field took 34 pulls on the live site). The
+   server measures the moved line. A drag can take the line a hair past its neighbour at a tight bend and make a
    loop too small to see; that is the tool's doing, so the server cuts such loops away, keeps the piece around the
    first tap as the field, and sends the tidied line back for the screen to draw (`moved_line`, `tidied`). The
    reader is never told a line "crosses itself" or asked to repair one (Roger hit exactly that on the live site,
