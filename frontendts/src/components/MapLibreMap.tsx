@@ -156,6 +156,7 @@ import { addScale } from '@/lib/mapScale';
 import { useIsMobile } from '../hooks/use-mobile';
 import { createAnalyticsTurnId, track, trackDuration, trackError } from '../lib/analytics';
 import type { ErrorEntry, UploadingFile } from '../lib/frontend-types';
+import { hideInStyle, isHiddenSource } from '../lib/layerVisibility';
 import { isServerTileFailure, reportMapHealth, stopWatchingGraphics, watchGraphics } from '../lib/mapHealth';
 import { isConnectionFailure, NO_CONNECTION, serverFailureMessage } from '../lib/mapLoadError';
 import { serverError } from '../lib/serverError';
@@ -583,6 +584,7 @@ export default function MapLibreMap({
           },
         };
         injectOverridesIntoStyle(mergedStyle, paintOverridesRef.current);
+        hideInStyle(mergedStyle, hiddenLayerIDsRef.current);
 
         // Preserve projection
         const currentProjection = map.getProjection();
@@ -1426,6 +1428,10 @@ export default function MapLibreMap({
   // re-triggering the setStyle effect when this flag changes.
   const hasZoomedRef = useRef(false);
 
+  // The hidden layers, for code that must read them without running again when they change.
+  const hiddenLayerIDsRef = useRef(hiddenLayerIDs);
+  hiddenLayerIDsRef.current = hiddenLayerIDs;
+
   // Apply the map style when styleData changes.
   // IMPORTANT: We inject paint overrides (choropleth, color, opacity) into the
   // style JSON *before* calling setStyle() so they survive the MapLibre diff.
@@ -1446,6 +1452,8 @@ export default function MapLibreMap({
       // opacity) directly into the layer paint properties.
       const style = JSON.parse(JSON.stringify(styleData));
       injectOverridesIntoStyle(style, paintOverridesRef.current);
+      // A fresh style from the server shows every layer: keep the hidden ones hidden.
+      hideInStyle(style, hiddenLayerIDsRef.current);
 
       // Inject invisible fill layers for polygon sources that only have line
       // layers. Without a fill layer, queryRenderedFeatures only returns hits
@@ -1560,39 +1568,29 @@ export default function MapLibreMap({
     const map = localMapRef.current;
     if (!map) return;
 
+    // Not gated on map.isStyleLoaded(): that is false whenever a tile is still loading, which on a slow
+    // connection is most of the time, and the hide was then dropped (the live site, 2026-11-19).
     const applyVisibility = () => {
-      if (!map.isStyleLoaded()) return;
-      const style = map.getStyle();
-      if (!style?.layers) return;
-
-      style.layers.forEach((layer) => {
-        if ('source' in layer && layer.source) {
-          const src = layer.source as string;
-          // Source IDs may be prefixed (e.g. "worldcover-source-{id}",
-          // "raster-source-{id}", "cog-source-{id}") so check both
-          // exact match and whether the source contains a hidden layer ID.
-          const isHidden = hiddenLayerIDs.some((id) => src === id || src.endsWith(`-${id}`));
-          const visibility = isHidden ? 'none' : 'visible';
-          try {
-            map.setLayoutProperty(layer.id, 'visibility', visibility);
-          } catch {
-            // layer may have been removed between getStyle() and setLayoutProperty()
-          }
+      let layers: LayerSpecification[] | undefined;
+      try {
+        layers = map.getStyle()?.layers;
+      } catch {
+        return; // no style yet: 'style.load' below applies it
+      }
+      for (const layer of layers ?? []) {
+        if (!('source' in layer) || !layer.source) continue;
+        const visibility = isHiddenSource(layer.source, hiddenLayerIDs) ? 'none' : 'visible';
+        if ((layer.layout?.visibility ?? 'visible') === visibility) continue;
+        try {
+          map.setLayoutProperty(layer.id, 'visibility', visibility);
+        } catch {
+          // layer may have been removed between getStyle() and setLayoutProperty()
         }
-      });
+      }
     };
 
-    // Apply immediately if style is loaded, otherwise wait for it
-    if (map.isStyleLoaded()) {
-      applyVisibility();
-    } else {
-      map.once('style.load', applyVisibility);
-    }
-
-    // Re-apply after a full style reload (setStyle call from LLM).
-    // Using 'style.load' instead of 'styledata' is critical: 'styledata' fires
-    // on every setLayoutProperty call, which would immediately override any
-    // visibility change. 'style.load' only fires on full style reloads.
+    applyVisibility();
+    // A full style load draws the layers afresh.
     map.on('style.load', applyVisibility);
 
     return () => {

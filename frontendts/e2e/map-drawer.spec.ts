@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test';
 
-// The one drawer beside the map (src/components/MapDrawer.tsx), asked for with ?drawer=1: the tools live in one
+// The one drawer beside the map (src/components/MapDrawer.tsx), on unless a device asked for the old placing with ?drawer=0: the tools live in one
 // column, one at a time, and nothing lies on the photo. Same seeded farm as field-flights.spec.ts.
 const PROJECT = 'PE2EFLIGHTS1';
 

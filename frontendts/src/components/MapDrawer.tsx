@@ -8,8 +8,9 @@ import { createPortal } from 'react-dom';
 // their own rule, and "Hide panels" put away only some of them. Here one column beside the map holds them all,
 // one at a time; the map takes the room that is left and is never covered. Closing the drawer is "hide panels".
 //
-// Behind a switch on this device (off unless asked for): open any map with ?drawer=1 to turn it on and
-// ?drawer=0 to turn it off. Off, every tool is placed exactly as before.
+// On for everyone since 2026-11-19 (Roger: the many unordered panels made it hard to see the map and its
+// analysis). The old placing is still one address away on a device, while the drawer proves itself: open any
+// map with ?drawer=0 to turn the drawer off there and ?drawer=1 to turn it on again.
 
 export type Tool = 'layers' | 'questions' | 'fields' | 'sage';
 
@@ -25,15 +26,16 @@ const TOOLS: { id: Tool; label: string; icon: typeof Layers3; nothing: string }[
   { id: 'sage', label: 'Sage', icon: MessageCircle, nothing: '' },
 ];
 
-/** Whether this device asked for the one drawer. `?drawer=1` / `?drawer=0` in the address sets and keeps it. */
+/** Whether this device shows the one drawer: yes, unless it asked for the old placing. `?drawer=0` / `?drawer=1`
+ * in the address sets and keeps the choice. */
 export function oneDrawerWanted(): boolean {
   try {
     const asked = new URLSearchParams(window.location.search).get('drawer');
     if (asked === '1' || asked === '0') localStorage.setItem(SWITCH_KEY, asked);
-    return localStorage.getItem(SWITCH_KEY) === '1';
+    return localStorage.getItem(SWITCH_KEY) !== '0';
   } catch {
     // private window or blocked storage: the address alone decides, for this visit
-    return new URLSearchParams(window.location.search).get('drawer') === '1';
+    return new URLSearchParams(window.location.search).get('drawer') !== '0';
   }
 }
 
