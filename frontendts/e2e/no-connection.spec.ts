@@ -1,4 +1,4 @@
-import { expect, test } from '@playwright/test';
+import { expect, type Page, test } from '@playwright/test';
 
 // A phone on a weak connection: every map tile that fails used to add its own red card (each message holds the
 // tile's address, so none was "the same error") until the cards covered the map. A dropped connection is said
@@ -8,11 +8,15 @@ import { expect, test } from '@playwright/test';
 const PROJECT = 'PE2EFLIGHTS1';
 const LINE = 'No connection. The map will finish loading when it returns.';
 
+// The drawer's row of tools (Layers, Questions, Fields, Sage): there once the map's page is up.
+const tools = (page: Page) => page.getByRole('navigation', { name: 'Map tools' });
+
 test('a dropped connection is one line, and it leaves when the connection returns', async ({ page, context }, testInfo) => {
+  test.setTimeout(90_000); // its waits alone add up to more than the usual 30 s on a busy machine
   const pageErrors: string[] = [];
   page.on('pageerror', (error) => pageErrors.push(error.message));
   await page.goto(`/project/${PROJECT}`);
-  await page.getByRole('button', { name: /1 field outlined · show/ }).waitFor({ timeout: 30_000 });
+  await tools(page).waitFor({ timeout: 30_000 });
   await page.locator('.maplibregl-canvas').waitFor();
   await page.waitForTimeout(3000); // the first tiles are in
 
@@ -46,11 +50,12 @@ const RAW = /Failed to fetch|AJAXError|TypeError|NetworkError|Load failed|Reques
 
 test('requests that never arrive are said in plain words, in Sage too', async ({ page }, testInfo) => {
   await page.goto(`/project/${PROJECT}`);
-  await page.getByRole('button', { name: /1 field outlined · show/ }).waitFor({ timeout: 30_000 });
+  await tools(page).waitFor({ timeout: 30_000 });
   await page.waitForTimeout(3000);
 
   // the browser still believes it is online, as a phone with one bar does: nothing gets through
   await page.route('**/*', (route) => route.abort('internetdisconnected'));
+  await tools(page).getByRole('button', { name: 'Sage' }).click();
   const ask = page.getByPlaceholder(/Ask Sage/).last();
   await ask.fill('How healthy is this field?');
   await ask.press('Enter');
@@ -64,12 +69,13 @@ test('requests that never arrive are said in plain words, in Sage too', async ({
 
 test('a gateway error is a plain line with its number', async ({ page }, testInfo) => {
   await page.goto(`/project/${PROJECT}`);
-  await page.getByRole('button', { name: /1 field outlined · show/ }).waitFor({ timeout: 30_000 });
+  await tools(page).waitFor({ timeout: 30_000 });
   await page.waitForTimeout(3000);
 
   await page.route('**/api/**', (route) =>
     route.fulfill({ status: 502, contentType: 'text/html', body: '<html><h1>502 Bad Gateway</h1></html>' }),
   );
+  await tools(page).getByRole('button', { name: 'Sage' }).click();
   const ask = page.getByPlaceholder(/Ask Sage/).last();
   await ask.fill('How healthy is this field?');
   await ask.press('Enter');

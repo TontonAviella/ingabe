@@ -16,6 +16,7 @@ test.describe('A field across the flights of its place', () => {
     await page.goto(`/project/${PROJECT}`);
 
     // the kept field is found from the panel's own list, as a reader finds it
+    await page.getByRole('navigation', { name: 'Map tools' }).getByRole('button', { name: 'Fields' }).click({ timeout: 30_000 });
     await page.getByRole('button', { name: /1 field outlined · show/ }).click({ timeout: 30_000 });
     await page.getByRole('button', { name: /Field 1 · 0\.36 ha/ }).click();
 
