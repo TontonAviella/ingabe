@@ -454,7 +454,7 @@ _INTENT_KEYWORDS: list[tuple[re.Pattern[str], frozenset[str]]] = [
             r"what\s+(is|are)\s+(happening|we\s+seeing)\s+(in|on|with)\s+(this|my)\s+(raster|drone|ortho|image|map)|"
             r"what'?s\s+(happening|visible|going\s+on)\s+(in|on|with)\s+(this|my)\s+(raster|drone|ortho|image|map)|"
             r"compare\s+(raster|image)|similar\s+tile|find\s+similar|"
-            r"rasters?|flights?|plot\s*\d+)\b",
+            r"rasters?|flights?|plot\s*\d+|field\s*\d+)\b",
             re.IGNORECASE,
         ),
         frozenset({USER_RASTER, SPATIAL_INSIGHT}),
@@ -1404,7 +1404,10 @@ def select_ready_fast_raster_layer(question: str, rows: list) -> dict | None:
 # question cards found (get_drone_photo_findings) and counts plants (count_plants_in_plot). The fast paths'
 # masks and cells cannot answer them: "count the plants in plot 42" used to draw house masks.
 _DRONE_PLOT_QUESTION = re.compile(
-    r"\b(plots?|umurima|imirima|stand\s+count|weed(?:s|ing|y)?|gaps?|per\s+hectare|"
+    # a numbered field, or one the person outlined, is theirs on the photo: "count the maize in my field 3" drew
+    # object masks before this (routing eval, 2026-11-19)
+    r"\b(plots?|fields?\s*\d+|outlined\s+fields?|fields?\s+i\s+outlined|umurima|imirima|stand\s+count|"
+    r"weed(?:s|ing|y)?|gaps?|per\s+hectare|"
     r"(?:how\s+many|count(?:\s+the)?)\s+(?:\w+\s+)?plants|plants?\s+(?:per|in|on)\b|"
     r"what\s+(?:is|'s)\s+growing|which\s+crops?|"
     r"how\s+(?:is|are)\s+(?:my|the)\s+(?:crops?|maize|cassava|beans|bananas?|farm|field))\b",
