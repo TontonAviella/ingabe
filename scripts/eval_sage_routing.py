@@ -47,6 +47,15 @@ MAX_TOKENS = 4096
 # Farm talk in a Telecom reply (scored as scoring.FARM_WORDING).
 FARM_WORDS = re.compile(r"\b(crops?|farm(s|ers?|ing|land)?|harvest|maize|beans|cassava|yield|NDVI|vegetation health|"
                         r"irrigation|livestock|insurance payout)\b", re.IGNORECASE)
+
+
+def farm_talk(reply: str, question: str) -> bool:
+    """A reply brings up farming when it uses a farm word the question did not: "farm health isn't something I
+    can assess here" only repeats the person's own word to decline."""
+    asked = {m.group(0).lower()[:4] for m in FARM_WORDS.finditer(question)}
+    return any(m.group(0).lower()[:4] not in asked for m in FARM_WORDS.finditer(reply))
+
+
 RETRYABLE_STATUS = {408, 409, 429, 500, 502, 503, 504}
 # Stop (and allow --resume) after this many consecutive fully-errored cases:
 # usually the provider's daily request cap.
@@ -330,7 +339,7 @@ async def run_attempt(
                 first_tool = scoring.TEXT_ONLY
                 # Outside agriculture a reply about crops or farming is wrong even when no tool was expected.
                 if (case.get("industry") or "agriculture") != "agriculture" and \
-                        FARM_WORDS.search(getattr(message, "content", None) or ""):
+                        farm_talk(getattr(message, "content", None) or "", case["text"]):
                     first_tool = scoring.FARM_WORDING
             break
         call = calls[0]
