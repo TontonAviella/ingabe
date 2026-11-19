@@ -1064,6 +1064,10 @@ def test_admin_fast_path_keeps_the_parents_of_one_unit(msg: str, expected: dict)
     "How many plots are on this photo and how big are they?",
     "How is my crop doing on Farm_Orthophoto?",
     "Which plots should I weed first?",
+    # a numbered field, or one the person outlined, is theirs on the photo (routing eval, 2026-11-19)
+    "count the maize in my field 3, the one I outlined on the drone photo",
+    "field 4: count the cassava",
+    "Count what grows in the field I outlined",
 ])
 def test_plot_and_plant_questions_skip_the_fast_paths(text):
     """They need the drone tools; the fast paths drew house masks or screening cells for them."""
