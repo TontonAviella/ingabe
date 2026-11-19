@@ -1179,6 +1179,46 @@ class BrainService:
             raise ValueError(f"add_timeline_entry failed: page '{slug}' not found")
         return result["id"]
 
+    async def note_page(self, conn: asyncpg.Connection, about: str, owner_uuid: str,
+                        slug: Optional[str] = None) -> tuple[str, str]:
+        """The page a person's note goes on, and how it was chosen: (slug, 'given' | 'found' | 'made').
+
+        'given': `slug` names a page this session can read. 'found': exactly one readable page has `about` as its
+        title (any case). 'made': neither, so a private page of the person's own is made for notes about `about`
+        (found again for their next note about it). A note is never put on a page picked by likeness: two pages
+        with the title, or none, make the person's own page.
+
+        The made page's slug ends in a mark of its owner: slugs are one namespace for every partner, and a plain
+        "rulindo-coop" could be another partner's page this session cannot see."""
+        if slug:
+            page = await self.get_page(conn, _validate_slug(slug))
+            if page is not None:
+                return page.slug, "given"
+        name = " ".join((about or slug or "").split())[:120]
+        if not name:
+            raise ValueError("a note needs to say what it is about")
+        rows = await conn.fetch(
+            f"""
+            SELECT slug FROM brain_pages WHERE lower(title) = lower($1)
+            {PAGE_SCOPE_FILTER.format(a="")}
+            LIMIT 2
+            """,
+            name,
+        )
+        if len(rows) == 1:
+            return rows[0]["slug"], "found"
+        mark = hashlib.sha256(str(owner_uuid).encode()).hexdigest()[:8]
+        own = _validate_slug(f"note-{_validate_slug(name)[:60]}-{mark}")
+        if await self.get_page(conn, own) is not None:
+            return own, "found"
+        await self.put_page(
+            conn, own,
+            PageInput(type="concept", title=name, compiled_truth=f"Notes about {name}, as people reported them.",
+                      frontmatter={"type": "note", "made_by": "add_observation"}),
+            owner_uuid=owner_uuid,
+        )
+        return own, "made"
+
     async def get_timeline(
         self,
         conn: asyncpg.Connection,

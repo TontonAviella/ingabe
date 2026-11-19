@@ -873,17 +873,17 @@
     "type": "function",
     "function": {
       "name": "add_observation",
-      "description": "Add a timeline observation to a brain page. Use when the user reports a field visit, observation, measurement, or event that should be recorded in an entity's history. The brain grows with every observation.",
+      "description": "Save a note the person gives you: a field visit, an observation, a measurement or an event (\"note that ...\", \"record that ...\", \"log a visit ...\", \"remember that ...\"). Call it straight away with what the note is about in `about`; do not search first. If a result earlier in this conversation (search_brain, get_entity) already gave the page's slug, you MUST also pass that `slug`, so the note goes on that page. Otherwise the note goes on the page with that title, or a new note page is made for it. The result says where it was saved: tell the person that.",
       "parameters": {
         "type": "object",
         "properties": {
-          "slug": {
+          "about": {
             "type": "string",
-            "description": "The entity slug to add the observation to"
+            "description": "What the note is about, in the person's own words: a place, a cooperative, a field, a farmer, a site (e.g. 'Rulindo coop', 'Nyarugenge', 'plot 4')"
           },
           "summary": {
             "type": "string",
-            "description": "Short summary of the observation"
+            "description": "What happened or was seen, in one short sentence"
           },
           "detail": {
             "type": "string",
@@ -896,10 +896,14 @@
           "source": {
             "type": "string",
             "description": "Source of the observation (e.g. 'field_visit', 'satellite', 'user_report'). Default: 'user_report'"
+          },
+          "slug": {
+            "type": "string",
+            "description": "The slug of the page the note belongs on, whenever an earlier result in this conversation gave it (e.g. 'coop-kabeza'). Leave it out only when no slug is known"
           }
         },
         "required": [
-          "slug",
+          "about",
           "summary"
         ]
       }

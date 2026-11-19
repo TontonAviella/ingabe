@@ -3142,7 +3142,9 @@ async def _handle_get_entity(ctx: LegacyToolContext) -> Dict[str, Any]:
 
 
 async def _handle_add_observation(ctx: LegacyToolContext) -> Dict[str, Any]:
-    """Append a timeline observation to a Brain page.
+    """Append a timeline observation to a Brain page: the one named by `slug`, else the one whose title is `about`,
+    else a page of the person's own made for notes about it (BrainService.note_page). The answer says which, so
+    Sage can say where the note went.
 
     Date defaults to today when not supplied. Source defaults to 'user_report'.
 
@@ -3155,8 +3157,11 @@ async def _handle_add_observation(ctx: LegacyToolContext) -> Dict[str, Any]:
         from src.services.brain_service import TimelineInput
 
         _brain_svc = get_brain_service()
-        _slug = args.get("slug", "")
         _summary = args.get("summary", "")
+        if not str(_summary).strip():
+            return {"status": "error", "error": "The note is empty: give what happened in `summary`."}
+        if not str(args.get("slug") or args.get("about") or "").strip():
+            return {"status": "error", "error": "Say what the note is about (a place, a cooperative, a field) in `about`."}
         _detail = args.get("detail", "")
         _date_str = args.get("date")
         _source = args.get("source", "user_report")
@@ -3167,6 +3172,8 @@ async def _handle_add_observation(ctx: LegacyToolContext) -> Dict[str, Any]:
             source=_source,
         )
         async with get_async_db_connection(user_id=ctx.user_id, partner_id=ctx.partner_id) as _brain_conn:
+            _slug, _how = await _brain_svc.note_page(
+                _brain_conn, str(args.get("about") or ""), ctx.user_id, slug=args.get("slug") or None)
             _entry_id = await _brain_svc.add_timeline_entry(
                 _brain_conn, _slug, _entry, owner_uuid=ctx.user_id
             )
@@ -3175,14 +3182,18 @@ async def _handle_add_observation(ctx: LegacyToolContext) -> Dict[str, Any]:
             "entry_id": _entry_id,
             "slug": _slug,
             "summary": _summary,
+            "date": _entry.date.isoformat(),
+            # where the note went, to be said as it is
+            "saved_on": {"given": "the note page that was named",
+                         "found": "the existing note page with that title",
+                         "made": "a new note page of the person's own, made for this"}[_how],
         }
     except Exception:
         # One fixed message: the raw database error named the row-security policy and told a note of another
         # partner or industry apart from a missing one (audit R1-26).
         logger.exception("add_observation tool failed")
         return {"status": "error",
-                "error": "Could not add the observation: no note with that slug is available here, or the date is "
-                         "not YYYY-MM-DD."}
+                "error": "Could not save the note: it could not be written here, or the date is not YYYY-MM-DD."}
 
 
 async def _handle_search_satellite_imagery(ctx: LegacyToolContext) -> Dict[str, Any]:

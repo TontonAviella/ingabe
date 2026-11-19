@@ -136,7 +136,7 @@ def live_tool_catalog() -> dict[str, Any]:
     from src.dependencies.sage_turn_request import build_sage_tools_payload
 
     tools = build_sage_tools_payload(get_pydantic_tool_calls(), {})
-    point, geometry = [], []
+    point, geometry, optional_box, band = [], [], [], []
     for tool in tools:
         params = tool["function"].get("parameters") or {}
         required = set(params.get("required") or [])
@@ -145,11 +145,17 @@ def live_tool_catalog() -> dict[str, Any]:
             geometry.append(tool["function"]["name"])
         elif required & POINT_PARAMS and not props & PLACE_PARAMS:
             point.append(tool["function"]["name"])
+        elif props & POINT_PARAMS and not props & PLACE_PARAMS:
+            optional_box.append(tool["function"]["name"])
+        if "band" in required:
+            band.append(tool["function"]["name"])
     return {
         "model_tools": sorted(t["function"]["name"] for t in tools),
         "fast_path_tools": sorted(FAST_PATH_TOOLS),
         "bbox_or_point_tools": sorted(point),
         "geometry_tools": sorted(geometry),
+        "optional_bbox_tools": sorted(optional_box),
+        "band_tools": sorted(band),
     }
 
 

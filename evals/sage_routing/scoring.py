@@ -151,6 +151,12 @@ GEOCODE_STUB = {"status": "success", "name": "requested place",
                 "bbox": [29.6, -2.1, 29.9, -1.8], "center": {"lat": -1.95, "lon": 29.75}}
 
 
+# What describe_user_raster says of a one-band NDVI export, the kind the NDVI cases put on the map.
+DESCRIBE_TOOL = "describe_user_raster"
+DESCRIBE_STUB = {"status": "success", "raster_type": "ndvi_single", "band_count": 1, "ndvi_band": 1,
+                 "value_range": [-0.12, 0.91], "area_ha": 3.4, "captured_date": "2026-03-14"}
+
+
 def effective_case(case: dict[str, Any], catalog: dict[str, Any]) -> dict[str, Any]:
     """Apply the labelling rules that follow from tool schemas.
 
@@ -162,6 +168,14 @@ def effective_case(case: dict[str, Any], catalog: dict[str, Any]) -> dict[str, A
       coordinates: geocoding first is correct. ``search_location`` joins the
       accepted first steps and the case becomes a chain that must still reach
       one of the expected tools.
+    - The same holds for ``optional_bbox_tools`` (a box that may be left out,
+      and no place name): with a place in the request and no coordinates, the
+      box has to come from geocoding, or the answer is for the whole country.
+    - Every expected tool is one of ``band_tools`` (it needs the band number
+      of an uploaded raster) and a raster is on the map: describing the raster
+      first is correct, as the system prompt asks. ``describe_user_raster``
+      joins the accepted first steps and the case becomes a chain that must
+      still reach one of the expected tools.
     - Every expected tool needs a geometry the request does not give: asking
       the user for it (plain text) is also correct.
     """
@@ -169,8 +183,18 @@ def effective_case(case: dict[str, Any], catalog: dict[str, Any]) -> dict[str, A
     any_of = expect.get("any_of")
     if not any_of or case.get("chain"):
         return case
-    needs_point = set(catalog.get("bbox_or_point_tools", ()))
+    needs_point = set(catalog.get("bbox_or_point_tools", ())) | set(catalog.get("optional_bbox_tools", ()))
     needs_geometry = set(catalog.get("geometry_tools", ()))
+    needs_band = set(catalog.get("band_tools", ()))
+    rasters = [layer for layer in (case.get("map_state") or {}).get("layers", []) if layer.get("type") == "raster"]
+    if set(any_of) <= needs_band and rasters:
+        clarify = {"allow_clarify": True} if set(any_of) <= needs_geometry else {}
+        return {
+            **case,
+            "expect": {**expect, **clarify, "any_of": sorted(set(any_of) | {DESCRIBE_TOOL})},
+            "chain": {"must_call": [list(any_of)], "max_steps": 3, "stubs": {DESCRIBE_TOOL: DESCRIBE_STUB}},
+            "rules": ["describe_first", *(["clarify_geometry"] if clarify else [])],
+        }
     if set(any_of) <= needs_point and not _COORD_RE.search(case["text"]):
         return {
             **case,
