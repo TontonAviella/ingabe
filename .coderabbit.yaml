@@ -1,0 +1,43 @@
+# CodeRabbit: a second, independent reader on every pull request.
+# Reference: https://docs.coderabbit.ai/reference/configuration
+language: en-US
+tone_instructions: "Plain, short sentences. Say what breaks and for whom. No praise, no filler."
+
+reviews:
+  # Only the feedback that matters; style is already enforced by CI.
+  profile: quiet
+  poem: false
+  auto_review:
+    enabled: true
+    drafts: false
+  path_filters:
+    - "!uv.lock"
+    - "!**/package-lock.json"
+    - "!**/*.pt"
+    - "!**/*.onnx"
+    - "!external/**"
+    - "!test_fixtures/**"
+    - "!frontendts/dist/**"
+  path_instructions:
+    - path: "src/**"
+      instructions: |
+        CODING_STANDARDS.md is binding. Flag any break of its hard rules.
+        Look hardest at: data crossing between organisations (row-level security,
+        missing organisation scope), numbers shown to users that are not backed by
+        a measured test, raw error text reaching the screen, and blocking calls
+        inside async request handlers.
+    - path: "alembic/**"
+      instructions: |
+        Tables must be owned by or granted to the app role, or the nightly backup fails.
+        Flag migrations that lock large tables or cannot be rolled back.
+    - path: "frontendts/**"
+      instructions: |
+        Flag user-facing text that shows raw errors or internal jargon, and any
+        state a signed-out or removed user could still reach.
+
+knowledge_base:
+  code_guidelines:
+    enabled: true
+    filePatterns:
+      - "CODING_STANDARDS.md"
+      - "AGENTS.md"
