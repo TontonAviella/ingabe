@@ -320,6 +320,40 @@ def test_place_name_for_a_bbox_tool_allows_geocoding_first_then_requires_the_too
     assert scoring.score_case(eff, [geocode_only] * 3).correct  # first step itself is fine
 
 
+def test_a_tool_whose_box_may_be_left_out_still_needs_the_place_looked_up() -> None:
+    cat = {**CAT, "optional_bbox_tools": ["search_satellite_imagery"]}
+    case = {**BASE, "text": "latest satellite images for Nyanza",
+            "expect": {"any_of": ["search_satellite_imagery", "display_satellite_layer"]}}
+    eff = scoring.effective_case(case, cat)
+    assert "search_location" in eff["expect"]["any_of"]
+    lookup_only = {"first_tool": "search_location", "tools_called": ["search_location"]}
+    lookup_then_search = {"first_tool": "search_location",
+                          "tools_called": ["search_location", "search_satellite_imagery"]}
+    assert scoring.score_case(eff, [lookup_then_search] * 3).chain_ok is True
+    assert scoring.score_case(eff, [lookup_only] * 3).chain_ok is False
+
+
+def test_describing_an_uploaded_raster_first_is_right_but_the_tool_must_follow() -> None:
+    cat = {**CAT, "band_tools": ["compare_rasters", "interpret_raster_health"],
+           "geometry_tools": ["interpret_raster_health"]}
+    ndvi_map = {"layers": [{"name": "Plot9_NDVI", "type": "raster"}, {"name": "Plot9_NDVI_June", "type": "raster"}]}
+    case = {**BASE, "text": "compare the two NDVI flights of plot 9", "map_state": ndvi_map,
+            "expect": {"any_of": ["compare_rasters"]}}
+    eff = scoring.effective_case(case, cat)
+    assert eff["expect"]["any_of"] == ["compare_rasters", "describe_user_raster"]
+    assert eff["rules"] == ["describe_first"]
+    described_only = {"first_tool": "describe_user_raster", "tools_called": ["describe_user_raster"]}
+    described_then_compared = {"first_tool": "describe_user_raster",
+                               "tools_called": ["describe_user_raster", "compare_rasters"]}
+    assert scoring.score_case(eff, [described_then_compared] * 3).chain_ok is True
+    assert scoring.score_case(eff, [described_only] * 3).chain_ok is False
+    # no raster on the map: nothing to describe, the strict label stays
+    assert scoring.effective_case({**case, "map_state": {"layers": []}}, cat)["expect"] == case["expect"]
+    # a tool that also needs a geometry may still ask for it
+    health = {**case, "expect": {"any_of": ["interpret_raster_health"]}}
+    assert scoring.effective_case(health, cat)["expect"]["allow_clarify"] is True
+
+
 def test_coordinates_in_the_request_keep_the_strict_label() -> None:
     case = {**BASE, "text": "soil at -2.5, 29.7", "expect": {"any_of": ["get_soil_properties"]}}
     assert scoring.effective_case(case, CAT) == case

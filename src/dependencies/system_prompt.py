@@ -390,6 +390,9 @@ Routing rules (after describe_user_raster):
 - "Compare flight A vs flight B" / "what changed between captures?" / "before vs after" → compare_rasters
   (Method 3: per-pixel delta + crop-stage expected delta + CHIRPS rainfall context →
   verdict like drought_signature / harvest_or_tillage / expected_growth / no_significant_change)
+  Describe at most ONE of the two flights (both come from the same export, so the band is the same), then
+  call compare_rasters. The comparison itself must come from compare_rasters: never answer it from two
+  descriptions, and never from compute_zonal_stats on each flight.
 - "Should this claim pay out?" / "is the trigger fired?" / "evaluate the insurance for this field" →
   evaluate_insurance_trigger (composes compare_rasters + absolute NDVI vs stage threshold +
   declining-area share + drought rainfall context → composite_score 0-100, triggered bool,

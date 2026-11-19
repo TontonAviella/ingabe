@@ -126,6 +126,24 @@ INTENTS: list[tuple] = [
 ]
 
 
+# A wording whose right answer differs from its intent's: the layer it names is on the map, and what that layer
+# does not hold is read first (Roger's styling cases, 2026-11-19: with no such layer on the map, answering in
+# words was right and the cases were wrong).
+OVERRIDES: dict[str, dict] = {
+    "p-style-1": {
+        "map_state": {"layers": [{"name": "sectors", "type": "vector"}]},
+        "expect": {"any_of": ["set_layer_style", "get_cell_ndvi_stats", "get_agri_indices"]},
+        "notes": "the sectors layer holds no NDVI: reading NDVI per sector first is a right first step",
+    },
+    "p-style-2": {"map_state": {"layers": [{"name": "farms", "type": "vector"}]}},
+    "p-style-3": {
+        "map_state": {"layers": [{"name": "districts", "type": "vector"}]},
+        "expect": {"any_of": ["set_layer_style", "get_weather_stats"]},
+        "notes": "the districts layer holds no rainfall: reading rainfall first is a right first step",
+    },
+}
+
+
 def build(seed: int = 7) -> list[dict]:
     rng = random.Random(seed)
     rows = []
@@ -144,6 +162,7 @@ def build(seed: int = 7) -> list[dict]:
             if map_state:
                 row["map_state"] = map_state
             row["expect"] = expect
+            row.update(OVERRIDES.get(row["id"], {}))
             rows.append(row)
     return rows
 

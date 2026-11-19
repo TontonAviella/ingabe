@@ -112,6 +112,8 @@ EXTRA_FIRST_STEPS = {
     "ch-sectors-ndvi": ["new_layer_from_postgis", "get_agri_indices"],
     "ch-forecast-two-places": ["search_location"],
     "ch-flood-and-note": ["search_location"],
+    # the search takes a box of coordinates and no place name: Musanze has to be looked up first
+    "ch-sat-find-display": ["search_location"],
 }
 
 # (id, intent, category, text, must_call, max_steps, stubs, map_state)
