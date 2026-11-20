@@ -414,7 +414,7 @@
     "type": "function",
     "function": {
       "name": "get_farm_emissions",
-      "description": "Read farm greenhouse gas estimates (EDGAR, European Commission) for a district, a province or all of Rwanda, for one year from 2018 to 2022: methane from livestock and manure, nitrous oxide and carbon dioxide from farm soils, burning of crop waste, with a CO2-equivalent total and ammonia. Farming only, and estimates, not measurements. WHEN TO USE: emissions, greenhouse gases, methane, nitrous oxide, carbon footprint of farming or livestock in a place. Also when the user asks for a place's emissions in general: call it, then say plainly that Ingabe holds farm emissions only. WHEN NOT TO USE: emissions of one farm, field or herd (no data); transport, energy, industry or forest emissions alone (no data, answer in words).",
+      "description": "Read farm greenhouse gas estimates (EDGAR, European Commission) for a district, a province or all of Rwanda, for one year from 2018 to 2022: methane from livestock and manure, nitrous oxide from farm soils, burning of crop waste, with a CO2-equivalent total and ammonia. Farming only, and estimates, not measurements. WHEN TO USE: emissions, greenhouse gases, methane, nitrous oxide, carbon footprint of farming or livestock in a place. Also when the user asks for a place's emissions in general: call it, then say plainly that Ingabe holds farm emissions only. WHEN NOT TO USE: emissions of one farm, field or herd (no data); transport, energy, industry or forest emissions alone (no data, answer in words).",
       "strict": false,
       "parameters": {
         "type": "object",
