@@ -29,6 +29,7 @@
     "get_drought_status",
     "get_entity",
     "get_evapotranspiration",
+    "get_farm_emissions",
     "get_field_health",
     "get_forecast",
     "get_forecast_accuracy",

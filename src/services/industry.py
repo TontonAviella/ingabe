@@ -96,6 +96,7 @@ CAPABILITIES: dict[str, frozenset[str]] = {
     "get_crop_growth_stage": AGRICULTURE,
     "get_drone_photo_findings": AGRICULTURE,
     "get_drought_status": AGRICULTURE,
+    "get_farm_emissions": AGRICULTURE,
     "get_evapotranspiration": AGRICULTURE,
     "get_field_health": AGRICULTURE,
     "get_insurance_accuracy": AGRICULTURE,

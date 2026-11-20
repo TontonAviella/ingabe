@@ -13,6 +13,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 from dataclasses import dataclass, field
 from datetime import date
 from typing import Any, Awaitable, Callable, Dict, Optional
@@ -21,7 +22,7 @@ import asyncpg
 
 from src.services.insurance_engine import season_rainfall_sentence
 from src.services.numbers import round_or_none
-from src.services import industry, land_surface_temperature, ndvi_classes
+from src.services import farm_emissions, industry, land_surface_temperature, ndvi_classes
 from src.services.forecast_openmeteo import without_farm_advice
 from src.services import satellite_analytics
 
@@ -2462,6 +2463,50 @@ async def _handle_get_drought_status(ctx: LegacyToolContext) -> Dict[str, Any]:
         return {"status": "error", "error": str(e)}
 
 
+async def _handle_get_farm_emissions(ctx: LegacyToolContext) -> Dict[str, Any]:
+    """Farm emission estimates (EDGAR) for a district, a province or Rwanda, from emissions_annual_cache.
+
+    Only rows shared by district outline are read (farm_emissions.METHOD_MARK). A place Ingabe does not know,
+    or a year not held, gets "no_data" and no figure.
+    """
+    args = ctx.arguments
+    asked = str(args.get("district") or args.get("province") or "").strip()
+    key = re.sub(r"\b(district|province|city( of)?|of)\b", " ", asked.lower()).strip()
+    by_lower = {d.lower(): d for d in _RWANDA_DISTRICT_TO_PROVINCE}
+    provinces = {p.lower().replace(" city", ""): p for p in set(_RWANDA_DISTRICT_TO_PROVINCE.values())}
+    if not key or key == "rwanda":
+        place, level, districts = "Rwanda", "country", sorted(_RWANDA_DISTRICT_TO_PROVINCE)
+    elif key in by_lower:
+        place, level, districts = f"{by_lower[key]} district", "district", [by_lower[key]]
+    elif key in provinces:
+        province = provinces[key]
+        place = province if province == "Kigali City" else f"{province} Province"
+        level = "province"
+        districts = sorted(d for d, p in _RWANDA_DISTRICT_TO_PROVINCE.items() if p == province)
+    else:
+        return {
+            "status": "no_data",
+            "place": asked,
+            "note": (f"Ingabe holds farm emission estimates for Rwanda, its provinces and its 30 districts only; "
+                     f"'{asked}' is none of these. Do NOT give a figure; ask which district or province is meant."),
+        }
+    year = args.get("year")
+    try:
+        year = int(year) if year not in (None, "") else None
+    except (TypeError, ValueError):
+        return {"status": "error", "error": "year must be a whole number, for example 2022"}
+    try:
+        rows = await ctx.conn.fetch(
+            "SELECT district, year, emission_type, sector_label, total_tonnes FROM emissions_annual_cache "
+            "WHERE district = ANY($1::text[]) AND source_version LIKE $2",
+            districts, "%" + farm_emissions.METHOD_MARK,
+        )
+    except Exception:
+        logger.exception("get_farm_emissions tool failed")
+        return {"status": "error", "error": "The farm emission estimates could not be read just now."}
+    return farm_emissions.summarise([dict(r) for r in rows], place, level, year)
+
+
 async def _handle_get_crop_growth_stage(ctx: LegacyToolContext) -> Dict[str, Any]:
     """Read phenology_cache (current growth stage by district/stage filter).
 
@@ -3795,6 +3840,7 @@ LEGACY_HANDLERS: Dict[str, LegacyHandlerFn] = {
     "get_anomaly_alerts": _handle_get_anomaly_alerts,
     "get_yield_risk": _handle_get_yield_risk,
     "get_drought_status": _handle_get_drought_status,
+    "get_farm_emissions": _handle_get_farm_emissions,
     "get_crop_growth_stage": _handle_get_crop_growth_stage,
     "get_soil_properties": _handle_get_soil_properties,
     "get_weather_stats": _handle_get_weather_stats,
