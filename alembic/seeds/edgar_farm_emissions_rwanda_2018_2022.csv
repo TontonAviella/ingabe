@@ -1,0 +1,1651 @@
+district,year,emission_type,sector,sector_label,total_tonnes,source_version
+Bugesera,2018,CH4,AGS,Agricultural soils,164.229,EDGAR_v8.0_FT2022_GHG
+Burera,2018,CH4,AGS,Agricultural soils,31.971,EDGAR_v8.0_FT2022_GHG
+Gakenke,2018,CH4,AGS,Agricultural soils,98.661,EDGAR_v8.0_FT2022_GHG
+Gasabo,2018,CH4,AGS,Agricultural soils,98.649,EDGAR_v8.0_FT2022_GHG
+Gatsibo,2018,CH4,AGS,Agricultural soils,37.6,EDGAR_v8.0_FT2022_GHG
+Gicumbi,2018,CH4,AGS,Agricultural soils,15.628,EDGAR_v8.0_FT2022_GHG
+Gisagara,2018,CH4,AGS,Agricultural soils,388.306,EDGAR_v8.0_FT2022_GHG
+Huye,2018,CH4,AGS,Agricultural soils,596.341,EDGAR_v8.0_FT2022_GHG
+Kamonyi,2018,CH4,AGS,Agricultural soils,102.543,EDGAR_v8.0_FT2022_GHG
+Karongi,2018,CH4,AGS,Agricultural soils,17.572,EDGAR_v8.0_FT2022_GHG
+Kayonza,2018,CH4,AGS,Agricultural soils,295.209,EDGAR_v8.0_FT2022_GHG
+Kicukiro,2018,CH4,AGS,Agricultural soils,30.993,EDGAR_v8.0_FT2022_GHG
+Kirehe,2018,CH4,AGS,Agricultural soils,236.812,EDGAR_v8.0_FT2022_GHG
+Muhanga,2018,CH4,AGS,Agricultural soils,93.761,EDGAR_v8.0_FT2022_GHG
+Musanze,2018,CH4,AGS,Agricultural soils,11.716,EDGAR_v8.0_FT2022_GHG
+Ngoma,2018,CH4,AGS,Agricultural soils,158.952,EDGAR_v8.0_FT2022_GHG
+Ngororero,2018,CH4,AGS,Agricultural soils,19.717,EDGAR_v8.0_FT2022_GHG
+Nyabihu,2018,CH4,AGS,Agricultural soils,28.549,EDGAR_v8.0_FT2022_GHG
+Nyagatare,2018,CH4,AGS,Agricultural soils,34.958,EDGAR_v8.0_FT2022_GHG
+Nyamagabe,2018,CH4,AGS,Agricultural soils,87.546,EDGAR_v8.0_FT2022_GHG
+Nyamasheke,2018,CH4,AGS,Agricultural soils,129.213,EDGAR_v8.0_FT2022_GHG
+Nyanza,2018,CH4,AGS,Agricultural soils,470.214,EDGAR_v8.0_FT2022_GHG
+Nyarugenge,2018,CH4,AGS,Agricultural soils,36.637,EDGAR_v8.0_FT2022_GHG
+Nyaruguru,2018,CH4,AGS,Agricultural soils,239.963,EDGAR_v8.0_FT2022_GHG
+Rubavu,2018,CH4,AGS,Agricultural soils,326.848,EDGAR_v8.0_FT2022_GHG
+Ruhango,2018,CH4,AGS,Agricultural soils,170.486,EDGAR_v8.0_FT2022_GHG
+Rulindo,2018,CH4,AGS,Agricultural soils,121.861,EDGAR_v8.0_FT2022_GHG
+Rusizi,2018,CH4,AGS,Agricultural soils,210.852,EDGAR_v8.0_FT2022_GHG
+Rutsiro,2018,CH4,AGS,Agricultural soils,0.0,EDGAR_v8.0_FT2022_GHG
+Rwamagana,2018,CH4,AGS,Agricultural soils,106.87,EDGAR_v8.0_FT2022_GHG
+Bugesera,2018,CH4,AWB,Agricultural waste burning,33.937,EDGAR_v8.0_FT2022_GHG
+Burera,2018,CH4,AWB,Agricultural waste burning,28.69,EDGAR_v8.0_FT2022_GHG
+Gakenke,2018,CH4,AWB,Agricultural waste burning,36.424,EDGAR_v8.0_FT2022_GHG
+Gasabo,2018,CH4,AWB,Agricultural waste burning,18.732,EDGAR_v8.0_FT2022_GHG
+Gatsibo,2018,CH4,AWB,Agricultural waste burning,32.976,EDGAR_v8.0_FT2022_GHG
+Gicumbi,2018,CH4,AWB,Agricultural waste burning,23.502,EDGAR_v8.0_FT2022_GHG
+Gisagara,2018,CH4,AWB,Agricultural waste burning,28.592,EDGAR_v8.0_FT2022_GHG
+Huye,2018,CH4,AWB,Agricultural waste burning,44.578,EDGAR_v8.0_FT2022_GHG
+Kamonyi,2018,CH4,AWB,Agricultural waste burning,30.763,EDGAR_v8.0_FT2022_GHG
+Karongi,2018,CH4,AWB,Agricultural waste burning,30.839,EDGAR_v8.0_FT2022_GHG
+Kayonza,2018,CH4,AWB,Agricultural waste burning,42.572,EDGAR_v8.0_FT2022_GHG
+Kicukiro,2018,CH4,AWB,Agricultural waste burning,5.816,EDGAR_v8.0_FT2022_GHG
+Kirehe,2018,CH4,AWB,Agricultural waste burning,35.245,EDGAR_v8.0_FT2022_GHG
+Muhanga,2018,CH4,AWB,Agricultural waste burning,28.799,EDGAR_v8.0_FT2022_GHG
+Musanze,2018,CH4,AWB,Agricultural waste burning,12.109,EDGAR_v8.0_FT2022_GHG
+Ngoma,2018,CH4,AWB,Agricultural waste burning,21.609,EDGAR_v8.0_FT2022_GHG
+Ngororero,2018,CH4,AWB,Agricultural waste burning,30.774,EDGAR_v8.0_FT2022_GHG
+Nyabihu,2018,CH4,AWB,Agricultural waste burning,26.62,EDGAR_v8.0_FT2022_GHG
+Nyagatare,2018,CH4,AWB,Agricultural waste burning,50.533,EDGAR_v8.0_FT2022_GHG
+Nyamagabe,2018,CH4,AWB,Agricultural waste burning,49.403,EDGAR_v8.0_FT2022_GHG
+Nyamasheke,2018,CH4,AWB,Agricultural waste burning,12.854,EDGAR_v8.0_FT2022_GHG
+Nyanza,2018,CH4,AWB,Agricultural waste burning,42.418,EDGAR_v8.0_FT2022_GHG
+Nyarugenge,2018,CH4,AWB,Agricultural waste burning,7.076,EDGAR_v8.0_FT2022_GHG
+Nyaruguru,2018,CH4,AWB,Agricultural waste burning,32.003,EDGAR_v8.0_FT2022_GHG
+Rubavu,2018,CH4,AWB,Agricultural waste burning,16.998,EDGAR_v8.0_FT2022_GHG
+Ruhango,2018,CH4,AWB,Agricultural waste burning,45.896,EDGAR_v8.0_FT2022_GHG
+Rulindo,2018,CH4,AWB,Agricultural waste burning,31.632,EDGAR_v8.0_FT2022_GHG
+Rusizi,2018,CH4,AWB,Agricultural waste burning,12.013,EDGAR_v8.0_FT2022_GHG
+Rutsiro,2018,CH4,AWB,Agricultural waste burning,36.157,EDGAR_v8.0_FT2022_GHG
+Rwamagana,2018,CH4,AWB,Agricultural waste burning,18.112,EDGAR_v8.0_FT2022_GHG
+Bugesera,2018,CH4,ENF,Enteric fermentation,1973.323,EDGAR_v8.0_FT2022_GHG
+Burera,2018,CH4,ENF,Enteric fermentation,3898.813,EDGAR_v8.0_FT2022_GHG
+Gakenke,2018,CH4,ENF,Enteric fermentation,2841.38,EDGAR_v8.0_FT2022_GHG
+Gasabo,2018,CH4,ENF,Enteric fermentation,1396.038,EDGAR_v8.0_FT2022_GHG
+Gatsibo,2018,CH4,ENF,Enteric fermentation,2891.289,EDGAR_v8.0_FT2022_GHG
+Gicumbi,2018,CH4,ENF,Enteric fermentation,3057.729,EDGAR_v8.0_FT2022_GHG
+Gisagara,2018,CH4,ENF,Enteric fermentation,1941.431,EDGAR_v8.0_FT2022_GHG
+Huye,2018,CH4,ENF,Enteric fermentation,1578.212,EDGAR_v8.0_FT2022_GHG
+Kamonyi,2018,CH4,ENF,Enteric fermentation,2577.33,EDGAR_v8.0_FT2022_GHG
+Karongi,2018,CH4,ENF,Enteric fermentation,1532.358,EDGAR_v8.0_FT2022_GHG
+Kayonza,2018,CH4,ENF,Enteric fermentation,2444.744,EDGAR_v8.0_FT2022_GHG
+Kicukiro,2018,CH4,ENF,Enteric fermentation,464.16,EDGAR_v8.0_FT2022_GHG
+Kirehe,2018,CH4,ENF,Enteric fermentation,1972.251,EDGAR_v8.0_FT2022_GHG
+Muhanga,2018,CH4,ENF,Enteric fermentation,2397.626,EDGAR_v8.0_FT2022_GHG
+Musanze,2018,CH4,ENF,Enteric fermentation,1746.008,EDGAR_v8.0_FT2022_GHG
+Ngoma,2018,CH4,ENF,Enteric fermentation,1521.562,EDGAR_v8.0_FT2022_GHG
+Ngororero,2018,CH4,ENF,Enteric fermentation,2097.854,EDGAR_v8.0_FT2022_GHG
+Nyabihu,2018,CH4,ENF,Enteric fermentation,1640.681,EDGAR_v8.0_FT2022_GHG
+Nyagatare,2018,CH4,ENF,Enteric fermentation,4702.814,EDGAR_v8.0_FT2022_GHG
+Nyamagabe,2018,CH4,ENF,Enteric fermentation,2226.166,EDGAR_v8.0_FT2022_GHG
+Nyamasheke,2018,CH4,ENF,Enteric fermentation,1545.215,EDGAR_v8.0_FT2022_GHG
+Nyanza,2018,CH4,ENF,Enteric fermentation,1956.1,EDGAR_v8.0_FT2022_GHG
+Nyarugenge,2018,CH4,ENF,Enteric fermentation,403.991,EDGAR_v8.0_FT2022_GHG
+Nyaruguru,2018,CH4,ENF,Enteric fermentation,2043.396,EDGAR_v8.0_FT2022_GHG
+Rubavu,2018,CH4,ENF,Enteric fermentation,895.299,EDGAR_v8.0_FT2022_GHG
+Ruhango,2018,CH4,ENF,Enteric fermentation,1968.243,EDGAR_v8.0_FT2022_GHG
+Rulindo,2018,CH4,ENF,Enteric fermentation,2194.876,EDGAR_v8.0_FT2022_GHG
+Rusizi,2018,CH4,ENF,Enteric fermentation,1180.068,EDGAR_v8.0_FT2022_GHG
+Rutsiro,2018,CH4,ENF,Enteric fermentation,1750.619,EDGAR_v8.0_FT2022_GHG
+Rwamagana,2018,CH4,ENF,Enteric fermentation,1571.259,EDGAR_v8.0_FT2022_GHG
+Bugesera,2018,CH4,MNM,Manure management,121.698,EDGAR_v8.0_FT2022_GHG
+Burera,2018,CH4,MNM,Manure management,172.063,EDGAR_v8.0_FT2022_GHG
+Gakenke,2018,CH4,MNM,Manure management,162.003,EDGAR_v8.0_FT2022_GHG
+Gasabo,2018,CH4,MNM,Manure management,65.28,EDGAR_v8.0_FT2022_GHG
+Gatsibo,2018,CH4,MNM,Manure management,118.498,EDGAR_v8.0_FT2022_GHG
+Gicumbi,2018,CH4,MNM,Manure management,146.129,EDGAR_v8.0_FT2022_GHG
+Gisagara,2018,CH4,MNM,Manure management,124.626,EDGAR_v8.0_FT2022_GHG
+Huye,2018,CH4,MNM,Manure management,93.436,EDGAR_v8.0_FT2022_GHG
+Kamonyi,2018,CH4,MNM,Manure management,129.039,EDGAR_v8.0_FT2022_GHG
+Karongi,2018,CH4,MNM,Manure management,117.109,EDGAR_v8.0_FT2022_GHG
+Kayonza,2018,CH4,MNM,Manure management,106.349,EDGAR_v8.0_FT2022_GHG
+Kicukiro,2018,CH4,MNM,Manure management,24.529,EDGAR_v8.0_FT2022_GHG
+Kirehe,2018,CH4,MNM,Manure management,94.26,EDGAR_v8.0_FT2022_GHG
+Muhanga,2018,CH4,MNM,Manure management,141.742,EDGAR_v8.0_FT2022_GHG
+Musanze,2018,CH4,MNM,Manure management,102.609,EDGAR_v8.0_FT2022_GHG
+Ngoma,2018,CH4,MNM,Manure management,88.376,EDGAR_v8.0_FT2022_GHG
+Ngororero,2018,CH4,MNM,Manure management,133.41,EDGAR_v8.0_FT2022_GHG
+Nyabihu,2018,CH4,MNM,Manure management,98.001,EDGAR_v8.0_FT2022_GHG
+Nyagatare,2018,CH4,MNM,Manure management,171.314,EDGAR_v8.0_FT2022_GHG
+Nyamagabe,2018,CH4,MNM,Manure management,163.89,EDGAR_v8.0_FT2022_GHG
+Nyamasheke,2018,CH4,MNM,Manure management,118.944,EDGAR_v8.0_FT2022_GHG
+Nyanza,2018,CH4,MNM,Manure management,82.866,EDGAR_v8.0_FT2022_GHG
+Nyarugenge,2018,CH4,MNM,Manure management,22.1,EDGAR_v8.0_FT2022_GHG
+Nyaruguru,2018,CH4,MNM,Manure management,145.771,EDGAR_v8.0_FT2022_GHG
+Rubavu,2018,CH4,MNM,Manure management,55.112,EDGAR_v8.0_FT2022_GHG
+Ruhango,2018,CH4,MNM,Manure management,88.842,EDGAR_v8.0_FT2022_GHG
+Rulindo,2018,CH4,MNM,Manure management,121.156,EDGAR_v8.0_FT2022_GHG
+Rusizi,2018,CH4,MNM,Manure management,90.067,EDGAR_v8.0_FT2022_GHG
+Rutsiro,2018,CH4,MNM,Manure management,115.357,EDGAR_v8.0_FT2022_GHG
+Rwamagana,2018,CH4,MNM,Manure management,84.255,EDGAR_v8.0_FT2022_GHG
+Bugesera,2019,CH4,AGS,Agricultural soils,168.44,EDGAR_v8.0_FT2022_GHG
+Burera,2019,CH4,AGS,Agricultural soils,31.826,EDGAR_v8.0_FT2022_GHG
+Gakenke,2019,CH4,AGS,Agricultural soils,99.01,EDGAR_v8.0_FT2022_GHG
+Gasabo,2019,CH4,AGS,Agricultural soils,98.998,EDGAR_v8.0_FT2022_GHG
+Gatsibo,2019,CH4,AGS,Agricultural soils,37.743,EDGAR_v8.0_FT2022_GHG
+Gicumbi,2019,CH4,AGS,Agricultural soils,15.665,EDGAR_v8.0_FT2022_GHG
+Gisagara,2019,CH4,AGS,Agricultural soils,393.172,EDGAR_v8.0_FT2022_GHG
+Huye,2019,CH4,AGS,Agricultural soils,598.452,EDGAR_v8.0_FT2022_GHG
+Kamonyi,2019,CH4,AGS,Agricultural soils,102.905,EDGAR_v8.0_FT2022_GHG
+Karongi,2019,CH4,AGS,Agricultural soils,17.634,EDGAR_v8.0_FT2022_GHG
+Kayonza,2019,CH4,AGS,Agricultural soils,296.269,EDGAR_v8.0_FT2022_GHG
+Kicukiro,2019,CH4,AGS,Agricultural soils,31.103,EDGAR_v8.0_FT2022_GHG
+Kirehe,2019,CH4,AGS,Agricultural soils,239.213,EDGAR_v8.0_FT2022_GHG
+Muhanga,2019,CH4,AGS,Agricultural soils,94.093,EDGAR_v8.0_FT2022_GHG
+Musanze,2019,CH4,AGS,Agricultural soils,11.584,EDGAR_v8.0_FT2022_GHG
+Ngoma,2019,CH4,AGS,Agricultural soils,160.55,EDGAR_v8.0_FT2022_GHG
+Ngororero,2019,CH4,AGS,Agricultural soils,19.787,EDGAR_v8.0_FT2022_GHG
+Nyabihu,2019,CH4,AGS,Agricultural soils,28.654,EDGAR_v8.0_FT2022_GHG
+Nyagatare,2019,CH4,AGS,Agricultural soils,34.892,EDGAR_v8.0_FT2022_GHG
+Nyamagabe,2019,CH4,AGS,Agricultural soils,87.856,EDGAR_v8.0_FT2022_GHG
+Nyamasheke,2019,CH4,AGS,Agricultural soils,129.672,EDGAR_v8.0_FT2022_GHG
+Nyanza,2019,CH4,AGS,Agricultural soils,473.433,EDGAR_v8.0_FT2022_GHG
+Nyarugenge,2019,CH4,AGS,Agricultural soils,36.767,EDGAR_v8.0_FT2022_GHG
+Nyaruguru,2019,CH4,AGS,Agricultural soils,243.546,EDGAR_v8.0_FT2022_GHG
+Rubavu,2019,CH4,AGS,Agricultural soils,328.136,EDGAR_v8.0_FT2022_GHG
+Ruhango,2019,CH4,AGS,Agricultural soils,171.089,EDGAR_v8.0_FT2022_GHG
+Rulindo,2019,CH4,AGS,Agricultural soils,122.292,EDGAR_v8.0_FT2022_GHG
+Rusizi,2019,CH4,AGS,Agricultural soils,212.192,EDGAR_v8.0_FT2022_GHG
+Rutsiro,2019,CH4,AGS,Agricultural soils,0.0,EDGAR_v8.0_FT2022_GHG
+Rwamagana,2019,CH4,AGS,Agricultural soils,107.248,EDGAR_v8.0_FT2022_GHG
+Bugesera,2019,CH4,AWB,Agricultural waste burning,36.653,EDGAR_v8.0_FT2022_GHG
+Burera,2019,CH4,AWB,Agricultural waste burning,28.514,EDGAR_v8.0_FT2022_GHG
+Gakenke,2019,CH4,AWB,Agricultural waste burning,36.964,EDGAR_v8.0_FT2022_GHG
+Gasabo,2019,CH4,AWB,Agricultural waste burning,19.291,EDGAR_v8.0_FT2022_GHG
+Gatsibo,2019,CH4,AWB,Agricultural waste burning,33.986,EDGAR_v8.0_FT2022_GHG
+Gicumbi,2019,CH4,AWB,Agricultural waste burning,24.026,EDGAR_v8.0_FT2022_GHG
+Gisagara,2019,CH4,AWB,Agricultural waste burning,29.976,EDGAR_v8.0_FT2022_GHG
+Huye,2019,CH4,AWB,Agricultural waste burning,45.901,EDGAR_v8.0_FT2022_GHG
+Kamonyi,2019,CH4,AWB,Agricultural waste burning,31.305,EDGAR_v8.0_FT2022_GHG
+Karongi,2019,CH4,AWB,Agricultural waste burning,31.17,EDGAR_v8.0_FT2022_GHG
+Kayonza,2019,CH4,AWB,Agricultural waste burning,43.887,EDGAR_v8.0_FT2022_GHG
+Kicukiro,2019,CH4,AWB,Agricultural waste burning,5.989,EDGAR_v8.0_FT2022_GHG
+Kirehe,2019,CH4,AWB,Agricultural waste burning,36.516,EDGAR_v8.0_FT2022_GHG
+Muhanga,2019,CH4,AWB,Agricultural waste burning,29.296,EDGAR_v8.0_FT2022_GHG
+Musanze,2019,CH4,AWB,Agricultural waste burning,12.129,EDGAR_v8.0_FT2022_GHG
+Ngoma,2019,CH4,AWB,Agricultural waste burning,22.443,EDGAR_v8.0_FT2022_GHG
+Ngororero,2019,CH4,AWB,Agricultural waste burning,30.804,EDGAR_v8.0_FT2022_GHG
+Nyabihu,2019,CH4,AWB,Agricultural waste burning,26.676,EDGAR_v8.0_FT2022_GHG
+Nyagatare,2019,CH4,AWB,Agricultural waste burning,51.479,EDGAR_v8.0_FT2022_GHG
+Nyamagabe,2019,CH4,AWB,Agricultural waste burning,49.822,EDGAR_v8.0_FT2022_GHG
+Nyamasheke,2019,CH4,AWB,Agricultural waste burning,13.092,EDGAR_v8.0_FT2022_GHG
+Nyanza,2019,CH4,AWB,Agricultural waste burning,43.785,EDGAR_v8.0_FT2022_GHG
+Nyarugenge,2019,CH4,AWB,Agricultural waste burning,7.28,EDGAR_v8.0_FT2022_GHG
+Nyaruguru,2019,CH4,AWB,Agricultural waste burning,33.015,EDGAR_v8.0_FT2022_GHG
+Rubavu,2019,CH4,AWB,Agricultural waste burning,17.171,EDGAR_v8.0_FT2022_GHG
+Ruhango,2019,CH4,AWB,Agricultural waste burning,46.702,EDGAR_v8.0_FT2022_GHG
+Rulindo,2019,CH4,AWB,Agricultural waste burning,32.537,EDGAR_v8.0_FT2022_GHG
+Rusizi,2019,CH4,AWB,Agricultural waste burning,12.405,EDGAR_v8.0_FT2022_GHG
+Rutsiro,2019,CH4,AWB,Agricultural waste burning,36.359,EDGAR_v8.0_FT2022_GHG
+Rwamagana,2019,CH4,AWB,Agricultural waste burning,18.662,EDGAR_v8.0_FT2022_GHG
+Bugesera,2019,CH4,ENF,Enteric fermentation,1959.894,EDGAR_v8.0_FT2022_GHG
+Burera,2019,CH4,ENF,Enteric fermentation,3924.768,EDGAR_v8.0_FT2022_GHG
+Gakenke,2019,CH4,ENF,Enteric fermentation,2904.0,EDGAR_v8.0_FT2022_GHG
+Gasabo,2019,CH4,ENF,Enteric fermentation,1422.684,EDGAR_v8.0_FT2022_GHG
+Gatsibo,2019,CH4,ENF,Enteric fermentation,2949.133,EDGAR_v8.0_FT2022_GHG
+Gicumbi,2019,CH4,ENF,Enteric fermentation,3121.242,EDGAR_v8.0_FT2022_GHG
+Gisagara,2019,CH4,ENF,Enteric fermentation,1891.345,EDGAR_v8.0_FT2022_GHG
+Huye,2019,CH4,ENF,Enteric fermentation,1610.34,EDGAR_v8.0_FT2022_GHG
+Kamonyi,2019,CH4,ENF,Enteric fermentation,2631.568,EDGAR_v8.0_FT2022_GHG
+Karongi,2019,CH4,ENF,Enteric fermentation,1572.294,EDGAR_v8.0_FT2022_GHG
+Kayonza,2019,CH4,ENF,Enteric fermentation,2493.227,EDGAR_v8.0_FT2022_GHG
+Kicukiro,2019,CH4,ENF,Enteric fermentation,472.081,EDGAR_v8.0_FT2022_GHG
+Kirehe,2019,CH4,ENF,Enteric fermentation,1999.043,EDGAR_v8.0_FT2022_GHG
+Muhanga,2019,CH4,ENF,Enteric fermentation,2455.388,EDGAR_v8.0_FT2022_GHG
+Musanze,2019,CH4,ENF,Enteric fermentation,1782.79,EDGAR_v8.0_FT2022_GHG
+Ngoma,2019,CH4,ENF,Enteric fermentation,1545.031,EDGAR_v8.0_FT2022_GHG
+Ngororero,2019,CH4,ENF,Enteric fermentation,2152.631,EDGAR_v8.0_FT2022_GHG
+Nyabihu,2019,CH4,ENF,Enteric fermentation,1680.451,EDGAR_v8.0_FT2022_GHG
+Nyagatare,2019,CH4,ENF,Enteric fermentation,4805.213,EDGAR_v8.0_FT2022_GHG
+Nyamagabe,2019,CH4,ENF,Enteric fermentation,2285.693,EDGAR_v8.0_FT2022_GHG
+Nyamasheke,2019,CH4,ENF,Enteric fermentation,1584.98,EDGAR_v8.0_FT2022_GHG
+Nyanza,2019,CH4,ENF,Enteric fermentation,1959.734,EDGAR_v8.0_FT2022_GHG
+Nyarugenge,2019,CH4,ENF,Enteric fermentation,411.507,EDGAR_v8.0_FT2022_GHG
+Nyaruguru,2019,CH4,ENF,Enteric fermentation,2050.665,EDGAR_v8.0_FT2022_GHG
+Rubavu,2019,CH4,ENF,Enteric fermentation,916.75,EDGAR_v8.0_FT2022_GHG
+Ruhango,2019,CH4,ENF,Enteric fermentation,2007.044,EDGAR_v8.0_FT2022_GHG
+Rulindo,2019,CH4,ENF,Enteric fermentation,2243.829,EDGAR_v8.0_FT2022_GHG
+Rusizi,2019,CH4,ENF,Enteric fermentation,1168.108,EDGAR_v8.0_FT2022_GHG
+Rutsiro,2019,CH4,ENF,Enteric fermentation,1795.505,EDGAR_v8.0_FT2022_GHG
+Rwamagana,2019,CH4,ENF,Enteric fermentation,1599.958,EDGAR_v8.0_FT2022_GHG
+Bugesera,2019,CH4,MNM,Manure management,130.811,EDGAR_v8.0_FT2022_GHG
+Burera,2019,CH4,MNM,Manure management,179.551,EDGAR_v8.0_FT2022_GHG
+Gakenke,2019,CH4,MNM,Manure management,177.045,EDGAR_v8.0_FT2022_GHG
+Gasabo,2019,CH4,MNM,Manure management,68.702,EDGAR_v8.0_FT2022_GHG
+Gatsibo,2019,CH4,MNM,Manure management,123.777,EDGAR_v8.0_FT2022_GHG
+Gicumbi,2019,CH4,MNM,Manure management,156.367,EDGAR_v8.0_FT2022_GHG
+Gisagara,2019,CH4,MNM,Manure management,134.082,EDGAR_v8.0_FT2022_GHG
+Huye,2019,CH4,MNM,Manure management,102.373,EDGAR_v8.0_FT2022_GHG
+Kamonyi,2019,CH4,MNM,Manure management,139.326,EDGAR_v8.0_FT2022_GHG
+Karongi,2019,CH4,MNM,Manure management,130.811,EDGAR_v8.0_FT2022_GHG
+Kayonza,2019,CH4,MNM,Manure management,111.378,EDGAR_v8.0_FT2022_GHG
+Kicukiro,2019,CH4,MNM,Manure management,26.104,EDGAR_v8.0_FT2022_GHG
+Kirehe,2019,CH4,MNM,Manure management,99.161,EDGAR_v8.0_FT2022_GHG
+Muhanga,2019,CH4,MNM,Manure management,155.67,EDGAR_v8.0_FT2022_GHG
+Musanze,2019,CH4,MNM,Manure management,111.973,EDGAR_v8.0_FT2022_GHG
+Ngoma,2019,CH4,MNM,Manure management,95.171,EDGAR_v8.0_FT2022_GHG
+Ngororero,2019,CH4,MNM,Manure management,147.398,EDGAR_v8.0_FT2022_GHG
+Nyabihu,2019,CH4,MNM,Manure management,107.544,EDGAR_v8.0_FT2022_GHG
+Nyagatare,2019,CH4,MNM,Manure management,177.059,EDGAR_v8.0_FT2022_GHG
+Nyamagabe,2019,CH4,MNM,Manure management,182.967,EDGAR_v8.0_FT2022_GHG
+Nyamasheke,2019,CH4,MNM,Manure management,132.955,EDGAR_v8.0_FT2022_GHG
+Nyanza,2019,CH4,MNM,Manure management,86.957,EDGAR_v8.0_FT2022_GHG
+Nyarugenge,2019,CH4,MNM,Manure management,23.686,EDGAR_v8.0_FT2022_GHG
+Nyaruguru,2019,CH4,MNM,Manure management,160.657,EDGAR_v8.0_FT2022_GHG
+Rubavu,2019,CH4,MNM,Manure management,59.983,EDGAR_v8.0_FT2022_GHG
+Ruhango,2019,CH4,MNM,Manure management,94.819,EDGAR_v8.0_FT2022_GHG
+Rulindo,2019,CH4,MNM,Manure management,131.863,EDGAR_v8.0_FT2022_GHG
+Rusizi,2019,CH4,MNM,Manure management,98.58,EDGAR_v8.0_FT2022_GHG
+Rutsiro,2019,CH4,MNM,Manure management,127.692,EDGAR_v8.0_FT2022_GHG
+Rwamagana,2019,CH4,MNM,Manure management,90.132,EDGAR_v8.0_FT2022_GHG
+Bugesera,2020,CH4,AGS,Agricultural soils,150.189,EDGAR_v8.0_FT2022_GHG
+Burera,2020,CH4,AGS,Agricultural soils,29.983,EDGAR_v8.0_FT2022_GHG
+Gakenke,2020,CH4,AGS,Agricultural soils,89.042,EDGAR_v8.0_FT2022_GHG
+Gasabo,2020,CH4,AGS,Agricultural soils,89.03,EDGAR_v8.0_FT2022_GHG
+Gatsibo,2020,CH4,AGS,Agricultural soils,34.004,EDGAR_v8.0_FT2022_GHG
+Gicumbi,2020,CH4,AGS,Agricultural soils,14.185,EDGAR_v8.0_FT2022_GHG
+Gisagara,2020,CH4,AGS,Agricultural soils,352.344,EDGAR_v8.0_FT2022_GHG
+Huye,2020,CH4,AGS,Agricultural soils,538.2,EDGAR_v8.0_FT2022_GHG
+Kamonyi,2020,CH4,AGS,Agricultural soils,92.545,EDGAR_v8.0_FT2022_GHG
+Karongi,2020,CH4,AGS,Agricultural soils,15.859,EDGAR_v8.0_FT2022_GHG
+Kayonza,2020,CH4,AGS,Agricultural soils,266.528,EDGAR_v8.0_FT2022_GHG
+Kicukiro,2020,CH4,AGS,Agricultural soils,27.971,EDGAR_v8.0_FT2022_GHG
+Kirehe,2020,CH4,AGS,Agricultural soils,214.585,EDGAR_v8.0_FT2022_GHG
+Muhanga,2020,CH4,AGS,Agricultural soils,84.619,EDGAR_v8.0_FT2022_GHG
+Musanze,2020,CH4,AGS,Agricultural soils,11.332,EDGAR_v8.0_FT2022_GHG
+Ngoma,2020,CH4,AGS,Agricultural soils,144.017,EDGAR_v8.0_FT2022_GHG
+Ngororero,2020,CH4,AGS,Agricultural soils,17.795,EDGAR_v8.0_FT2022_GHG
+Nyabihu,2020,CH4,AGS,Agricultural soils,26.09,EDGAR_v8.0_FT2022_GHG
+Nyagatare,2020,CH4,AGS,Agricultural soils,32.613,EDGAR_v8.0_FT2022_GHG
+Nyamagabe,2020,CH4,AGS,Agricultural soils,79.01,EDGAR_v8.0_FT2022_GHG
+Nyamasheke,2020,CH4,AGS,Agricultural soils,116.757,EDGAR_v8.0_FT2022_GHG
+Nyanza,2020,CH4,AGS,Agricultural soils,425.214,EDGAR_v8.0_FT2022_GHG
+Nyarugenge,2020,CH4,AGS,Agricultural soils,33.065,EDGAR_v8.0_FT2022_GHG
+Nyaruguru,2020,CH4,AGS,Agricultural soils,218.052,EDGAR_v8.0_FT2022_GHG
+Rubavu,2020,CH4,AGS,Agricultural soils,304.273,EDGAR_v8.0_FT2022_GHG
+Ruhango,2020,CH4,AGS,Agricultural soils,153.863,EDGAR_v8.0_FT2022_GHG
+Rulindo,2020,CH4,AGS,Agricultural soils,109.979,EDGAR_v8.0_FT2022_GHG
+Rusizi,2020,CH4,AGS,Agricultural soils,190.829,EDGAR_v8.0_FT2022_GHG
+Rutsiro,2020,CH4,AGS,Agricultural soils,0.0,EDGAR_v8.0_FT2022_GHG
+Rwamagana,2020,CH4,AGS,Agricultural soils,96.45,EDGAR_v8.0_FT2022_GHG
+Bugesera,2020,CH4,AWB,Agricultural waste burning,37.743,EDGAR_v8.0_FT2022_GHG
+Burera,2020,CH4,AWB,Agricultural waste burning,29.162,EDGAR_v8.0_FT2022_GHG
+Gakenke,2020,CH4,AWB,Agricultural waste burning,37.552,EDGAR_v8.0_FT2022_GHG
+Gasabo,2020,CH4,AWB,Agricultural waste burning,19.666,EDGAR_v8.0_FT2022_GHG
+Gatsibo,2020,CH4,AWB,Agricultural waste burning,34.873,EDGAR_v8.0_FT2022_GHG
+Gicumbi,2020,CH4,AWB,Agricultural waste burning,24.689,EDGAR_v8.0_FT2022_GHG
+Gisagara,2020,CH4,AWB,Agricultural waste burning,29.839,EDGAR_v8.0_FT2022_GHG
+Huye,2020,CH4,AWB,Agricultural waste burning,45.805,EDGAR_v8.0_FT2022_GHG
+Kamonyi,2020,CH4,AWB,Agricultural waste burning,31.834,EDGAR_v8.0_FT2022_GHG
+Karongi,2020,CH4,AWB,Agricultural waste burning,31.771,EDGAR_v8.0_FT2022_GHG
+Kayonza,2020,CH4,AWB,Agricultural waste burning,44.834,EDGAR_v8.0_FT2022_GHG
+Kicukiro,2020,CH4,AWB,Agricultural waste burning,6.105,EDGAR_v8.0_FT2022_GHG
+Kirehe,2020,CH4,AWB,Agricultural waste burning,37.24,EDGAR_v8.0_FT2022_GHG
+Muhanga,2020,CH4,AWB,Agricultural waste burning,29.79,EDGAR_v8.0_FT2022_GHG
+Musanze,2020,CH4,AWB,Agricultural waste burning,12.334,EDGAR_v8.0_FT2022_GHG
+Ngoma,2020,CH4,AWB,Agricultural waste burning,22.842,EDGAR_v8.0_FT2022_GHG
+Ngororero,2020,CH4,AWB,Agricultural waste burning,31.331,EDGAR_v8.0_FT2022_GHG
+Nyabihu,2020,CH4,AWB,Agricultural waste burning,27.06,EDGAR_v8.0_FT2022_GHG
+Nyagatare,2020,CH4,AWB,Agricultural waste burning,53.247,EDGAR_v8.0_FT2022_GHG
+Nyamagabe,2020,CH4,AWB,Agricultural waste burning,50.162,EDGAR_v8.0_FT2022_GHG
+Nyamasheke,2020,CH4,AWB,Agricultural waste burning,13.119,EDGAR_v8.0_FT2022_GHG
+Nyanza,2020,CH4,AWB,Agricultural waste burning,43.844,EDGAR_v8.0_FT2022_GHG
+Nyarugenge,2020,CH4,AWB,Agricultural waste burning,7.419,EDGAR_v8.0_FT2022_GHG
+Nyaruguru,2020,CH4,AWB,Agricultural waste burning,33.038,EDGAR_v8.0_FT2022_GHG
+Rubavu,2020,CH4,AWB,Agricultural waste burning,17.306,EDGAR_v8.0_FT2022_GHG
+Ruhango,2020,CH4,AWB,Agricultural waste burning,47.442,EDGAR_v8.0_FT2022_GHG
+Rulindo,2020,CH4,AWB,Agricultural waste burning,33.198,EDGAR_v8.0_FT2022_GHG
+Rusizi,2020,CH4,AWB,Agricultural waste burning,12.258,EDGAR_v8.0_FT2022_GHG
+Rutsiro,2020,CH4,AWB,Agricultural waste burning,37.107,EDGAR_v8.0_FT2022_GHG
+Rwamagana,2020,CH4,AWB,Agricultural waste burning,19.022,EDGAR_v8.0_FT2022_GHG
+Bugesera,2020,CH4,ENF,Enteric fermentation,1952.484,EDGAR_v8.0_FT2022_GHG
+Burera,2020,CH4,ENF,Enteric fermentation,3948.844,EDGAR_v8.0_FT2022_GHG
+Gakenke,2020,CH4,ENF,Enteric fermentation,2913.737,EDGAR_v8.0_FT2022_GHG
+Gasabo,2020,CH4,ENF,Enteric fermentation,1428.941,EDGAR_v8.0_FT2022_GHG
+Gatsibo,2020,CH4,ENF,Enteric fermentation,2963.935,EDGAR_v8.0_FT2022_GHG
+Gicumbi,2020,CH4,ENF,Enteric fermentation,3137.697,EDGAR_v8.0_FT2022_GHG
+Gisagara,2020,CH4,ENF,Enteric fermentation,1873.5,EDGAR_v8.0_FT2022_GHG
+Huye,2020,CH4,ENF,Enteric fermentation,1616.027,EDGAR_v8.0_FT2022_GHG
+Kamonyi,2020,CH4,ENF,Enteric fermentation,2642.279,EDGAR_v8.0_FT2022_GHG
+Karongi,2020,CH4,ENF,Enteric fermentation,1576.032,EDGAR_v8.0_FT2022_GHG
+Kayonza,2020,CH4,ENF,Enteric fermentation,2506.271,EDGAR_v8.0_FT2022_GHG
+Kicukiro,2020,CH4,ENF,Enteric fermentation,473.939,EDGAR_v8.0_FT2022_GHG
+Kirehe,2020,CH4,ENF,Enteric fermentation,2008.546,EDGAR_v8.0_FT2022_GHG
+Muhanga,2020,CH4,ENF,Enteric fermentation,2464.427,EDGAR_v8.0_FT2022_GHG
+Musanze,2020,CH4,ENF,Enteric fermentation,1790.358,EDGAR_v8.0_FT2022_GHG
+Ngoma,2020,CH4,ENF,Enteric fermentation,1549.247,EDGAR_v8.0_FT2022_GHG
+Ngororero,2020,CH4,ENF,Enteric fermentation,2159.923,EDGAR_v8.0_FT2022_GHG
+Nyabihu,2020,CH4,ENF,Enteric fermentation,1686.495,EDGAR_v8.0_FT2022_GHG
+Nyagatare,2020,CH4,ENF,Enteric fermentation,4847.349,EDGAR_v8.0_FT2022_GHG
+Nyamagabe,2020,CH4,ENF,Enteric fermentation,2292.185,EDGAR_v8.0_FT2022_GHG
+Nyamasheke,2020,CH4,ENF,Enteric fermentation,1589.914,EDGAR_v8.0_FT2022_GHG
+Nyanza,2020,CH4,ENF,Enteric fermentation,1957.414,EDGAR_v8.0_FT2022_GHG
+Nyarugenge,2020,CH4,ENF,Enteric fermentation,413.107,EDGAR_v8.0_FT2022_GHG
+Nyaruguru,2020,CH4,ENF,Enteric fermentation,2043.273,EDGAR_v8.0_FT2022_GHG
+Rubavu,2020,CH4,ENF,Enteric fermentation,922.53,EDGAR_v8.0_FT2022_GHG
+Ruhango,2020,CH4,ENF,Enteric fermentation,2015.385,EDGAR_v8.0_FT2022_GHG
+Rulindo,2020,CH4,ENF,Enteric fermentation,2251.609,EDGAR_v8.0_FT2022_GHG
+Rusizi,2020,CH4,ENF,Enteric fermentation,1162.224,EDGAR_v8.0_FT2022_GHG
+Rutsiro,2020,CH4,ENF,Enteric fermentation,1800.934,EDGAR_v8.0_FT2022_GHG
+Rwamagana,2020,CH4,ENF,Enteric fermentation,1606.201,EDGAR_v8.0_FT2022_GHG
+Bugesera,2020,CH4,MNM,Manure management,129.726,EDGAR_v8.0_FT2022_GHG
+Burera,2020,CH4,MNM,Manure management,179.553,EDGAR_v8.0_FT2022_GHG
+Gakenke,2020,CH4,MNM,Manure management,175.479,EDGAR_v8.0_FT2022_GHG
+Gasabo,2020,CH4,MNM,Manure management,68.671,EDGAR_v8.0_FT2022_GHG
+Gatsibo,2020,CH4,MNM,Manure management,123.921,EDGAR_v8.0_FT2022_GHG
+Gicumbi,2020,CH4,MNM,Manure management,155.795,EDGAR_v8.0_FT2022_GHG
+Gisagara,2020,CH4,MNM,Manure management,132.976,EDGAR_v8.0_FT2022_GHG
+Huye,2020,CH4,MNM,Manure management,101.41,EDGAR_v8.0_FT2022_GHG
+Kamonyi,2020,CH4,MNM,Manure management,138.441,EDGAR_v8.0_FT2022_GHG
+Karongi,2020,CH4,MNM,Manure management,129.147,EDGAR_v8.0_FT2022_GHG
+Kayonza,2020,CH4,MNM,Manure management,111.493,EDGAR_v8.0_FT2022_GHG
+Kicukiro,2020,CH4,MNM,Manure management,26.023,EDGAR_v8.0_FT2022_GHG
+Kirehe,2020,CH4,MNM,Manure management,99.113,EDGAR_v8.0_FT2022_GHG
+Muhanga,2020,CH4,MNM,Manure management,154.21,EDGAR_v8.0_FT2022_GHG
+Musanze,2020,CH4,MNM,Manure management,111.036,EDGAR_v8.0_FT2022_GHG
+Ngoma,2020,CH4,MNM,Manure management,94.618,EDGAR_v8.0_FT2022_GHG
+Ngororero,2020,CH4,MNM,Manure management,145.869,EDGAR_v8.0_FT2022_GHG
+Nyabihu,2020,CH4,MNM,Manure management,106.546,EDGAR_v8.0_FT2022_GHG
+Nyagatare,2020,CH4,MNM,Manure management,178.194,EDGAR_v8.0_FT2022_GHG
+Nyamagabe,2020,CH4,MNM,Manure management,180.686,EDGAR_v8.0_FT2022_GHG
+Nyamasheke,2020,CH4,MNM,Manure management,131.28,EDGAR_v8.0_FT2022_GHG
+Nyanza,2020,CH4,MNM,Manure management,86.534,EDGAR_v8.0_FT2022_GHG
+Nyarugenge,2020,CH4,MNM,Manure management,23.581,EDGAR_v8.0_FT2022_GHG
+Nyaruguru,2020,CH4,MNM,Manure management,158.856,EDGAR_v8.0_FT2022_GHG
+Rubavu,2020,CH4,MNM,Manure management,59.56,EDGAR_v8.0_FT2022_GHG
+Ruhango,2020,CH4,MNM,Manure management,94.407,EDGAR_v8.0_FT2022_GHG
+Rulindo,2020,CH4,MNM,Manure management,130.82,EDGAR_v8.0_FT2022_GHG
+Rusizi,2020,CH4,MNM,Manure management,97.596,EDGAR_v8.0_FT2022_GHG
+Rutsiro,2020,CH4,MNM,Manure management,126.298,EDGAR_v8.0_FT2022_GHG
+Rwamagana,2020,CH4,MNM,Manure management,89.76,EDGAR_v8.0_FT2022_GHG
+Bugesera,2021,CH4,AGS,Agricultural soils,151.447,EDGAR_v8.0_FT2022_GHG
+Burera,2021,CH4,AGS,Agricultural soils,29.983,EDGAR_v8.0_FT2022_GHG
+Gakenke,2021,CH4,AGS,Agricultural soils,89.042,EDGAR_v8.0_FT2022_GHG
+Gasabo,2021,CH4,AGS,Agricultural soils,89.03,EDGAR_v8.0_FT2022_GHG
+Gatsibo,2021,CH4,AGS,Agricultural soils,34.035,EDGAR_v8.0_FT2022_GHG
+Gicumbi,2021,CH4,AGS,Agricultural soils,14.185,EDGAR_v8.0_FT2022_GHG
+Gisagara,2021,CH4,AGS,Agricultural soils,353.554,EDGAR_v8.0_FT2022_GHG
+Huye,2021,CH4,AGS,Agricultural soils,538.2,EDGAR_v8.0_FT2022_GHG
+Kamonyi,2021,CH4,AGS,Agricultural soils,92.545,EDGAR_v8.0_FT2022_GHG
+Karongi,2021,CH4,AGS,Agricultural soils,15.859,EDGAR_v8.0_FT2022_GHG
+Kayonza,2021,CH4,AGS,Agricultural soils,266.573,EDGAR_v8.0_FT2022_GHG
+Kicukiro,2021,CH4,AGS,Agricultural soils,27.971,EDGAR_v8.0_FT2022_GHG
+Kirehe,2021,CH4,AGS,Agricultural soils,215.131,EDGAR_v8.0_FT2022_GHG
+Muhanga,2021,CH4,AGS,Agricultural soils,84.619,EDGAR_v8.0_FT2022_GHG
+Musanze,2021,CH4,AGS,Agricultural soils,11.332,EDGAR_v8.0_FT2022_GHG
+Ngoma,2021,CH4,AGS,Agricultural soils,144.376,EDGAR_v8.0_FT2022_GHG
+Ngororero,2021,CH4,AGS,Agricultural soils,17.795,EDGAR_v8.0_FT2022_GHG
+Nyabihu,2021,CH4,AGS,Agricultural soils,26.223,EDGAR_v8.0_FT2022_GHG
+Nyagatare,2021,CH4,AGS,Agricultural soils,32.677,EDGAR_v8.0_FT2022_GHG
+Nyamagabe,2021,CH4,AGS,Agricultural soils,79.01,EDGAR_v8.0_FT2022_GHG
+Nyamasheke,2021,CH4,AGS,Agricultural soils,116.815,EDGAR_v8.0_FT2022_GHG
+Nyanza,2021,CH4,AGS,Agricultural soils,425.753,EDGAR_v8.0_FT2022_GHG
+Nyarugenge,2021,CH4,AGS,Agricultural soils,33.065,EDGAR_v8.0_FT2022_GHG
+Nyaruguru,2021,CH4,AGS,Agricultural soils,218.999,EDGAR_v8.0_FT2022_GHG
+Rubavu,2021,CH4,AGS,Agricultural soils,308.069,EDGAR_v8.0_FT2022_GHG
+Ruhango,2021,CH4,AGS,Agricultural soils,153.863,EDGAR_v8.0_FT2022_GHG
+Rulindo,2021,CH4,AGS,Agricultural soils,109.979,EDGAR_v8.0_FT2022_GHG
+Rusizi,2021,CH4,AGS,Agricultural soils,191.121,EDGAR_v8.0_FT2022_GHG
+Rutsiro,2021,CH4,AGS,Agricultural soils,0.0,EDGAR_v8.0_FT2022_GHG
+Rwamagana,2021,CH4,AGS,Agricultural soils,96.45,EDGAR_v8.0_FT2022_GHG
+Bugesera,2021,CH4,AWB,Agricultural waste burning,40.254,EDGAR_v8.0_FT2022_GHG
+Burera,2021,CH4,AWB,Agricultural waste burning,30.368,EDGAR_v8.0_FT2022_GHG
+Gakenke,2021,CH4,AWB,Agricultural waste burning,39.319,EDGAR_v8.0_FT2022_GHG
+Gasabo,2021,CH4,AWB,Agricultural waste burning,20.721,EDGAR_v8.0_FT2022_GHG
+Gatsibo,2021,CH4,AWB,Agricultural waste burning,36.7,EDGAR_v8.0_FT2022_GHG
+Gicumbi,2021,CH4,AWB,Agricultural waste burning,26.005,EDGAR_v8.0_FT2022_GHG
+Gisagara,2021,CH4,AWB,Agricultural waste burning,31.347,EDGAR_v8.0_FT2022_GHG
+Huye,2021,CH4,AWB,Agricultural waste burning,47.897,EDGAR_v8.0_FT2022_GHG
+Kamonyi,2021,CH4,AWB,Agricultural waste burning,33.485,EDGAR_v8.0_FT2022_GHG
+Karongi,2021,CH4,AWB,Agricultural waste burning,33.247,EDGAR_v8.0_FT2022_GHG
+Kayonza,2021,CH4,AWB,Agricultural waste burning,47.002,EDGAR_v8.0_FT2022_GHG
+Kicukiro,2021,CH4,AWB,Agricultural waste burning,6.432,EDGAR_v8.0_FT2022_GHG
+Kirehe,2021,CH4,AWB,Agricultural waste burning,39.142,EDGAR_v8.0_FT2022_GHG
+Muhanga,2021,CH4,AWB,Agricultural waste burning,31.334,EDGAR_v8.0_FT2022_GHG
+Musanze,2021,CH4,AWB,Agricultural waste burning,12.84,EDGAR_v8.0_FT2022_GHG
+Ngoma,2021,CH4,AWB,Agricultural waste burning,24.049,EDGAR_v8.0_FT2022_GHG
+Ngororero,2021,CH4,AWB,Agricultural waste burning,32.553,EDGAR_v8.0_FT2022_GHG
+Nyabihu,2021,CH4,AWB,Agricultural waste burning,28.12,EDGAR_v8.0_FT2022_GHG
+Nyagatare,2021,CH4,AWB,Agricultural waste burning,55.794,EDGAR_v8.0_FT2022_GHG
+Nyamagabe,2021,CH4,AWB,Agricultural waste burning,52.32,EDGAR_v8.0_FT2022_GHG
+Nyamasheke,2021,CH4,AWB,Agricultural waste burning,13.613,EDGAR_v8.0_FT2022_GHG
+Nyanza,2021,CH4,AWB,Agricultural waste burning,45.971,EDGAR_v8.0_FT2022_GHG
+Nyarugenge,2021,CH4,AWB,Agricultural waste burning,7.816,EDGAR_v8.0_FT2022_GHG
+Nyaruguru,2021,CH4,AWB,Agricultural waste burning,34.652,EDGAR_v8.0_FT2022_GHG
+Rubavu,2021,CH4,AWB,Agricultural waste burning,17.642,EDGAR_v8.0_FT2022_GHG
+Ruhango,2021,CH4,AWB,Agricultural waste burning,49.883,EDGAR_v8.0_FT2022_GHG
+Rulindo,2021,CH4,AWB,Agricultural waste burning,34.965,EDGAR_v8.0_FT2022_GHG
+Rusizi,2021,CH4,AWB,Agricultural waste burning,12.692,EDGAR_v8.0_FT2022_GHG
+Rutsiro,2021,CH4,AWB,Agricultural waste burning,38.681,EDGAR_v8.0_FT2022_GHG
+Rwamagana,2021,CH4,AWB,Agricultural waste burning,20.023,EDGAR_v8.0_FT2022_GHG
+Bugesera,2021,CH4,ENF,Enteric fermentation,1948.574,EDGAR_v8.0_FT2022_GHG
+Burera,2021,CH4,ENF,Enteric fermentation,3951.222,EDGAR_v8.0_FT2022_GHG
+Gakenke,2021,CH4,ENF,Enteric fermentation,2902.842,EDGAR_v8.0_FT2022_GHG
+Gasabo,2021,CH4,ENF,Enteric fermentation,1425.16,EDGAR_v8.0_FT2022_GHG
+Gatsibo,2021,CH4,ENF,Enteric fermentation,2957.124,EDGAR_v8.0_FT2022_GHG
+Gicumbi,2021,CH4,ENF,Enteric fermentation,3131.153,EDGAR_v8.0_FT2022_GHG
+Gisagara,2021,CH4,ENF,Enteric fermentation,1875.926,EDGAR_v8.0_FT2022_GHG
+Huye,2021,CH4,ENF,Enteric fermentation,1611.87,EDGAR_v8.0_FT2022_GHG
+Kamonyi,2021,CH4,ENF,Enteric fermentation,2634.884,EDGAR_v8.0_FT2022_GHG
+Karongi,2021,CH4,ENF,Enteric fermentation,1568.892,EDGAR_v8.0_FT2022_GHG
+Kayonza,2021,CH4,ENF,Enteric fermentation,2501.318,EDGAR_v8.0_FT2022_GHG
+Kicukiro,2021,CH4,ENF,Enteric fermentation,472.818,EDGAR_v8.0_FT2022_GHG
+Kirehe,2021,CH4,ENF,Enteric fermentation,2007.733,EDGAR_v8.0_FT2022_GHG
+Muhanga,2021,CH4,ENF,Enteric fermentation,2456.314,EDGAR_v8.0_FT2022_GHG
+Musanze,2021,CH4,ENF,Enteric fermentation,1786.018,EDGAR_v8.0_FT2022_GHG
+Ngoma,2021,CH4,ENF,Enteric fermentation,1545.38,EDGAR_v8.0_FT2022_GHG
+Ngororero,2021,CH4,ENF,Enteric fermentation,2151.404,EDGAR_v8.0_FT2022_GHG
+Nyabihu,2021,CH4,ENF,Enteric fermentation,1680.155,EDGAR_v8.0_FT2022_GHG
+Nyagatare,2021,CH4,ENF,Enteric fermentation,4851.249,EDGAR_v8.0_FT2022_GHG
+Nyamagabe,2021,CH4,ENF,Enteric fermentation,2283.052,EDGAR_v8.0_FT2022_GHG
+Nyamasheke,2021,CH4,ENF,Enteric fermentation,1585.337,EDGAR_v8.0_FT2022_GHG
+Nyanza,2021,CH4,ENF,Enteric fermentation,1950.777,EDGAR_v8.0_FT2022_GHG
+Nyarugenge,2021,CH4,ENF,Enteric fermentation,412.05,EDGAR_v8.0_FT2022_GHG
+Nyaruguru,2021,CH4,ENF,Enteric fermentation,2037.679,EDGAR_v8.0_FT2022_GHG
+Rubavu,2021,CH4,ENF,Enteric fermentation,922.431,EDGAR_v8.0_FT2022_GHG
+Ruhango,2021,CH4,ENF,Enteric fermentation,2009.581,EDGAR_v8.0_FT2022_GHG
+Rulindo,2021,CH4,ENF,Enteric fermentation,2242.886,EDGAR_v8.0_FT2022_GHG
+Rusizi,2021,CH4,ENF,Enteric fermentation,1163.449,EDGAR_v8.0_FT2022_GHG
+Rutsiro,2021,CH4,ENF,Enteric fermentation,1793.143,EDGAR_v8.0_FT2022_GHG
+Rwamagana,2021,CH4,ENF,Enteric fermentation,1602.096,EDGAR_v8.0_FT2022_GHG
+Bugesera,2021,CH4,MNM,Manure management,130.494,EDGAR_v8.0_FT2022_GHG
+Burera,2021,CH4,MNM,Manure management,180.036,EDGAR_v8.0_FT2022_GHG
+Gakenke,2021,CH4,MNM,Manure management,175.707,EDGAR_v8.0_FT2022_GHG
+Gasabo,2021,CH4,MNM,Manure management,68.881,EDGAR_v8.0_FT2022_GHG
+Gatsibo,2021,CH4,MNM,Manure management,124.122,EDGAR_v8.0_FT2022_GHG
+Gicumbi,2021,CH4,MNM,Manure management,156.043,EDGAR_v8.0_FT2022_GHG
+Gisagara,2021,CH4,MNM,Manure management,134.438,EDGAR_v8.0_FT2022_GHG
+Huye,2021,CH4,MNM,Manure management,101.611,EDGAR_v8.0_FT2022_GHG
+Kamonyi,2021,CH4,MNM,Manure management,138.592,EDGAR_v8.0_FT2022_GHG
+Karongi,2021,CH4,MNM,Manure management,129.467,EDGAR_v8.0_FT2022_GHG
+Kayonza,2021,CH4,MNM,Manure management,111.803,EDGAR_v8.0_FT2022_GHG
+Kicukiro,2021,CH4,MNM,Manure management,26.122,EDGAR_v8.0_FT2022_GHG
+Kirehe,2021,CH4,MNM,Manure management,99.559,EDGAR_v8.0_FT2022_GHG
+Muhanga,2021,CH4,MNM,Manure management,154.465,EDGAR_v8.0_FT2022_GHG
+Musanze,2021,CH4,MNM,Manure management,111.254,EDGAR_v8.0_FT2022_GHG
+Ngoma,2021,CH4,MNM,Manure management,95.005,EDGAR_v8.0_FT2022_GHG
+Ngororero,2021,CH4,MNM,Manure management,146.133,EDGAR_v8.0_FT2022_GHG
+Nyabihu,2021,CH4,MNM,Manure management,106.71,EDGAR_v8.0_FT2022_GHG
+Nyagatare,2021,CH4,MNM,Manure management,178.697,EDGAR_v8.0_FT2022_GHG
+Nyamagabe,2021,CH4,MNM,Manure management,181.112,EDGAR_v8.0_FT2022_GHG
+Nyamasheke,2021,CH4,MNM,Manure management,131.68,EDGAR_v8.0_FT2022_GHG
+Nyanza,2021,CH4,MNM,Manure management,86.621,EDGAR_v8.0_FT2022_GHG
+Nyarugenge,2021,CH4,MNM,Manure management,23.663,EDGAR_v8.0_FT2022_GHG
+Nyaruguru,2021,CH4,MNM,Manure management,159.775,EDGAR_v8.0_FT2022_GHG
+Rubavu,2021,CH4,MNM,Manure management,59.73,EDGAR_v8.0_FT2022_GHG
+Ruhango,2021,CH4,MNM,Manure management,94.442,EDGAR_v8.0_FT2022_GHG
+Rulindo,2021,CH4,MNM,Manure management,130.986,EDGAR_v8.0_FT2022_GHG
+Rusizi,2021,CH4,MNM,Manure management,98.432,EDGAR_v8.0_FT2022_GHG
+Rutsiro,2021,CH4,MNM,Manure management,126.53,EDGAR_v8.0_FT2022_GHG
+Rwamagana,2021,CH4,MNM,Manure management,90.066,EDGAR_v8.0_FT2022_GHG
+Bugesera,2022,CH4,AGS,Agricultural soils,152.783,EDGAR_v8.0_FT2022_GHG
+Burera,2022,CH4,AGS,Agricultural soils,30.147,EDGAR_v8.0_FT2022_GHG
+Gakenke,2022,CH4,AGS,Agricultural soils,89.042,EDGAR_v8.0_FT2022_GHG
+Gasabo,2022,CH4,AGS,Agricultural soils,89.03,EDGAR_v8.0_FT2022_GHG
+Gatsibo,2022,CH4,AGS,Agricultural soils,34.004,EDGAR_v8.0_FT2022_GHG
+Gicumbi,2022,CH4,AGS,Agricultural soils,14.197,EDGAR_v8.0_FT2022_GHG
+Gisagara,2022,CH4,AGS,Agricultural soils,354.84,EDGAR_v8.0_FT2022_GHG
+Huye,2022,CH4,AGS,Agricultural soils,538.2,EDGAR_v8.0_FT2022_GHG
+Kamonyi,2022,CH4,AGS,Agricultural soils,92.545,EDGAR_v8.0_FT2022_GHG
+Karongi,2022,CH4,AGS,Agricultural soils,15.859,EDGAR_v8.0_FT2022_GHG
+Kayonza,2022,CH4,AGS,Agricultural soils,266.528,EDGAR_v8.0_FT2022_GHG
+Kicukiro,2022,CH4,AGS,Agricultural soils,27.971,EDGAR_v8.0_FT2022_GHG
+Kirehe,2022,CH4,AGS,Agricultural soils,215.7,EDGAR_v8.0_FT2022_GHG
+Muhanga,2022,CH4,AGS,Agricultural soils,84.619,EDGAR_v8.0_FT2022_GHG
+Musanze,2022,CH4,AGS,Agricultural soils,11.443,EDGAR_v8.0_FT2022_GHG
+Ngoma,2022,CH4,AGS,Agricultural soils,144.758,EDGAR_v8.0_FT2022_GHG
+Ngororero,2022,CH4,AGS,Agricultural soils,17.795,EDGAR_v8.0_FT2022_GHG
+Nyabihu,2022,CH4,AGS,Agricultural soils,26.356,EDGAR_v8.0_FT2022_GHG
+Nyagatare,2022,CH4,AGS,Agricultural soils,32.747,EDGAR_v8.0_FT2022_GHG
+Nyamagabe,2022,CH4,AGS,Agricultural soils,79.01,EDGAR_v8.0_FT2022_GHG
+Nyamasheke,2022,CH4,AGS,Agricultural soils,116.873,EDGAR_v8.0_FT2022_GHG
+Nyanza,2022,CH4,AGS,Agricultural soils,426.326,EDGAR_v8.0_FT2022_GHG
+Nyarugenge,2022,CH4,AGS,Agricultural soils,33.065,EDGAR_v8.0_FT2022_GHG
+Nyaruguru,2022,CH4,AGS,Agricultural soils,220.006,EDGAR_v8.0_FT2022_GHG
+Rubavu,2022,CH4,AGS,Agricultural soils,311.864,EDGAR_v8.0_FT2022_GHG
+Ruhango,2022,CH4,AGS,Agricultural soils,153.863,EDGAR_v8.0_FT2022_GHG
+Rulindo,2022,CH4,AGS,Agricultural soils,109.979,EDGAR_v8.0_FT2022_GHG
+Rusizi,2022,CH4,AGS,Agricultural soils,191.425,EDGAR_v8.0_FT2022_GHG
+Rutsiro,2022,CH4,AGS,Agricultural soils,0.0,EDGAR_v8.0_FT2022_GHG
+Rwamagana,2022,CH4,AGS,Agricultural soils,96.45,EDGAR_v8.0_FT2022_GHG
+Bugesera,2022,CH4,AWB,Agricultural waste burning,41.707,EDGAR_v8.0_FT2022_GHG
+Burera,2022,CH4,AWB,Agricultural waste burning,30.545,EDGAR_v8.0_FT2022_GHG
+Gakenke,2022,CH4,AWB,Agricultural waste burning,39.941,EDGAR_v8.0_FT2022_GHG
+Gasabo,2022,CH4,AWB,Agricultural waste burning,21.208,EDGAR_v8.0_FT2022_GHG
+Gatsibo,2022,CH4,AWB,Agricultural waste burning,37.027,EDGAR_v8.0_FT2022_GHG
+Gicumbi,2022,CH4,AWB,Agricultural waste burning,26.215,EDGAR_v8.0_FT2022_GHG
+Gisagara,2022,CH4,AWB,Agricultural waste burning,31.923,EDGAR_v8.0_FT2022_GHG
+Huye,2022,CH4,AWB,Agricultural waste burning,48.665,EDGAR_v8.0_FT2022_GHG
+Kamonyi,2022,CH4,AWB,Agricultural waste burning,34.447,EDGAR_v8.0_FT2022_GHG
+Karongi,2022,CH4,AWB,Agricultural waste burning,33.463,EDGAR_v8.0_FT2022_GHG
+Kayonza,2022,CH4,AWB,Agricultural waste burning,47.664,EDGAR_v8.0_FT2022_GHG
+Kicukiro,2022,CH4,AWB,Agricultural waste burning,6.585,EDGAR_v8.0_FT2022_GHG
+Kirehe,2022,CH4,AWB,Agricultural waste burning,39.727,EDGAR_v8.0_FT2022_GHG
+Muhanga,2022,CH4,AWB,Agricultural waste burning,32.239,EDGAR_v8.0_FT2022_GHG
+Musanze,2022,CH4,AWB,Agricultural waste burning,12.938,EDGAR_v8.0_FT2022_GHG
+Ngoma,2022,CH4,AWB,Agricultural waste burning,24.451,EDGAR_v8.0_FT2022_GHG
+Ngororero,2022,CH4,AWB,Agricultural waste burning,32.698,EDGAR_v8.0_FT2022_GHG
+Nyabihu,2022,CH4,AWB,Agricultural waste burning,28.265,EDGAR_v8.0_FT2022_GHG
+Nyagatare,2022,CH4,AWB,Agricultural waste burning,56.099,EDGAR_v8.0_FT2022_GHG
+Nyamagabe,2022,CH4,AWB,Agricultural waste burning,52.894,EDGAR_v8.0_FT2022_GHG
+Nyamasheke,2022,CH4,AWB,Agricultural waste burning,13.703,EDGAR_v8.0_FT2022_GHG
+Nyanza,2022,CH4,AWB,Agricultural waste burning,46.873,EDGAR_v8.0_FT2022_GHG
+Nyarugenge,2022,CH4,AWB,Agricultural waste burning,8.004,EDGAR_v8.0_FT2022_GHG
+Nyaruguru,2022,CH4,AWB,Agricultural waste burning,35.197,EDGAR_v8.0_FT2022_GHG
+Rubavu,2022,CH4,AWB,Agricultural waste burning,17.764,EDGAR_v8.0_FT2022_GHG
+Ruhango,2022,CH4,AWB,Agricultural waste burning,51.3,EDGAR_v8.0_FT2022_GHG
+Rulindo,2022,CH4,AWB,Agricultural waste burning,35.636,EDGAR_v8.0_FT2022_GHG
+Rusizi,2022,CH4,AWB,Agricultural waste burning,12.855,EDGAR_v8.0_FT2022_GHG
+Rutsiro,2022,CH4,AWB,Agricultural waste burning,38.662,EDGAR_v8.0_FT2022_GHG
+Rwamagana,2022,CH4,AWB,Agricultural waste burning,20.447,EDGAR_v8.0_FT2022_GHG
+Bugesera,2022,CH4,ENF,Enteric fermentation,1945.374,EDGAR_v8.0_FT2022_GHG
+Burera,2022,CH4,ENF,Enteric fermentation,3953.891,EDGAR_v8.0_FT2022_GHG
+Gakenke,2022,CH4,ENF,Enteric fermentation,2892.121,EDGAR_v8.0_FT2022_GHG
+Gasabo,2022,CH4,ENF,Enteric fermentation,1421.409,EDGAR_v8.0_FT2022_GHG
+Gatsibo,2022,CH4,ENF,Enteric fermentation,2950.371,EDGAR_v8.0_FT2022_GHG
+Gicumbi,2022,CH4,ENF,Enteric fermentation,3124.784,EDGAR_v8.0_FT2022_GHG
+Gisagara,2022,CH4,ENF,Enteric fermentation,1880.069,EDGAR_v8.0_FT2022_GHG
+Huye,2022,CH4,ENF,Enteric fermentation,1607.757,EDGAR_v8.0_FT2022_GHG
+Kamonyi,2022,CH4,ENF,Enteric fermentation,2627.566,EDGAR_v8.0_FT2022_GHG
+Karongi,2022,CH4,ENF,Enteric fermentation,1561.892,EDGAR_v8.0_FT2022_GHG
+Kayonza,2022,CH4,ENF,Enteric fermentation,2496.424,EDGAR_v8.0_FT2022_GHG
+Kicukiro,2022,CH4,ENF,Enteric fermentation,471.706,EDGAR_v8.0_FT2022_GHG
+Kirehe,2022,CH4,ENF,Enteric fermentation,2007.194,EDGAR_v8.0_FT2022_GHG
+Muhanga,2022,CH4,ENF,Enteric fermentation,2448.317,EDGAR_v8.0_FT2022_GHG
+Musanze,2022,CH4,ENF,Enteric fermentation,1781.865,EDGAR_v8.0_FT2022_GHG
+Ngoma,2022,CH4,ENF,Enteric fermentation,1541.676,EDGAR_v8.0_FT2022_GHG
+Ngororero,2022,CH4,ENF,Enteric fermentation,2143.026,EDGAR_v8.0_FT2022_GHG
+Nyabihu,2022,CH4,ENF,Enteric fermentation,1673.961,EDGAR_v8.0_FT2022_GHG
+Nyagatare,2022,CH4,ENF,Enteric fermentation,4855.437,EDGAR_v8.0_FT2022_GHG
+Nyamagabe,2022,CH4,ENF,Enteric fermentation,2274.082,EDGAR_v8.0_FT2022_GHG
+Nyamasheke,2022,CH4,ENF,Enteric fermentation,1580.856,EDGAR_v8.0_FT2022_GHG
+Nyanza,2022,CH4,ENF,Enteric fermentation,1944.601,EDGAR_v8.0_FT2022_GHG
+Nyarugenge,2022,CH4,ENF,Enteric fermentation,411.003,EDGAR_v8.0_FT2022_GHG
+Nyaruguru,2022,CH4,ENF,Enteric fermentation,2032.94,EDGAR_v8.0_FT2022_GHG
+Rubavu,2022,CH4,ENF,Enteric fermentation,922.538,EDGAR_v8.0_FT2022_GHG
+Ruhango,2022,CH4,ENF,Enteric fermentation,2003.839,EDGAR_v8.0_FT2022_GHG
+Rulindo,2022,CH4,ENF,Enteric fermentation,2234.303,EDGAR_v8.0_FT2022_GHG
+Rusizi,2022,CH4,ENF,Enteric fermentation,1165.523,EDGAR_v8.0_FT2022_GHG
+Rutsiro,2022,CH4,ENF,Enteric fermentation,1785.495,EDGAR_v8.0_FT2022_GHG
+Rwamagana,2022,CH4,ENF,Enteric fermentation,1598.032,EDGAR_v8.0_FT2022_GHG
+Bugesera,2022,CH4,MNM,Manure management,131.307,EDGAR_v8.0_FT2022_GHG
+Burera,2022,CH4,MNM,Manure management,180.532,EDGAR_v8.0_FT2022_GHG
+Gakenke,2022,CH4,MNM,Manure management,175.945,EDGAR_v8.0_FT2022_GHG
+Gasabo,2022,CH4,MNM,Manure management,69.1,EDGAR_v8.0_FT2022_GHG
+Gatsibo,2022,CH4,MNM,Manure management,124.334,EDGAR_v8.0_FT2022_GHG
+Gicumbi,2022,CH4,MNM,Manure management,156.303,EDGAR_v8.0_FT2022_GHG
+Gisagara,2022,CH4,MNM,Manure management,136.017,EDGAR_v8.0_FT2022_GHG
+Huye,2022,CH4,MNM,Manure management,101.815,EDGAR_v8.0_FT2022_GHG
+Kamonyi,2022,CH4,MNM,Manure management,138.748,EDGAR_v8.0_FT2022_GHG
+Karongi,2022,CH4,MNM,Manure management,129.795,EDGAR_v8.0_FT2022_GHG
+Kayonza,2022,CH4,MNM,Manure management,112.125,EDGAR_v8.0_FT2022_GHG
+Kicukiro,2022,CH4,MNM,Manure management,26.224,EDGAR_v8.0_FT2022_GHG
+Kirehe,2022,CH4,MNM,Manure management,100.025,EDGAR_v8.0_FT2022_GHG
+Muhanga,2022,CH4,MNM,Manure management,154.728,EDGAR_v8.0_FT2022_GHG
+Musanze,2022,CH4,MNM,Manure management,111.48,EDGAR_v8.0_FT2022_GHG
+Ngoma,2022,CH4,MNM,Manure management,95.407,EDGAR_v8.0_FT2022_GHG
+Ngororero,2022,CH4,MNM,Manure management,146.405,EDGAR_v8.0_FT2022_GHG
+Nyabihu,2022,CH4,MNM,Manure management,106.88,EDGAR_v8.0_FT2022_GHG
+Nyagatare,2022,CH4,MNM,Manure management,179.217,EDGAR_v8.0_FT2022_GHG
+Nyamagabe,2022,CH4,MNM,Manure management,181.549,EDGAR_v8.0_FT2022_GHG
+Nyamasheke,2022,CH4,MNM,Manure management,132.087,EDGAR_v8.0_FT2022_GHG
+Nyanza,2022,CH4,MNM,Manure management,86.73,EDGAR_v8.0_FT2022_GHG
+Nyarugenge,2022,CH4,MNM,Manure management,23.749,EDGAR_v8.0_FT2022_GHG
+Nyaruguru,2022,CH4,MNM,Manure management,160.757,EDGAR_v8.0_FT2022_GHG
+Rubavu,2022,CH4,MNM,Manure management,59.908,EDGAR_v8.0_FT2022_GHG
+Ruhango,2022,CH4,MNM,Manure management,94.482,EDGAR_v8.0_FT2022_GHG
+Rulindo,2022,CH4,MNM,Manure management,131.161,EDGAR_v8.0_FT2022_GHG
+Rusizi,2022,CH4,MNM,Manure management,99.324,EDGAR_v8.0_FT2022_GHG
+Rutsiro,2022,CH4,MNM,Manure management,126.77,EDGAR_v8.0_FT2022_GHG
+Rwamagana,2022,CH4,MNM,Manure management,90.382,EDGAR_v8.0_FT2022_GHG
+Bugesera,2018,CO2,AGS,Agricultural soils,0.0,EDGAR_v8.0_FT2022_GHG
+Burera,2018,CO2,AGS,Agricultural soils,0.0,EDGAR_v8.0_FT2022_GHG
+Gakenke,2018,CO2,AGS,Agricultural soils,0.0,EDGAR_v8.0_FT2022_GHG
+Gasabo,2018,CO2,AGS,Agricultural soils,0.0,EDGAR_v8.0_FT2022_GHG
+Gatsibo,2018,CO2,AGS,Agricultural soils,34.747,EDGAR_v8.0_FT2022_GHG
+Gicumbi,2018,CO2,AGS,Agricultural soils,0.0,EDGAR_v8.0_FT2022_GHG
+Gisagara,2018,CO2,AGS,Agricultural soils,0.0,EDGAR_v8.0_FT2022_GHG
+Huye,2018,CO2,AGS,Agricultural soils,0.0,EDGAR_v8.0_FT2022_GHG
+Kamonyi,2018,CO2,AGS,Agricultural soils,0.0,EDGAR_v8.0_FT2022_GHG
+Karongi,2018,CO2,AGS,Agricultural soils,0.0,EDGAR_v8.0_FT2022_GHG
+Kayonza,2018,CO2,AGS,Agricultural soils,25.404,EDGAR_v8.0_FT2022_GHG
+Kicukiro,2018,CO2,AGS,Agricultural soils,0.0,EDGAR_v8.0_FT2022_GHG
+Kirehe,2018,CO2,AGS,Agricultural soils,102.271,EDGAR_v8.0_FT2022_GHG
+Muhanga,2018,CO2,AGS,Agricultural soils,0.0,EDGAR_v8.0_FT2022_GHG
+Musanze,2018,CO2,AGS,Agricultural soils,0.0,EDGAR_v8.0_FT2022_GHG
+Ngoma,2018,CO2,AGS,Agricultural soils,0.0,EDGAR_v8.0_FT2022_GHG
+Ngororero,2018,CO2,AGS,Agricultural soils,0.0,EDGAR_v8.0_FT2022_GHG
+Nyabihu,2018,CO2,AGS,Agricultural soils,0.0,EDGAR_v8.0_FT2022_GHG
+Nyagatare,2018,CO2,AGS,Agricultural soils,117.455,EDGAR_v8.0_FT2022_GHG
+Nyamagabe,2018,CO2,AGS,Agricultural soils,0.0,EDGAR_v8.0_FT2022_GHG
+Nyamasheke,2018,CO2,AGS,Agricultural soils,0.0,EDGAR_v8.0_FT2022_GHG
+Nyanza,2018,CO2,AGS,Agricultural soils,0.0,EDGAR_v8.0_FT2022_GHG
+Nyarugenge,2018,CO2,AGS,Agricultural soils,0.0,EDGAR_v8.0_FT2022_GHG
+Nyaruguru,2018,CO2,AGS,Agricultural soils,0.0,EDGAR_v8.0_FT2022_GHG
+Rubavu,2018,CO2,AGS,Agricultural soils,0.0,EDGAR_v8.0_FT2022_GHG
+Ruhango,2018,CO2,AGS,Agricultural soils,0.0,EDGAR_v8.0_FT2022_GHG
+Rulindo,2018,CO2,AGS,Agricultural soils,0.0,EDGAR_v8.0_FT2022_GHG
+Rusizi,2018,CO2,AGS,Agricultural soils,0.0,EDGAR_v8.0_FT2022_GHG
+Rutsiro,2018,CO2,AGS,Agricultural soils,0.0,EDGAR_v8.0_FT2022_GHG
+Rwamagana,2018,CO2,AGS,Agricultural soils,0.0,EDGAR_v8.0_FT2022_GHG
+Bugesera,2019,CO2,AGS,Agricultural soils,0.0,EDGAR_v8.0_FT2022_GHG
+Burera,2019,CO2,AGS,Agricultural soils,0.0,EDGAR_v8.0_FT2022_GHG
+Gakenke,2019,CO2,AGS,Agricultural soils,0.0,EDGAR_v8.0_FT2022_GHG
+Gasabo,2019,CO2,AGS,Agricultural soils,0.0,EDGAR_v8.0_FT2022_GHG
+Gatsibo,2019,CO2,AGS,Agricultural soils,24.781,EDGAR_v8.0_FT2022_GHG
+Gicumbi,2019,CO2,AGS,Agricultural soils,0.0,EDGAR_v8.0_FT2022_GHG
+Gisagara,2019,CO2,AGS,Agricultural soils,0.0,EDGAR_v8.0_FT2022_GHG
+Huye,2019,CO2,AGS,Agricultural soils,0.0,EDGAR_v8.0_FT2022_GHG
+Kamonyi,2019,CO2,AGS,Agricultural soils,0.0,EDGAR_v8.0_FT2022_GHG
+Karongi,2019,CO2,AGS,Agricultural soils,0.0,EDGAR_v8.0_FT2022_GHG
+Kayonza,2019,CO2,AGS,Agricultural soils,12.494,EDGAR_v8.0_FT2022_GHG
+Kicukiro,2019,CO2,AGS,Agricultural soils,0.0,EDGAR_v8.0_FT2022_GHG
+Kirehe,2019,CO2,AGS,Agricultural soils,94.692,EDGAR_v8.0_FT2022_GHG
+Muhanga,2019,CO2,AGS,Agricultural soils,0.0,EDGAR_v8.0_FT2022_GHG
+Musanze,2019,CO2,AGS,Agricultural soils,0.0,EDGAR_v8.0_FT2022_GHG
+Ngoma,2019,CO2,AGS,Agricultural soils,0.0,EDGAR_v8.0_FT2022_GHG
+Ngororero,2019,CO2,AGS,Agricultural soils,0.0,EDGAR_v8.0_FT2022_GHG
+Nyabihu,2019,CO2,AGS,Agricultural soils,0.0,EDGAR_v8.0_FT2022_GHG
+Nyagatare,2019,CO2,AGS,Agricultural soils,94.738,EDGAR_v8.0_FT2022_GHG
+Nyamagabe,2019,CO2,AGS,Agricultural soils,0.0,EDGAR_v8.0_FT2022_GHG
+Nyamasheke,2019,CO2,AGS,Agricultural soils,0.0,EDGAR_v8.0_FT2022_GHG
+Nyanza,2019,CO2,AGS,Agricultural soils,0.0,EDGAR_v8.0_FT2022_GHG
+Nyarugenge,2019,CO2,AGS,Agricultural soils,0.0,EDGAR_v8.0_FT2022_GHG
+Nyaruguru,2019,CO2,AGS,Agricultural soils,0.0,EDGAR_v8.0_FT2022_GHG
+Rubavu,2019,CO2,AGS,Agricultural soils,0.0,EDGAR_v8.0_FT2022_GHG
+Ruhango,2019,CO2,AGS,Agricultural soils,0.0,EDGAR_v8.0_FT2022_GHG
+Rulindo,2019,CO2,AGS,Agricultural soils,0.0,EDGAR_v8.0_FT2022_GHG
+Rusizi,2019,CO2,AGS,Agricultural soils,0.0,EDGAR_v8.0_FT2022_GHG
+Rutsiro,2019,CO2,AGS,Agricultural soils,0.0,EDGAR_v8.0_FT2022_GHG
+Rwamagana,2019,CO2,AGS,Agricultural soils,0.0,EDGAR_v8.0_FT2022_GHG
+Bugesera,2020,CO2,AGS,Agricultural soils,0.0,EDGAR_v8.0_FT2022_GHG
+Burera,2020,CO2,AGS,Agricultural soils,0.0,EDGAR_v8.0_FT2022_GHG
+Gakenke,2020,CO2,AGS,Agricultural soils,0.0,EDGAR_v8.0_FT2022_GHG
+Gasabo,2020,CO2,AGS,Agricultural soils,0.0,EDGAR_v8.0_FT2022_GHG
+Gatsibo,2020,CO2,AGS,Agricultural soils,50.398,EDGAR_v8.0_FT2022_GHG
+Gicumbi,2020,CO2,AGS,Agricultural soils,0.0,EDGAR_v8.0_FT2022_GHG
+Gisagara,2020,CO2,AGS,Agricultural soils,0.0,EDGAR_v8.0_FT2022_GHG
+Huye,2020,CO2,AGS,Agricultural soils,0.0,EDGAR_v8.0_FT2022_GHG
+Kamonyi,2020,CO2,AGS,Agricultural soils,0.0,EDGAR_v8.0_FT2022_GHG
+Karongi,2020,CO2,AGS,Agricultural soils,0.0,EDGAR_v8.0_FT2022_GHG
+Kayonza,2020,CO2,AGS,Agricultural soils,35.141,EDGAR_v8.0_FT2022_GHG
+Kicukiro,2020,CO2,AGS,Agricultural soils,0.0,EDGAR_v8.0_FT2022_GHG
+Kirehe,2020,CO2,AGS,Agricultural soils,154.937,EDGAR_v8.0_FT2022_GHG
+Muhanga,2020,CO2,AGS,Agricultural soils,0.0,EDGAR_v8.0_FT2022_GHG
+Musanze,2020,CO2,AGS,Agricultural soils,0.0,EDGAR_v8.0_FT2022_GHG
+Ngoma,2020,CO2,AGS,Agricultural soils,0.0,EDGAR_v8.0_FT2022_GHG
+Ngororero,2020,CO2,AGS,Agricultural soils,0.0,EDGAR_v8.0_FT2022_GHG
+Nyabihu,2020,CO2,AGS,Agricultural soils,0.0,EDGAR_v8.0_FT2022_GHG
+Nyagatare,2020,CO2,AGS,Agricultural soils,173.689,EDGAR_v8.0_FT2022_GHG
+Nyamagabe,2020,CO2,AGS,Agricultural soils,0.0,EDGAR_v8.0_FT2022_GHG
+Nyamasheke,2020,CO2,AGS,Agricultural soils,0.0,EDGAR_v8.0_FT2022_GHG
+Nyanza,2020,CO2,AGS,Agricultural soils,0.0,EDGAR_v8.0_FT2022_GHG
+Nyarugenge,2020,CO2,AGS,Agricultural soils,0.0,EDGAR_v8.0_FT2022_GHG
+Nyaruguru,2020,CO2,AGS,Agricultural soils,0.0,EDGAR_v8.0_FT2022_GHG
+Rubavu,2020,CO2,AGS,Agricultural soils,0.0,EDGAR_v8.0_FT2022_GHG
+Ruhango,2020,CO2,AGS,Agricultural soils,0.0,EDGAR_v8.0_FT2022_GHG
+Rulindo,2020,CO2,AGS,Agricultural soils,0.0,EDGAR_v8.0_FT2022_GHG
+Rusizi,2020,CO2,AGS,Agricultural soils,0.0,EDGAR_v8.0_FT2022_GHG
+Rutsiro,2020,CO2,AGS,Agricultural soils,0.0,EDGAR_v8.0_FT2022_GHG
+Rwamagana,2020,CO2,AGS,Agricultural soils,0.0,EDGAR_v8.0_FT2022_GHG
+Bugesera,2021,CO2,AGS,Agricultural soils,0.0,EDGAR_v8.0_FT2022_GHG
+Burera,2021,CO2,AGS,Agricultural soils,0.0,EDGAR_v8.0_FT2022_GHG
+Gakenke,2021,CO2,AGS,Agricultural soils,0.0,EDGAR_v8.0_FT2022_GHG
+Gasabo,2021,CO2,AGS,Agricultural soils,0.0,EDGAR_v8.0_FT2022_GHG
+Gatsibo,2021,CO2,AGS,Agricultural soils,52.68,EDGAR_v8.0_FT2022_GHG
+Gicumbi,2021,CO2,AGS,Agricultural soils,0.0,EDGAR_v8.0_FT2022_GHG
+Gisagara,2021,CO2,AGS,Agricultural soils,0.0,EDGAR_v8.0_FT2022_GHG
+Huye,2021,CO2,AGS,Agricultural soils,0.0,EDGAR_v8.0_FT2022_GHG
+Kamonyi,2021,CO2,AGS,Agricultural soils,0.0,EDGAR_v8.0_FT2022_GHG
+Karongi,2021,CO2,AGS,Agricultural soils,0.0,EDGAR_v8.0_FT2022_GHG
+Kayonza,2021,CO2,AGS,Agricultural soils,38.429,EDGAR_v8.0_FT2022_GHG
+Kicukiro,2021,CO2,AGS,Agricultural soils,0.0,EDGAR_v8.0_FT2022_GHG
+Kirehe,2021,CO2,AGS,Agricultural soils,155.387,EDGAR_v8.0_FT2022_GHG
+Muhanga,2021,CO2,AGS,Agricultural soils,0.0,EDGAR_v8.0_FT2022_GHG
+Musanze,2021,CO2,AGS,Agricultural soils,0.0,EDGAR_v8.0_FT2022_GHG
+Ngoma,2021,CO2,AGS,Agricultural soils,0.0,EDGAR_v8.0_FT2022_GHG
+Ngororero,2021,CO2,AGS,Agricultural soils,0.0,EDGAR_v8.0_FT2022_GHG
+Nyabihu,2021,CO2,AGS,Agricultural soils,0.0,EDGAR_v8.0_FT2022_GHG
+Nyagatare,2021,CO2,AGS,Agricultural soils,178.243,EDGAR_v8.0_FT2022_GHG
+Nyamagabe,2021,CO2,AGS,Agricultural soils,0.0,EDGAR_v8.0_FT2022_GHG
+Nyamasheke,2021,CO2,AGS,Agricultural soils,0.0,EDGAR_v8.0_FT2022_GHG
+Nyanza,2021,CO2,AGS,Agricultural soils,0.0,EDGAR_v8.0_FT2022_GHG
+Nyarugenge,2021,CO2,AGS,Agricultural soils,0.0,EDGAR_v8.0_FT2022_GHG
+Nyaruguru,2021,CO2,AGS,Agricultural soils,0.0,EDGAR_v8.0_FT2022_GHG
+Rubavu,2021,CO2,AGS,Agricultural soils,0.0,EDGAR_v8.0_FT2022_GHG
+Ruhango,2021,CO2,AGS,Agricultural soils,0.0,EDGAR_v8.0_FT2022_GHG
+Rulindo,2021,CO2,AGS,Agricultural soils,0.0,EDGAR_v8.0_FT2022_GHG
+Rusizi,2021,CO2,AGS,Agricultural soils,0.0,EDGAR_v8.0_FT2022_GHG
+Rutsiro,2021,CO2,AGS,Agricultural soils,0.0,EDGAR_v8.0_FT2022_GHG
+Rwamagana,2021,CO2,AGS,Agricultural soils,0.0,EDGAR_v8.0_FT2022_GHG
+Bugesera,2022,CO2,AGS,Agricultural soils,0.0,EDGAR_v8.0_FT2022_GHG
+Burera,2022,CO2,AGS,Agricultural soils,0.0,EDGAR_v8.0_FT2022_GHG
+Gakenke,2022,CO2,AGS,Agricultural soils,0.0,EDGAR_v8.0_FT2022_GHG
+Gasabo,2022,CO2,AGS,Agricultural soils,0.0,EDGAR_v8.0_FT2022_GHG
+Gatsibo,2022,CO2,AGS,Agricultural soils,55.249,EDGAR_v8.0_FT2022_GHG
+Gicumbi,2022,CO2,AGS,Agricultural soils,0.0,EDGAR_v8.0_FT2022_GHG
+Gisagara,2022,CO2,AGS,Agricultural soils,0.0,EDGAR_v8.0_FT2022_GHG
+Huye,2022,CO2,AGS,Agricultural soils,0.0,EDGAR_v8.0_FT2022_GHG
+Kamonyi,2022,CO2,AGS,Agricultural soils,0.0,EDGAR_v8.0_FT2022_GHG
+Karongi,2022,CO2,AGS,Agricultural soils,0.0,EDGAR_v8.0_FT2022_GHG
+Kayonza,2022,CO2,AGS,Agricultural soils,42.132,EDGAR_v8.0_FT2022_GHG
+Kicukiro,2022,CO2,AGS,Agricultural soils,0.0,EDGAR_v8.0_FT2022_GHG
+Kirehe,2022,CO2,AGS,Agricultural soils,155.894,EDGAR_v8.0_FT2022_GHG
+Muhanga,2022,CO2,AGS,Agricultural soils,0.0,EDGAR_v8.0_FT2022_GHG
+Musanze,2022,CO2,AGS,Agricultural soils,0.0,EDGAR_v8.0_FT2022_GHG
+Ngoma,2022,CO2,AGS,Agricultural soils,0.0,EDGAR_v8.0_FT2022_GHG
+Ngororero,2022,CO2,AGS,Agricultural soils,0.0,EDGAR_v8.0_FT2022_GHG
+Nyabihu,2022,CO2,AGS,Agricultural soils,0.0,EDGAR_v8.0_FT2022_GHG
+Nyagatare,2022,CO2,AGS,Agricultural soils,183.37,EDGAR_v8.0_FT2022_GHG
+Nyamagabe,2022,CO2,AGS,Agricultural soils,0.0,EDGAR_v8.0_FT2022_GHG
+Nyamasheke,2022,CO2,AGS,Agricultural soils,0.0,EDGAR_v8.0_FT2022_GHG
+Nyanza,2022,CO2,AGS,Agricultural soils,0.0,EDGAR_v8.0_FT2022_GHG
+Nyarugenge,2022,CO2,AGS,Agricultural soils,0.0,EDGAR_v8.0_FT2022_GHG
+Nyaruguru,2022,CO2,AGS,Agricultural soils,0.0,EDGAR_v8.0_FT2022_GHG
+Rubavu,2022,CO2,AGS,Agricultural soils,0.0,EDGAR_v8.0_FT2022_GHG
+Ruhango,2022,CO2,AGS,Agricultural soils,0.0,EDGAR_v8.0_FT2022_GHG
+Rulindo,2022,CO2,AGS,Agricultural soils,0.0,EDGAR_v8.0_FT2022_GHG
+Rusizi,2022,CO2,AGS,Agricultural soils,0.0,EDGAR_v8.0_FT2022_GHG
+Rutsiro,2022,CO2,AGS,Agricultural soils,0.0,EDGAR_v8.0_FT2022_GHG
+Rwamagana,2022,CO2,AGS,Agricultural soils,0.0,EDGAR_v8.0_FT2022_GHG
+Bugesera,2018,N2O,AGS,Agricultural soils,95.798,EDGAR_v8.0_FT2022_GHG
+Burera,2018,N2O,AGS,Agricultural soils,185.527,EDGAR_v8.0_FT2022_GHG
+Gakenke,2018,N2O,AGS,Agricultural soils,131.175,EDGAR_v8.0_FT2022_GHG
+Gasabo,2018,N2O,AGS,Agricultural soils,65.6,EDGAR_v8.0_FT2022_GHG
+Gatsibo,2018,N2O,AGS,Agricultural soils,131.316,EDGAR_v8.0_FT2022_GHG
+Gicumbi,2018,N2O,AGS,Agricultural soils,133.093,EDGAR_v8.0_FT2022_GHG
+Gisagara,2018,N2O,AGS,Agricultural soils,88.42,EDGAR_v8.0_FT2022_GHG
+Huye,2018,N2O,AGS,Agricultural soils,84.058,EDGAR_v8.0_FT2022_GHG
+Kamonyi,2018,N2O,AGS,Agricultural soils,118.623,EDGAR_v8.0_FT2022_GHG
+Karongi,2018,N2O,AGS,Agricultural soils,75.586,EDGAR_v8.0_FT2022_GHG
+Kayonza,2018,N2O,AGS,Agricultural soils,118.266,EDGAR_v8.0_FT2022_GHG
+Kicukiro,2018,N2O,AGS,Agricultural soils,21.812,EDGAR_v8.0_FT2022_GHG
+Kirehe,2018,N2O,AGS,Agricultural soils,96.657,EDGAR_v8.0_FT2022_GHG
+Muhanga,2018,N2O,AGS,Agricultural soils,108.997,EDGAR_v8.0_FT2022_GHG
+Musanze,2018,N2O,AGS,Agricultural soils,75.199,EDGAR_v8.0_FT2022_GHG
+Ngoma,2018,N2O,AGS,Agricultural soils,71.244,EDGAR_v8.0_FT2022_GHG
+Ngororero,2018,N2O,AGS,Agricultural soils,95.728,EDGAR_v8.0_FT2022_GHG
+Nyabihu,2018,N2O,AGS,Agricultural soils,77.503,EDGAR_v8.0_FT2022_GHG
+Nyagatare,2018,N2O,AGS,Agricultural soils,211.354,EDGAR_v8.0_FT2022_GHG
+Nyamagabe,2018,N2O,AGS,Agricultural soils,113.294,EDGAR_v8.0_FT2022_GHG
+Nyamasheke,2018,N2O,AGS,Agricultural soils,64.436,EDGAR_v8.0_FT2022_GHG
+Nyanza,2018,N2O,AGS,Agricultural soils,98.395,EDGAR_v8.0_FT2022_GHG
+Nyarugenge,2018,N2O,AGS,Agricultural soils,20.06,EDGAR_v8.0_FT2022_GHG
+Nyaruguru,2018,N2O,AGS,Agricultural soils,93.981,EDGAR_v8.0_FT2022_GHG
+Rubavu,2018,N2O,AGS,Agricultural soils,40.645,EDGAR_v8.0_FT2022_GHG
+Ruhango,2018,N2O,AGS,Agricultural soils,105.063,EDGAR_v8.0_FT2022_GHG
+Rulindo,2018,N2O,AGS,Agricultural soils,103.367,EDGAR_v8.0_FT2022_GHG
+Rusizi,2018,N2O,AGS,Agricultural soils,49.487,EDGAR_v8.0_FT2022_GHG
+Rutsiro,2018,N2O,AGS,Agricultural soils,85.764,EDGAR_v8.0_FT2022_GHG
+Rwamagana,2018,N2O,AGS,Agricultural soils,72.217,EDGAR_v8.0_FT2022_GHG
+Bugesera,2018,N2O,AWB,Agricultural waste burning,0.88,EDGAR_v8.0_FT2022_GHG
+Burera,2018,N2O,AWB,Agricultural waste burning,0.744,EDGAR_v8.0_FT2022_GHG
+Gakenke,2018,N2O,AWB,Agricultural waste burning,0.944,EDGAR_v8.0_FT2022_GHG
+Gasabo,2018,N2O,AWB,Agricultural waste burning,0.486,EDGAR_v8.0_FT2022_GHG
+Gatsibo,2018,N2O,AWB,Agricultural waste burning,0.855,EDGAR_v8.0_FT2022_GHG
+Gicumbi,2018,N2O,AWB,Agricultural waste burning,0.609,EDGAR_v8.0_FT2022_GHG
+Gisagara,2018,N2O,AWB,Agricultural waste burning,0.741,EDGAR_v8.0_FT2022_GHG
+Huye,2018,N2O,AWB,Agricultural waste burning,1.156,EDGAR_v8.0_FT2022_GHG
+Kamonyi,2018,N2O,AWB,Agricultural waste burning,0.798,EDGAR_v8.0_FT2022_GHG
+Karongi,2018,N2O,AWB,Agricultural waste burning,0.8,EDGAR_v8.0_FT2022_GHG
+Kayonza,2018,N2O,AWB,Agricultural waste burning,1.104,EDGAR_v8.0_FT2022_GHG
+Kicukiro,2018,N2O,AWB,Agricultural waste burning,0.151,EDGAR_v8.0_FT2022_GHG
+Kirehe,2018,N2O,AWB,Agricultural waste burning,0.914,EDGAR_v8.0_FT2022_GHG
+Muhanga,2018,N2O,AWB,Agricultural waste burning,0.747,EDGAR_v8.0_FT2022_GHG
+Musanze,2018,N2O,AWB,Agricultural waste burning,0.314,EDGAR_v8.0_FT2022_GHG
+Ngoma,2018,N2O,AWB,Agricultural waste burning,0.56,EDGAR_v8.0_FT2022_GHG
+Ngororero,2018,N2O,AWB,Agricultural waste burning,0.798,EDGAR_v8.0_FT2022_GHG
+Nyabihu,2018,N2O,AWB,Agricultural waste burning,0.69,EDGAR_v8.0_FT2022_GHG
+Nyagatare,2018,N2O,AWB,Agricultural waste burning,1.31,EDGAR_v8.0_FT2022_GHG
+Nyamagabe,2018,N2O,AWB,Agricultural waste burning,1.281,EDGAR_v8.0_FT2022_GHG
+Nyamasheke,2018,N2O,AWB,Agricultural waste burning,0.333,EDGAR_v8.0_FT2022_GHG
+Nyanza,2018,N2O,AWB,Agricultural waste burning,1.1,EDGAR_v8.0_FT2022_GHG
+Nyarugenge,2018,N2O,AWB,Agricultural waste burning,0.183,EDGAR_v8.0_FT2022_GHG
+Nyaruguru,2018,N2O,AWB,Agricultural waste burning,0.83,EDGAR_v8.0_FT2022_GHG
+Rubavu,2018,N2O,AWB,Agricultural waste burning,0.441,EDGAR_v8.0_FT2022_GHG
+Ruhango,2018,N2O,AWB,Agricultural waste burning,1.19,EDGAR_v8.0_FT2022_GHG
+Rulindo,2018,N2O,AWB,Agricultural waste burning,0.82,EDGAR_v8.0_FT2022_GHG
+Rusizi,2018,N2O,AWB,Agricultural waste burning,0.311,EDGAR_v8.0_FT2022_GHG
+Rutsiro,2018,N2O,AWB,Agricultural waste burning,0.937,EDGAR_v8.0_FT2022_GHG
+Rwamagana,2018,N2O,AWB,Agricultural waste burning,0.47,EDGAR_v8.0_FT2022_GHG
+Bugesera,2018,N2O,MNM,Manure management,16.028,EDGAR_v8.0_FT2022_GHG
+Burera,2018,N2O,MNM,Manure management,13.852,EDGAR_v8.0_FT2022_GHG
+Gakenke,2018,N2O,MNM,Manure management,22.121,EDGAR_v8.0_FT2022_GHG
+Gasabo,2018,N2O,MNM,Manure management,4.768,EDGAR_v8.0_FT2022_GHG
+Gatsibo,2018,N2O,MNM,Manure management,6.907,EDGAR_v8.0_FT2022_GHG
+Gicumbi,2018,N2O,MNM,Manure management,15.129,EDGAR_v8.0_FT2022_GHG
+Gisagara,2018,N2O,MNM,Manure management,19.681,EDGAR_v8.0_FT2022_GHG
+Huye,2018,N2O,MNM,Manure management,13.373,EDGAR_v8.0_FT2022_GHG
+Kamonyi,2018,N2O,MNM,Manure management,14.913,EDGAR_v8.0_FT2022_GHG
+Karongi,2018,N2O,MNM,Manure management,20.536,EDGAR_v8.0_FT2022_GHG
+Kayonza,2018,N2O,MNM,Manure management,6.761,EDGAR_v8.0_FT2022_GHG
+Kicukiro,2018,N2O,MNM,Manure management,2.318,EDGAR_v8.0_FT2022_GHG
+Kirehe,2018,N2O,MNM,Manure management,7.86,EDGAR_v8.0_FT2022_GHG
+Muhanga,2018,N2O,MNM,Manure management,20.487,EDGAR_v8.0_FT2022_GHG
+Musanze,2018,N2O,MNM,Manure management,14.403,EDGAR_v8.0_FT2022_GHG
+Ngoma,2018,N2O,MNM,Manure management,10.331,EDGAR_v8.0_FT2022_GHG
+Ngororero,2018,N2O,MNM,Manure management,20.583,EDGAR_v8.0_FT2022_GHG
+Nyabihu,2018,N2O,MNM,Manure management,14.116,EDGAR_v8.0_FT2022_GHG
+Nyagatare,2018,N2O,MNM,Manure management,7.13,EDGAR_v8.0_FT2022_GHG
+Nyamagabe,2018,N2O,MNM,Manure management,28.511,EDGAR_v8.0_FT2022_GHG
+Nyamasheke,2018,N2O,MNM,Manure management,21.184,EDGAR_v8.0_FT2022_GHG
+Nyanza,2018,N2O,MNM,Manure management,7.012,EDGAR_v8.0_FT2022_GHG
+Nyarugenge,2018,N2O,MNM,Manure management,2.333,EDGAR_v8.0_FT2022_GHG
+Nyaruguru,2018,N2O,MNM,Manure management,25.05,EDGAR_v8.0_FT2022_GHG
+Rubavu,2018,N2O,MNM,Manure management,8.065,EDGAR_v8.0_FT2022_GHG
+Ruhango,2018,N2O,MNM,Manure management,8.496,EDGAR_v8.0_FT2022_GHG
+Rulindo,2018,N2O,MNM,Manure management,15.607,EDGAR_v8.0_FT2022_GHG
+Rusizi,2018,N2O,MNM,Manure management,16.002,EDGAR_v8.0_FT2022_GHG
+Rutsiro,2018,N2O,MNM,Manure management,18.233,EDGAR_v8.0_FT2022_GHG
+Rwamagana,2018,N2O,MNM,Manure management,8.626,EDGAR_v8.0_FT2022_GHG
+Bugesera,2019,N2O,AGS,Agricultural soils,97.457,EDGAR_v8.0_FT2022_GHG
+Burera,2019,N2O,AGS,Agricultural soils,187.742,EDGAR_v8.0_FT2022_GHG
+Gakenke,2019,N2O,AGS,Agricultural soils,135.325,EDGAR_v8.0_FT2022_GHG
+Gasabo,2019,N2O,AGS,Agricultural soils,67.814,EDGAR_v8.0_FT2022_GHG
+Gatsibo,2019,N2O,AGS,Agricultural soils,135.519,EDGAR_v8.0_FT2022_GHG
+Gicumbi,2019,N2O,AGS,Agricultural soils,136.721,EDGAR_v8.0_FT2022_GHG
+Gisagara,2019,N2O,AGS,Agricultural soils,88.603,EDGAR_v8.0_FT2022_GHG
+Huye,2019,N2O,AGS,Agricultural soils,87.565,EDGAR_v8.0_FT2022_GHG
+Kamonyi,2019,N2O,AGS,Agricultural soils,122.468,EDGAR_v8.0_FT2022_GHG
+Karongi,2019,N2O,AGS,Agricultural soils,78.505,EDGAR_v8.0_FT2022_GHG
+Kayonza,2019,N2O,AGS,Agricultural soils,122.525,EDGAR_v8.0_FT2022_GHG
+Kicukiro,2019,N2O,AGS,Agricultural soils,22.46,EDGAR_v8.0_FT2022_GHG
+Kirehe,2019,N2O,AGS,Agricultural soils,99.89,EDGAR_v8.0_FT2022_GHG
+Muhanga,2019,N2O,AGS,Agricultural soils,112.702,EDGAR_v8.0_FT2022_GHG
+Musanze,2019,N2O,AGS,Agricultural soils,76.909,EDGAR_v8.0_FT2022_GHG
+Ngoma,2019,N2O,AGS,Agricultural soils,73.311,EDGAR_v8.0_FT2022_GHG
+Ngororero,2019,N2O,AGS,Agricultural soils,99.009,EDGAR_v8.0_FT2022_GHG
+Nyabihu,2019,N2O,AGS,Agricultural soils,80.166,EDGAR_v8.0_FT2022_GHG
+Nyagatare,2019,N2O,AGS,Agricultural soils,218.193,EDGAR_v8.0_FT2022_GHG
+Nyamagabe,2019,N2O,AGS,Agricultural soils,118.131,EDGAR_v8.0_FT2022_GHG
+Nyamasheke,2019,N2O,AGS,Agricultural soils,66.063,EDGAR_v8.0_FT2022_GHG
+Nyanza,2019,N2O,AGS,Agricultural soils,101.287,EDGAR_v8.0_FT2022_GHG
+Nyarugenge,2019,N2O,AGS,Agricultural soils,20.787,EDGAR_v8.0_FT2022_GHG
+Nyaruguru,2019,N2O,AGS,Agricultural soils,96.093,EDGAR_v8.0_FT2022_GHG
+Rubavu,2019,N2O,AGS,Agricultural soils,41.654,EDGAR_v8.0_FT2022_GHG
+Ruhango,2019,N2O,AGS,Agricultural soils,109.564,EDGAR_v8.0_FT2022_GHG
+Rulindo,2019,N2O,AGS,Agricultural soils,107.031,EDGAR_v8.0_FT2022_GHG
+Rusizi,2019,N2O,AGS,Agricultural soils,49.644,EDGAR_v8.0_FT2022_GHG
+Rutsiro,2019,N2O,AGS,Agricultural soils,89.072,EDGAR_v8.0_FT2022_GHG
+Rwamagana,2019,N2O,AGS,Agricultural soils,74.321,EDGAR_v8.0_FT2022_GHG
+Bugesera,2019,N2O,AWB,Agricultural waste burning,0.95,EDGAR_v8.0_FT2022_GHG
+Burera,2019,N2O,AWB,Agricultural waste burning,0.739,EDGAR_v8.0_FT2022_GHG
+Gakenke,2019,N2O,AWB,Agricultural waste burning,0.958,EDGAR_v8.0_FT2022_GHG
+Gasabo,2019,N2O,AWB,Agricultural waste burning,0.5,EDGAR_v8.0_FT2022_GHG
+Gatsibo,2019,N2O,AWB,Agricultural waste burning,0.881,EDGAR_v8.0_FT2022_GHG
+Gicumbi,2019,N2O,AWB,Agricultural waste burning,0.623,EDGAR_v8.0_FT2022_GHG
+Gisagara,2019,N2O,AWB,Agricultural waste burning,0.777,EDGAR_v8.0_FT2022_GHG
+Huye,2019,N2O,AWB,Agricultural waste burning,1.19,EDGAR_v8.0_FT2022_GHG
+Kamonyi,2019,N2O,AWB,Agricultural waste burning,0.812,EDGAR_v8.0_FT2022_GHG
+Karongi,2019,N2O,AWB,Agricultural waste burning,0.808,EDGAR_v8.0_FT2022_GHG
+Kayonza,2019,N2O,AWB,Agricultural waste burning,1.138,EDGAR_v8.0_FT2022_GHG
+Kicukiro,2019,N2O,AWB,Agricultural waste burning,0.155,EDGAR_v8.0_FT2022_GHG
+Kirehe,2019,N2O,AWB,Agricultural waste burning,0.947,EDGAR_v8.0_FT2022_GHG
+Muhanga,2019,N2O,AWB,Agricultural waste burning,0.76,EDGAR_v8.0_FT2022_GHG
+Musanze,2019,N2O,AWB,Agricultural waste burning,0.314,EDGAR_v8.0_FT2022_GHG
+Ngoma,2019,N2O,AWB,Agricultural waste burning,0.582,EDGAR_v8.0_FT2022_GHG
+Ngororero,2019,N2O,AWB,Agricultural waste burning,0.799,EDGAR_v8.0_FT2022_GHG
+Nyabihu,2019,N2O,AWB,Agricultural waste burning,0.692,EDGAR_v8.0_FT2022_GHG
+Nyagatare,2019,N2O,AWB,Agricultural waste burning,1.335,EDGAR_v8.0_FT2022_GHG
+Nyamagabe,2019,N2O,AWB,Agricultural waste burning,1.292,EDGAR_v8.0_FT2022_GHG
+Nyamasheke,2019,N2O,AWB,Agricultural waste burning,0.339,EDGAR_v8.0_FT2022_GHG
+Nyanza,2019,N2O,AWB,Agricultural waste burning,1.135,EDGAR_v8.0_FT2022_GHG
+Nyarugenge,2019,N2O,AWB,Agricultural waste burning,0.189,EDGAR_v8.0_FT2022_GHG
+Nyaruguru,2019,N2O,AWB,Agricultural waste burning,0.856,EDGAR_v8.0_FT2022_GHG
+Rubavu,2019,N2O,AWB,Agricultural waste burning,0.445,EDGAR_v8.0_FT2022_GHG
+Ruhango,2019,N2O,AWB,Agricultural waste burning,1.211,EDGAR_v8.0_FT2022_GHG
+Rulindo,2019,N2O,AWB,Agricultural waste burning,0.844,EDGAR_v8.0_FT2022_GHG
+Rusizi,2019,N2O,AWB,Agricultural waste burning,0.322,EDGAR_v8.0_FT2022_GHG
+Rutsiro,2019,N2O,AWB,Agricultural waste burning,0.943,EDGAR_v8.0_FT2022_GHG
+Rwamagana,2019,N2O,AWB,Agricultural waste burning,0.484,EDGAR_v8.0_FT2022_GHG
+Bugesera,2019,N2O,MNM,Manure management,18.708,EDGAR_v8.0_FT2022_GHG
+Burera,2019,N2O,MNM,Manure management,15.88,EDGAR_v8.0_FT2022_GHG
+Gakenke,2019,N2O,MNM,Manure management,26.04,EDGAR_v8.0_FT2022_GHG
+Gasabo,2019,N2O,MNM,Manure management,5.513,EDGAR_v8.0_FT2022_GHG
+Gatsibo,2019,N2O,MNM,Manure management,7.921,EDGAR_v8.0_FT2022_GHG
+Gicumbi,2019,N2O,MNM,Manure management,17.605,EDGAR_v8.0_FT2022_GHG
+Gisagara,2019,N2O,MNM,Manure management,22.73,EDGAR_v8.0_FT2022_GHG
+Huye,2019,N2O,MNM,Manure management,15.749,EDGAR_v8.0_FT2022_GHG
+Kamonyi,2019,N2O,MNM,Manure management,17.492,EDGAR_v8.0_FT2022_GHG
+Karongi,2019,N2O,MNM,Manure management,24.252,EDGAR_v8.0_FT2022_GHG
+Kayonza,2019,N2O,MNM,Manure management,7.774,EDGAR_v8.0_FT2022_GHG
+Kicukiro,2019,N2O,MNM,Manure management,2.704,EDGAR_v8.0_FT2022_GHG
+Kirehe,2019,N2O,MNM,Manure management,9.015,EDGAR_v8.0_FT2022_GHG
+Muhanga,2019,N2O,MNM,Manure management,24.117,EDGAR_v8.0_FT2022_GHG
+Musanze,2019,N2O,MNM,Manure management,16.866,EDGAR_v8.0_FT2022_GHG
+Ngoma,2019,N2O,MNM,Manure management,12.096,EDGAR_v8.0_FT2022_GHG
+Ngororero,2019,N2O,MNM,Manure management,24.254,EDGAR_v8.0_FT2022_GHG
+Nyabihu,2019,N2O,MNM,Manure management,16.601,EDGAR_v8.0_FT2022_GHG
+Nyagatare,2019,N2O,MNM,Manure management,7.906,EDGAR_v8.0_FT2022_GHG
+Nyamagabe,2019,N2O,MNM,Manure management,33.656,EDGAR_v8.0_FT2022_GHG
+Nyamasheke,2019,N2O,MNM,Manure management,24.996,EDGAR_v8.0_FT2022_GHG
+Nyanza,2019,N2O,MNM,Manure management,8.12,EDGAR_v8.0_FT2022_GHG
+Nyarugenge,2019,N2O,MNM,Manure management,2.729,EDGAR_v8.0_FT2022_GHG
+Nyaruguru,2019,N2O,MNM,Manure management,29.305,EDGAR_v8.0_FT2022_GHG
+Rubavu,2019,N2O,MNM,Manure management,9.327,EDGAR_v8.0_FT2022_GHG
+Ruhango,2019,N2O,MNM,Manure management,9.931,EDGAR_v8.0_FT2022_GHG
+Rulindo,2019,N2O,MNM,Manure management,18.35,EDGAR_v8.0_FT2022_GHG
+Rusizi,2019,N2O,MNM,Manure management,18.544,EDGAR_v8.0_FT2022_GHG
+Rutsiro,2019,N2O,MNM,Manure management,21.5,EDGAR_v8.0_FT2022_GHG
+Rwamagana,2019,N2O,MNM,Manure management,10.083,EDGAR_v8.0_FT2022_GHG
+Bugesera,2020,N2O,AGS,Agricultural soils,97.423,EDGAR_v8.0_FT2022_GHG
+Burera,2020,N2O,AGS,Agricultural soils,188.574,EDGAR_v8.0_FT2022_GHG
+Gakenke,2020,N2O,AGS,Agricultural soils,135.452,EDGAR_v8.0_FT2022_GHG
+Gasabo,2020,N2O,AGS,Agricultural soils,67.918,EDGAR_v8.0_FT2022_GHG
+Gatsibo,2020,N2O,AGS,Agricultural soils,136.022,EDGAR_v8.0_FT2022_GHG
+Gicumbi,2020,N2O,AGS,Agricultural soils,137.229,EDGAR_v8.0_FT2022_GHG
+Gisagara,2020,N2O,AGS,Agricultural soils,88.171,EDGAR_v8.0_FT2022_GHG
+Huye,2020,N2O,AGS,Agricultural soils,87.465,EDGAR_v8.0_FT2022_GHG
+Kamonyi,2020,N2O,AGS,Agricultural soils,122.662,EDGAR_v8.0_FT2022_GHG
+Karongi,2020,N2O,AGS,Agricultural soils,78.475,EDGAR_v8.0_FT2022_GHG
+Kayonza,2020,N2O,AGS,Agricultural soils,123.021,EDGAR_v8.0_FT2022_GHG
+Kicukiro,2020,N2O,AGS,Agricultural soils,22.493,EDGAR_v8.0_FT2022_GHG
+Kirehe,2020,N2O,AGS,Agricultural soils,100.148,EDGAR_v8.0_FT2022_GHG
+Muhanga,2020,N2O,AGS,Agricultural soils,112.869,EDGAR_v8.0_FT2022_GHG
+Musanze,2020,N2O,AGS,Agricultural soils,77.137,EDGAR_v8.0_FT2022_GHG
+Ngoma,2020,N2O,AGS,Agricultural soils,73.392,EDGAR_v8.0_FT2022_GHG
+Ngororero,2020,N2O,AGS,Agricultural soils,99.118,EDGAR_v8.0_FT2022_GHG
+Nyabihu,2020,N2O,AGS,Agricultural soils,80.214,EDGAR_v8.0_FT2022_GHG
+Nyagatare,2020,N2O,AGS,Agricultural soils,219.887,EDGAR_v8.0_FT2022_GHG
+Nyamagabe,2020,N2O,AGS,Agricultural soils,117.982,EDGAR_v8.0_FT2022_GHG
+Nyamasheke,2020,N2O,AGS,Agricultural soils,66.231,EDGAR_v8.0_FT2022_GHG
+Nyanza,2020,N2O,AGS,Agricultural soils,101.022,EDGAR_v8.0_FT2022_GHG
+Nyarugenge,2020,N2O,AGS,Agricultural soils,20.8,EDGAR_v8.0_FT2022_GHG
+Nyaruguru,2020,N2O,AGS,Agricultural soils,95.808,EDGAR_v8.0_FT2022_GHG
+Rubavu,2020,N2O,AGS,Agricultural soils,41.902,EDGAR_v8.0_FT2022_GHG
+Ruhango,2020,N2O,AGS,Agricultural soils,109.519,EDGAR_v8.0_FT2022_GHG
+Rulindo,2020,N2O,AGS,Agricultural soils,107.125,EDGAR_v8.0_FT2022_GHG
+Rusizi,2020,N2O,AGS,Agricultural soils,49.558,EDGAR_v8.0_FT2022_GHG
+Rutsiro,2020,N2O,AGS,Agricultural soils,89.075,EDGAR_v8.0_FT2022_GHG
+Rwamagana,2020,N2O,AGS,Agricultural soils,74.449,EDGAR_v8.0_FT2022_GHG
+Bugesera,2020,N2O,AWB,Agricultural waste burning,0.979,EDGAR_v8.0_FT2022_GHG
+Burera,2020,N2O,AWB,Agricultural waste burning,0.756,EDGAR_v8.0_FT2022_GHG
+Gakenke,2020,N2O,AWB,Agricultural waste burning,0.974,EDGAR_v8.0_FT2022_GHG
+Gasabo,2020,N2O,AWB,Agricultural waste burning,0.51,EDGAR_v8.0_FT2022_GHG
+Gatsibo,2020,N2O,AWB,Agricultural waste burning,0.904,EDGAR_v8.0_FT2022_GHG
+Gicumbi,2020,N2O,AWB,Agricultural waste burning,0.64,EDGAR_v8.0_FT2022_GHG
+Gisagara,2020,N2O,AWB,Agricultural waste burning,0.774,EDGAR_v8.0_FT2022_GHG
+Huye,2020,N2O,AWB,Agricultural waste burning,1.188,EDGAR_v8.0_FT2022_GHG
+Kamonyi,2020,N2O,AWB,Agricultural waste burning,0.825,EDGAR_v8.0_FT2022_GHG
+Karongi,2020,N2O,AWB,Agricultural waste burning,0.824,EDGAR_v8.0_FT2022_GHG
+Kayonza,2020,N2O,AWB,Agricultural waste burning,1.162,EDGAR_v8.0_FT2022_GHG
+Kicukiro,2020,N2O,AWB,Agricultural waste burning,0.158,EDGAR_v8.0_FT2022_GHG
+Kirehe,2020,N2O,AWB,Agricultural waste burning,0.965,EDGAR_v8.0_FT2022_GHG
+Muhanga,2020,N2O,AWB,Agricultural waste burning,0.772,EDGAR_v8.0_FT2022_GHG
+Musanze,2020,N2O,AWB,Agricultural waste burning,0.32,EDGAR_v8.0_FT2022_GHG
+Ngoma,2020,N2O,AWB,Agricultural waste burning,0.592,EDGAR_v8.0_FT2022_GHG
+Ngororero,2020,N2O,AWB,Agricultural waste burning,0.812,EDGAR_v8.0_FT2022_GHG
+Nyabihu,2020,N2O,AWB,Agricultural waste burning,0.702,EDGAR_v8.0_FT2022_GHG
+Nyagatare,2020,N2O,AWB,Agricultural waste burning,1.38,EDGAR_v8.0_FT2022_GHG
+Nyamagabe,2020,N2O,AWB,Agricultural waste burning,1.3,EDGAR_v8.0_FT2022_GHG
+Nyamasheke,2020,N2O,AWB,Agricultural waste burning,0.34,EDGAR_v8.0_FT2022_GHG
+Nyanza,2020,N2O,AWB,Agricultural waste burning,1.137,EDGAR_v8.0_FT2022_GHG
+Nyarugenge,2020,N2O,AWB,Agricultural waste burning,0.192,EDGAR_v8.0_FT2022_GHG
+Nyaruguru,2020,N2O,AWB,Agricultural waste burning,0.857,EDGAR_v8.0_FT2022_GHG
+Rubavu,2020,N2O,AWB,Agricultural waste burning,0.449,EDGAR_v8.0_FT2022_GHG
+Ruhango,2020,N2O,AWB,Agricultural waste burning,1.23,EDGAR_v8.0_FT2022_GHG
+Rulindo,2020,N2O,AWB,Agricultural waste burning,0.861,EDGAR_v8.0_FT2022_GHG
+Rusizi,2020,N2O,AWB,Agricultural waste burning,0.318,EDGAR_v8.0_FT2022_GHG
+Rutsiro,2020,N2O,AWB,Agricultural waste burning,0.962,EDGAR_v8.0_FT2022_GHG
+Rwamagana,2020,N2O,AWB,Agricultural waste burning,0.493,EDGAR_v8.0_FT2022_GHG
+Bugesera,2020,N2O,MNM,Manure management,18.371,EDGAR_v8.0_FT2022_GHG
+Burera,2020,N2O,MNM,Manure management,15.658,EDGAR_v8.0_FT2022_GHG
+Gakenke,2020,N2O,MNM,Manure management,25.482,EDGAR_v8.0_FT2022_GHG
+Gasabo,2020,N2O,MNM,Manure management,5.415,EDGAR_v8.0_FT2022_GHG
+Gatsibo,2020,N2O,MNM,Manure management,7.792,EDGAR_v8.0_FT2022_GHG
+Gicumbi,2020,N2O,MNM,Manure management,17.277,EDGAR_v8.0_FT2022_GHG
+Gisagara,2020,N2O,MNM,Manure management,22.473,EDGAR_v8.0_FT2022_GHG
+Huye,2020,N2O,MNM,Manure management,15.41,EDGAR_v8.0_FT2022_GHG
+Kamonyi,2020,N2O,MNM,Manure management,17.128,EDGAR_v8.0_FT2022_GHG
+Karongi,2020,N2O,MNM,Manure management,23.718,EDGAR_v8.0_FT2022_GHG
+Kayonza,2020,N2O,MNM,Manure management,7.644,EDGAR_v8.0_FT2022_GHG
+Kicukiro,2020,N2O,MNM,Manure management,2.651,EDGAR_v8.0_FT2022_GHG
+Kirehe,2020,N2O,MNM,Manure management,8.871,EDGAR_v8.0_FT2022_GHG
+Muhanga,2020,N2O,MNM,Manure management,23.599,EDGAR_v8.0_FT2022_GHG
+Musanze,2020,N2O,MNM,Manure management,16.518,EDGAR_v8.0_FT2022_GHG
+Ngoma,2020,N2O,MNM,Manure management,11.855,EDGAR_v8.0_FT2022_GHG
+Ngororero,2020,N2O,MNM,Manure management,23.729,EDGAR_v8.0_FT2022_GHG
+Nyabihu,2020,N2O,MNM,Manure management,16.247,EDGAR_v8.0_FT2022_GHG
+Nyagatare,2020,N2O,MNM,Manure management,7.845,EDGAR_v8.0_FT2022_GHG
+Nyamagabe,2020,N2O,MNM,Manure management,32.917,EDGAR_v8.0_FT2022_GHG
+Nyamasheke,2020,N2O,MNM,Manure management,24.45,EDGAR_v8.0_FT2022_GHG
+Nyanza,2020,N2O,MNM,Manure management,7.982,EDGAR_v8.0_FT2022_GHG
+Nyarugenge,2020,N2O,MNM,Manure management,2.674,EDGAR_v8.0_FT2022_GHG
+Nyaruguru,2020,N2O,MNM,Manure management,28.791,EDGAR_v8.0_FT2022_GHG
+Rubavu,2020,N2O,MNM,Manure management,9.151,EDGAR_v8.0_FT2022_GHG
+Ruhango,2020,N2O,MNM,Manure management,9.731,EDGAR_v8.0_FT2022_GHG
+Rulindo,2020,N2O,MNM,Manure management,17.961,EDGAR_v8.0_FT2022_GHG
+Rusizi,2020,N2O,MNM,Manure management,18.265,EDGAR_v8.0_FT2022_GHG
+Rutsiro,2020,N2O,MNM,Manure management,21.033,EDGAR_v8.0_FT2022_GHG
+Rwamagana,2020,N2O,MNM,Manure management,9.881,EDGAR_v8.0_FT2022_GHG
+Bugesera,2021,N2O,AGS,Agricultural soils,98.002,EDGAR_v8.0_FT2022_GHG
+Burera,2021,N2O,AGS,Agricultural soils,188.972,EDGAR_v8.0_FT2022_GHG
+Gakenke,2021,N2O,AGS,Agricultural soils,135.443,EDGAR_v8.0_FT2022_GHG
+Gasabo,2021,N2O,AGS,Agricultural soils,68.008,EDGAR_v8.0_FT2022_GHG
+Gatsibo,2021,N2O,AGS,Agricultural soils,136.125,EDGAR_v8.0_FT2022_GHG
+Gicumbi,2021,N2O,AGS,Agricultural soils,137.226,EDGAR_v8.0_FT2022_GHG
+Gisagara,2021,N2O,AGS,Agricultural soils,88.757,EDGAR_v8.0_FT2022_GHG
+Huye,2021,N2O,AGS,Agricultural soils,87.756,EDGAR_v8.0_FT2022_GHG
+Kamonyi,2021,N2O,AGS,Agricultural soils,122.806,EDGAR_v8.0_FT2022_GHG
+Karongi,2021,N2O,AGS,Agricultural soils,78.525,EDGAR_v8.0_FT2022_GHG
+Kayonza,2021,N2O,AGS,Agricultural soils,123.315,EDGAR_v8.0_FT2022_GHG
+Kicukiro,2021,N2O,AGS,Agricultural soils,22.522,EDGAR_v8.0_FT2022_GHG
+Kirehe,2021,N2O,AGS,Agricultural soils,100.543,EDGAR_v8.0_FT2022_GHG
+Muhanga,2021,N2O,AGS,Agricultural soils,112.957,EDGAR_v8.0_FT2022_GHG
+Musanze,2021,N2O,AGS,Agricultural soils,77.085,EDGAR_v8.0_FT2022_GHG
+Ngoma,2021,N2O,AGS,Agricultural soils,73.5,EDGAR_v8.0_FT2022_GHG
+Ngororero,2021,N2O,AGS,Agricultural soils,99.097,EDGAR_v8.0_FT2022_GHG
+Nyabihu,2021,N2O,AGS,Agricultural soils,80.224,EDGAR_v8.0_FT2022_GHG
+Nyagatare,2021,N2O,AGS,Agricultural soils,220.592,EDGAR_v8.0_FT2022_GHG
+Nyamagabe,2021,N2O,AGS,Agricultural soils,118.148,EDGAR_v8.0_FT2022_GHG
+Nyamasheke,2021,N2O,AGS,Agricultural soils,66.163,EDGAR_v8.0_FT2022_GHG
+Nyanza,2021,N2O,AGS,Agricultural soils,101.316,EDGAR_v8.0_FT2022_GHG
+Nyarugenge,2021,N2O,AGS,Agricultural soils,20.848,EDGAR_v8.0_FT2022_GHG
+Nyaruguru,2021,N2O,AGS,Agricultural soils,96.022,EDGAR_v8.0_FT2022_GHG
+Rubavu,2021,N2O,AGS,Agricultural soils,41.992,EDGAR_v8.0_FT2022_GHG
+Ruhango,2021,N2O,AGS,Agricultural soils,109.935,EDGAR_v8.0_FT2022_GHG
+Rulindo,2021,N2O,AGS,Agricultural soils,107.167,EDGAR_v8.0_FT2022_GHG
+Rusizi,2021,N2O,AGS,Agricultural soils,49.777,EDGAR_v8.0_FT2022_GHG
+Rutsiro,2021,N2O,AGS,Agricultural soils,89.119,EDGAR_v8.0_FT2022_GHG
+Rwamagana,2021,N2O,AGS,Agricultural soils,74.504,EDGAR_v8.0_FT2022_GHG
+Bugesera,2021,N2O,AWB,Agricultural waste burning,1.044,EDGAR_v8.0_FT2022_GHG
+Burera,2021,N2O,AWB,Agricultural waste burning,0.787,EDGAR_v8.0_FT2022_GHG
+Gakenke,2021,N2O,AWB,Agricultural waste burning,1.019,EDGAR_v8.0_FT2022_GHG
+Gasabo,2021,N2O,AWB,Agricultural waste burning,0.537,EDGAR_v8.0_FT2022_GHG
+Gatsibo,2021,N2O,AWB,Agricultural waste burning,0.951,EDGAR_v8.0_FT2022_GHG
+Gicumbi,2021,N2O,AWB,Agricultural waste burning,0.674,EDGAR_v8.0_FT2022_GHG
+Gisagara,2021,N2O,AWB,Agricultural waste burning,0.813,EDGAR_v8.0_FT2022_GHG
+Huye,2021,N2O,AWB,Agricultural waste burning,1.242,EDGAR_v8.0_FT2022_GHG
+Kamonyi,2021,N2O,AWB,Agricultural waste burning,0.868,EDGAR_v8.0_FT2022_GHG
+Karongi,2021,N2O,AWB,Agricultural waste burning,0.862,EDGAR_v8.0_FT2022_GHG
+Kayonza,2021,N2O,AWB,Agricultural waste burning,1.219,EDGAR_v8.0_FT2022_GHG
+Kicukiro,2021,N2O,AWB,Agricultural waste burning,0.167,EDGAR_v8.0_FT2022_GHG
+Kirehe,2021,N2O,AWB,Agricultural waste burning,1.015,EDGAR_v8.0_FT2022_GHG
+Muhanga,2021,N2O,AWB,Agricultural waste burning,0.812,EDGAR_v8.0_FT2022_GHG
+Musanze,2021,N2O,AWB,Agricultural waste burning,0.333,EDGAR_v8.0_FT2022_GHG
+Ngoma,2021,N2O,AWB,Agricultural waste burning,0.623,EDGAR_v8.0_FT2022_GHG
+Ngororero,2021,N2O,AWB,Agricultural waste burning,0.844,EDGAR_v8.0_FT2022_GHG
+Nyabihu,2021,N2O,AWB,Agricultural waste burning,0.729,EDGAR_v8.0_FT2022_GHG
+Nyagatare,2021,N2O,AWB,Agricultural waste burning,1.447,EDGAR_v8.0_FT2022_GHG
+Nyamagabe,2021,N2O,AWB,Agricultural waste burning,1.356,EDGAR_v8.0_FT2022_GHG
+Nyamasheke,2021,N2O,AWB,Agricultural waste burning,0.353,EDGAR_v8.0_FT2022_GHG
+Nyanza,2021,N2O,AWB,Agricultural waste burning,1.192,EDGAR_v8.0_FT2022_GHG
+Nyarugenge,2021,N2O,AWB,Agricultural waste burning,0.203,EDGAR_v8.0_FT2022_GHG
+Nyaruguru,2021,N2O,AWB,Agricultural waste burning,0.898,EDGAR_v8.0_FT2022_GHG
+Rubavu,2021,N2O,AWB,Agricultural waste burning,0.457,EDGAR_v8.0_FT2022_GHG
+Ruhango,2021,N2O,AWB,Agricultural waste burning,1.293,EDGAR_v8.0_FT2022_GHG
+Rulindo,2021,N2O,AWB,Agricultural waste burning,0.907,EDGAR_v8.0_FT2022_GHG
+Rusizi,2021,N2O,AWB,Agricultural waste burning,0.329,EDGAR_v8.0_FT2022_GHG
+Rutsiro,2021,N2O,AWB,Agricultural waste burning,1.003,EDGAR_v8.0_FT2022_GHG
+Rwamagana,2021,N2O,AWB,Agricultural waste burning,0.519,EDGAR_v8.0_FT2022_GHG
+Bugesera,2021,N2O,MNM,Manure management,18.546,EDGAR_v8.0_FT2022_GHG
+Burera,2021,N2O,MNM,Manure management,15.773,EDGAR_v8.0_FT2022_GHG
+Gakenke,2021,N2O,MNM,Manure management,25.635,EDGAR_v8.0_FT2022_GHG
+Gasabo,2021,N2O,MNM,Manure management,5.449,EDGAR_v8.0_FT2022_GHG
+Gatsibo,2021,N2O,MNM,Manure management,7.836,EDGAR_v8.0_FT2022_GHG
+Gicumbi,2021,N2O,MNM,Manure management,17.384,EDGAR_v8.0_FT2022_GHG
+Gisagara,2021,N2O,MNM,Manure management,22.847,EDGAR_v8.0_FT2022_GHG
+Huye,2021,N2O,MNM,Manure management,15.502,EDGAR_v8.0_FT2022_GHG
+Kamonyi,2021,N2O,MNM,Manure management,17.228,EDGAR_v8.0_FT2022_GHG
+Karongi,2021,N2O,MNM,Manure management,23.865,EDGAR_v8.0_FT2022_GHG
+Kayonza,2021,N2O,MNM,Manure management,7.691,EDGAR_v8.0_FT2022_GHG
+Kicukiro,2021,N2O,MNM,Manure management,2.668,EDGAR_v8.0_FT2022_GHG
+Kirehe,2021,N2O,MNM,Manure management,8.939,EDGAR_v8.0_FT2022_GHG
+Muhanga,2021,N2O,MNM,Manure management,23.741,EDGAR_v8.0_FT2022_GHG
+Musanze,2021,N2O,MNM,Manure management,16.617,EDGAR_v8.0_FT2022_GHG
+Ngoma,2021,N2O,MNM,Manure management,11.938,EDGAR_v8.0_FT2022_GHG
+Ngororero,2021,N2O,MNM,Manure management,23.873,EDGAR_v8.0_FT2022_GHG
+Nyabihu,2021,N2O,MNM,Manure management,16.345,EDGAR_v8.0_FT2022_GHG
+Nyagatare,2021,N2O,MNM,Manure management,7.894,EDGAR_v8.0_FT2022_GHG
+Nyamagabe,2021,N2O,MNM,Manure management,33.119,EDGAR_v8.0_FT2022_GHG
+Nyamasheke,2021,N2O,MNM,Manure management,24.603,EDGAR_v8.0_FT2022_GHG
+Nyanza,2021,N2O,MNM,Manure management,8.05,EDGAR_v8.0_FT2022_GHG
+Nyarugenge,2021,N2O,MNM,Manure management,2.691,EDGAR_v8.0_FT2022_GHG
+Nyaruguru,2021,N2O,MNM,Manure management,29.095,EDGAR_v8.0_FT2022_GHG
+Rubavu,2021,N2O,MNM,Manure management,9.203,EDGAR_v8.0_FT2022_GHG
+Ruhango,2021,N2O,MNM,Manure management,9.786,EDGAR_v8.0_FT2022_GHG
+Rulindo,2021,N2O,MNM,Manure management,18.069,EDGAR_v8.0_FT2022_GHG
+Rusizi,2021,N2O,MNM,Manure management,18.484,EDGAR_v8.0_FT2022_GHG
+Rutsiro,2021,N2O,MNM,Manure management,21.161,EDGAR_v8.0_FT2022_GHG
+Rwamagana,2021,N2O,MNM,Manure management,9.944,EDGAR_v8.0_FT2022_GHG
+Bugesera,2022,N2O,AGS,Agricultural soils,98.532,EDGAR_v8.0_FT2022_GHG
+Burera,2022,N2O,AGS,Agricultural soils,189.286,EDGAR_v8.0_FT2022_GHG
+Gakenke,2022,N2O,AGS,Agricultural soils,135.335,EDGAR_v8.0_FT2022_GHG
+Gasabo,2022,N2O,AGS,Agricultural soils,68.054,EDGAR_v8.0_FT2022_GHG
+Gatsibo,2022,N2O,AGS,Agricultural soils,136.106,EDGAR_v8.0_FT2022_GHG
+Gicumbi,2022,N2O,AGS,Agricultural soils,137.134,EDGAR_v8.0_FT2022_GHG
+Gisagara,2022,N2O,AGS,Agricultural soils,89.321,EDGAR_v8.0_FT2022_GHG
+Huye,2022,N2O,AGS,Agricultural soils,87.938,EDGAR_v8.0_FT2022_GHG
+Kamonyi,2022,N2O,AGS,Agricultural soils,122.899,EDGAR_v8.0_FT2022_GHG
+Karongi,2022,N2O,AGS,Agricultural soils,78.459,EDGAR_v8.0_FT2022_GHG
+Kayonza,2022,N2O,AGS,Agricultural soils,123.489,EDGAR_v8.0_FT2022_GHG
+Kicukiro,2022,N2O,AGS,Agricultural soils,22.537,EDGAR_v8.0_FT2022_GHG
+Kirehe,2022,N2O,AGS,Agricultural soils,100.831,EDGAR_v8.0_FT2022_GHG
+Muhanga,2022,N2O,AGS,Agricultural soils,113.002,EDGAR_v8.0_FT2022_GHG
+Musanze,2022,N2O,AGS,Agricultural soils,76.999,EDGAR_v8.0_FT2022_GHG
+Ngoma,2022,N2O,AGS,Agricultural soils,73.543,EDGAR_v8.0_FT2022_GHG
+Ngororero,2022,N2O,AGS,Agricultural soils,98.965,EDGAR_v8.0_FT2022_GHG
+Nyabihu,2022,N2O,AGS,Agricultural soils,80.144,EDGAR_v8.0_FT2022_GHG
+Nyagatare,2022,N2O,AGS,Agricultural soils,221.122,EDGAR_v8.0_FT2022_GHG
+Nyamagabe,2022,N2O,AGS,Agricultural soils,118.177,EDGAR_v8.0_FT2022_GHG
+Nyamasheke,2022,N2O,AGS,Agricultural soils,66.057,EDGAR_v8.0_FT2022_GHG
+Nyanza,2022,N2O,AGS,Agricultural soils,101.523,EDGAR_v8.0_FT2022_GHG
+Nyarugenge,2022,N2O,AGS,Agricultural soils,20.88,EDGAR_v8.0_FT2022_GHG
+Nyaruguru,2022,N2O,AGS,Agricultural soils,96.169,EDGAR_v8.0_FT2022_GHG
+Rubavu,2022,N2O,AGS,Agricultural soils,42.071,EDGAR_v8.0_FT2022_GHG
+Ruhango,2022,N2O,AGS,Agricultural soils,110.274,EDGAR_v8.0_FT2022_GHG
+Rulindo,2022,N2O,AGS,Agricultural soils,107.122,EDGAR_v8.0_FT2022_GHG
+Rusizi,2022,N2O,AGS,Agricultural soils,49.997,EDGAR_v8.0_FT2022_GHG
+Rutsiro,2022,N2O,AGS,Agricultural soils,89.005,EDGAR_v8.0_FT2022_GHG
+Rwamagana,2022,N2O,AGS,Agricultural soils,74.514,EDGAR_v8.0_FT2022_GHG
+Bugesera,2022,N2O,AWB,Agricultural waste burning,1.081,EDGAR_v8.0_FT2022_GHG
+Burera,2022,N2O,AWB,Agricultural waste burning,0.792,EDGAR_v8.0_FT2022_GHG
+Gakenke,2022,N2O,AWB,Agricultural waste burning,1.035,EDGAR_v8.0_FT2022_GHG
+Gasabo,2022,N2O,AWB,Agricultural waste burning,0.55,EDGAR_v8.0_FT2022_GHG
+Gatsibo,2022,N2O,AWB,Agricultural waste burning,0.96,EDGAR_v8.0_FT2022_GHG
+Gicumbi,2022,N2O,AWB,Agricultural waste burning,0.68,EDGAR_v8.0_FT2022_GHG
+Gisagara,2022,N2O,AWB,Agricultural waste burning,0.828,EDGAR_v8.0_FT2022_GHG
+Huye,2022,N2O,AWB,Agricultural waste burning,1.262,EDGAR_v8.0_FT2022_GHG
+Kamonyi,2022,N2O,AWB,Agricultural waste burning,0.893,EDGAR_v8.0_FT2022_GHG
+Karongi,2022,N2O,AWB,Agricultural waste burning,0.868,EDGAR_v8.0_FT2022_GHG
+Kayonza,2022,N2O,AWB,Agricultural waste burning,1.236,EDGAR_v8.0_FT2022_GHG
+Kicukiro,2022,N2O,AWB,Agricultural waste burning,0.171,EDGAR_v8.0_FT2022_GHG
+Kirehe,2022,N2O,AWB,Agricultural waste burning,1.03,EDGAR_v8.0_FT2022_GHG
+Muhanga,2022,N2O,AWB,Agricultural waste burning,0.836,EDGAR_v8.0_FT2022_GHG
+Musanze,2022,N2O,AWB,Agricultural waste burning,0.335,EDGAR_v8.0_FT2022_GHG
+Ngoma,2022,N2O,AWB,Agricultural waste burning,0.634,EDGAR_v8.0_FT2022_GHG
+Ngororero,2022,N2O,AWB,Agricultural waste burning,0.848,EDGAR_v8.0_FT2022_GHG
+Nyabihu,2022,N2O,AWB,Agricultural waste burning,0.733,EDGAR_v8.0_FT2022_GHG
+Nyagatare,2022,N2O,AWB,Agricultural waste burning,1.454,EDGAR_v8.0_FT2022_GHG
+Nyamagabe,2022,N2O,AWB,Agricultural waste burning,1.371,EDGAR_v8.0_FT2022_GHG
+Nyamasheke,2022,N2O,AWB,Agricultural waste burning,0.355,EDGAR_v8.0_FT2022_GHG
+Nyanza,2022,N2O,AWB,Agricultural waste burning,1.215,EDGAR_v8.0_FT2022_GHG
+Nyarugenge,2022,N2O,AWB,Agricultural waste burning,0.208,EDGAR_v8.0_FT2022_GHG
+Nyaruguru,2022,N2O,AWB,Agricultural waste burning,0.913,EDGAR_v8.0_FT2022_GHG
+Rubavu,2022,N2O,AWB,Agricultural waste burning,0.461,EDGAR_v8.0_FT2022_GHG
+Ruhango,2022,N2O,AWB,Agricultural waste burning,1.33,EDGAR_v8.0_FT2022_GHG
+Rulindo,2022,N2O,AWB,Agricultural waste burning,0.924,EDGAR_v8.0_FT2022_GHG
+Rusizi,2022,N2O,AWB,Agricultural waste burning,0.333,EDGAR_v8.0_FT2022_GHG
+Rutsiro,2022,N2O,AWB,Agricultural waste burning,1.002,EDGAR_v8.0_FT2022_GHG
+Rwamagana,2022,N2O,AWB,Agricultural waste burning,0.53,EDGAR_v8.0_FT2022_GHG
+Bugesera,2022,N2O,MNM,Manure management,18.727,EDGAR_v8.0_FT2022_GHG
+Burera,2022,N2O,MNM,Manure management,15.888,EDGAR_v8.0_FT2022_GHG
+Gakenke,2022,N2O,MNM,Manure management,25.789,EDGAR_v8.0_FT2022_GHG
+Gasabo,2022,N2O,MNM,Manure management,5.484,EDGAR_v8.0_FT2022_GHG
+Gatsibo,2022,N2O,MNM,Manure management,7.881,EDGAR_v8.0_FT2022_GHG
+Gicumbi,2022,N2O,MNM,Manure management,17.492,EDGAR_v8.0_FT2022_GHG
+Gisagara,2022,N2O,MNM,Manure management,23.242,EDGAR_v8.0_FT2022_GHG
+Huye,2022,N2O,MNM,Manure management,15.596,EDGAR_v8.0_FT2022_GHG
+Kamonyi,2022,N2O,MNM,Manure management,17.329,EDGAR_v8.0_FT2022_GHG
+Karongi,2022,N2O,MNM,Manure management,24.012,EDGAR_v8.0_FT2022_GHG
+Kayonza,2022,N2O,MNM,Manure management,7.739,EDGAR_v8.0_FT2022_GHG
+Kicukiro,2022,N2O,MNM,Manure management,2.685,EDGAR_v8.0_FT2022_GHG
+Kirehe,2022,N2O,MNM,Manure management,9.008,EDGAR_v8.0_FT2022_GHG
+Muhanga,2022,N2O,MNM,Manure management,23.883,EDGAR_v8.0_FT2022_GHG
+Musanze,2022,N2O,MNM,Manure management,16.716,EDGAR_v8.0_FT2022_GHG
+Ngoma,2022,N2O,MNM,Manure management,12.023,EDGAR_v8.0_FT2022_GHG
+Ngororero,2022,N2O,MNM,Manure management,24.018,EDGAR_v8.0_FT2022_GHG
+Nyabihu,2022,N2O,MNM,Manure management,16.443,EDGAR_v8.0_FT2022_GHG
+Nyagatare,2022,N2O,MNM,Manure management,7.943,EDGAR_v8.0_FT2022_GHG
+Nyamagabe,2022,N2O,MNM,Manure management,33.322,EDGAR_v8.0_FT2022_GHG
+Nyamasheke,2022,N2O,MNM,Manure management,24.757,EDGAR_v8.0_FT2022_GHG
+Nyanza,2022,N2O,MNM,Manure management,8.121,EDGAR_v8.0_FT2022_GHG
+Nyarugenge,2022,N2O,MNM,Manure management,2.708,EDGAR_v8.0_FT2022_GHG
+Nyaruguru,2022,N2O,MNM,Manure management,29.41,EDGAR_v8.0_FT2022_GHG
+Rubavu,2022,N2O,MNM,Manure management,9.254,EDGAR_v8.0_FT2022_GHG
+Ruhango,2022,N2O,MNM,Manure management,9.842,EDGAR_v8.0_FT2022_GHG
+Rulindo,2022,N2O,MNM,Manure management,18.178,EDGAR_v8.0_FT2022_GHG
+Rusizi,2022,N2O,MNM,Manure management,18.714,EDGAR_v8.0_FT2022_GHG
+Rutsiro,2022,N2O,MNM,Manure management,21.291,EDGAR_v8.0_FT2022_GHG
+Rwamagana,2022,N2O,MNM,Manure management,10.007,EDGAR_v8.0_FT2022_GHG
+Bugesera,2018,NH3,AGS,Agricultural soils,517.121,EDGAR_v8.1_FT2022_AP
+Burera,2018,NH3,AGS,Agricultural soils,780.329,EDGAR_v8.1_FT2022_AP
+Gakenke,2018,NH3,AGS,Agricultural soils,658.009,EDGAR_v8.1_FT2022_AP
+Gasabo,2018,NH3,AGS,Agricultural soils,338.466,EDGAR_v8.1_FT2022_AP
+Gatsibo,2018,NH3,AGS,Agricultural soils,648.385,EDGAR_v8.1_FT2022_AP
+Gicumbi,2018,NH3,AGS,Agricultural soils,590.521,EDGAR_v8.1_FT2022_AP
+Gisagara,2018,NH3,AGS,Agricultural soils,437.919,EDGAR_v8.1_FT2022_AP
+Huye,2018,NH3,AGS,Agricultural soils,522.382,EDGAR_v8.1_FT2022_AP
+Kamonyi,2018,NH3,AGS,Agricultural soils,591.358,EDGAR_v8.1_FT2022_AP
+Karongi,2018,NH3,AGS,Agricultural soils,436.48,EDGAR_v8.1_FT2022_AP
+Kayonza,2018,NH3,AGS,Agricultural soils,649.44,EDGAR_v8.1_FT2022_AP
+Kicukiro,2018,NH3,AGS,Agricultural soils,109.553,EDGAR_v8.1_FT2022_AP
+Kirehe,2018,NH3,AGS,Agricultural soils,533.028,EDGAR_v8.1_FT2022_AP
+Muhanga,2018,NH3,AGS,Agricultural soils,547.256,EDGAR_v8.1_FT2022_AP
+Musanze,2018,NH3,AGS,Agricultural soils,314.302,EDGAR_v8.1_FT2022_AP
+Ngoma,2018,NH3,AGS,Agricultural soils,363.616,EDGAR_v8.1_FT2022_AP
+Ngororero,2018,NH3,AGS,Agricultural soils,483.474,EDGAR_v8.1_FT2022_AP
+Nyabihu,2018,NH3,AGS,Agricultural soils,406.329,EDGAR_v8.1_FT2022_AP
+Nyagatare,2018,NH3,AGS,Agricultural soils,1020.725,EDGAR_v8.1_FT2022_AP
+Nyamagabe,2018,NH3,AGS,Agricultural soils,693.239,EDGAR_v8.1_FT2022_AP
+Nyamasheke,2018,NH3,AGS,Agricultural soils,270.091,EDGAR_v8.1_FT2022_AP
+Nyanza,2018,NH3,AGS,Agricultural soils,565.448,EDGAR_v8.1_FT2022_AP
+Nyarugenge,2018,NH3,AGS,Agricultural soils,112.977,EDGAR_v8.1_FT2022_AP
+Nyaruguru,2018,NH3,AGS,Agricultural soils,495.472,EDGAR_v8.1_FT2022_AP
+Rubavu,2018,NH3,AGS,Agricultural soils,165.313,EDGAR_v8.1_FT2022_AP
+Ruhango,2018,NH3,AGS,Agricultural soils,653.344,EDGAR_v8.1_FT2022_AP
+Rulindo,2018,NH3,AGS,Agricultural soils,548.31,EDGAR_v8.1_FT2022_AP
+Rusizi,2018,NH3,AGS,Agricultural soils,209.786,EDGAR_v8.1_FT2022_AP
+Rutsiro,2018,NH3,AGS,Agricultural soils,486.434,EDGAR_v8.1_FT2022_AP
+Rwamagana,2018,NH3,AGS,Agricultural soils,351.78,EDGAR_v8.1_FT2022_AP
+Bugesera,2018,NH3,AWB,Agricultural waste burning,19.408,EDGAR_v8.1_FT2022_AP
+Burera,2018,NH3,AWB,Agricultural waste burning,17.273,EDGAR_v8.1_FT2022_AP
+Gakenke,2018,NH3,AWB,Agricultural waste burning,22.017,EDGAR_v8.1_FT2022_AP
+Gasabo,2018,NH3,AWB,Agricultural waste burning,10.959,EDGAR_v8.1_FT2022_AP
+Gatsibo,2018,NH3,AWB,Agricultural waste burning,19.447,EDGAR_v8.1_FT2022_AP
+Gicumbi,2018,NH3,AWB,Agricultural waste burning,13.711,EDGAR_v8.1_FT2022_AP
+Gisagara,2018,NH3,AWB,Agricultural waste burning,18.454,EDGAR_v8.1_FT2022_AP
+Huye,2018,NH3,AWB,Agricultural waste burning,28.216,EDGAR_v8.1_FT2022_AP
+Kamonyi,2018,NH3,AWB,Agricultural waste burning,17.795,EDGAR_v8.1_FT2022_AP
+Karongi,2018,NH3,AWB,Agricultural waste burning,19.334,EDGAR_v8.1_FT2022_AP
+Kayonza,2018,NH3,AWB,Agricultural waste burning,26.089,EDGAR_v8.1_FT2022_AP
+Kicukiro,2018,NH3,AWB,Agricultural waste burning,3.402,EDGAR_v8.1_FT2022_AP
+Kirehe,2018,NH3,AWB,Agricultural waste burning,21.803,EDGAR_v8.1_FT2022_AP
+Muhanga,2018,NH3,AWB,Agricultural waste burning,16.651,EDGAR_v8.1_FT2022_AP
+Musanze,2018,NH3,AWB,Agricultural waste burning,7.539,EDGAR_v8.1_FT2022_AP
+Ngoma,2018,NH3,AWB,Agricultural waste burning,13.252,EDGAR_v8.1_FT2022_AP
+Ngororero,2018,NH3,AWB,Agricultural waste burning,20.222,EDGAR_v8.1_FT2022_AP
+Nyabihu,2018,NH3,AWB,Agricultural waste burning,17.076,EDGAR_v8.1_FT2022_AP
+Nyagatare,2018,NH3,AWB,Agricultural waste burning,30.279,EDGAR_v8.1_FT2022_AP
+Nyamagabe,2018,NH3,AWB,Agricultural waste burning,29.581,EDGAR_v8.1_FT2022_AP
+Nyamasheke,2018,NH3,AWB,Agricultural waste burning,8.691,EDGAR_v8.1_FT2022_AP
+Nyanza,2018,NH3,AWB,Agricultural waste burning,26.464,EDGAR_v8.1_FT2022_AP
+Nyarugenge,2018,NH3,AWB,Agricultural waste burning,4.136,EDGAR_v8.1_FT2022_AP
+Nyaruguru,2018,NH3,AWB,Agricultural waste burning,19.781,EDGAR_v8.1_FT2022_AP
+Rubavu,2018,NH3,AWB,Agricultural waste burning,11.926,EDGAR_v8.1_FT2022_AP
+Ruhango,2018,NH3,AWB,Agricultural waste burning,26.654,EDGAR_v8.1_FT2022_AP
+Rulindo,2018,NH3,AWB,Agricultural waste burning,18.575,EDGAR_v8.1_FT2022_AP
+Rusizi,2018,NH3,AWB,Agricultural waste burning,8.451,EDGAR_v8.1_FT2022_AP
+Rutsiro,2018,NH3,AWB,Agricultural waste burning,23.767,EDGAR_v8.1_FT2022_AP
+Rwamagana,2018,NH3,AWB,Agricultural waste burning,10.743,EDGAR_v8.1_FT2022_AP
+Bugesera,2018,NH3,MNM,Manure management,227.471,EDGAR_v8.1_FT2022_AP
+Burera,2018,NH3,MNM,Manure management,155.477,EDGAR_v8.1_FT2022_AP
+Gakenke,2018,NH3,MNM,Manure management,241.549,EDGAR_v8.1_FT2022_AP
+Gasabo,2018,NH3,MNM,Manure management,107.357,EDGAR_v8.1_FT2022_AP
+Gatsibo,2018,NH3,MNM,Manure management,146.987,EDGAR_v8.1_FT2022_AP
+Gicumbi,2018,NH3,MNM,Manure management,187.374,EDGAR_v8.1_FT2022_AP
+Gisagara,2018,NH3,MNM,Manure management,206.75,EDGAR_v8.1_FT2022_AP
+Huye,2018,NH3,MNM,Manure management,143.417,EDGAR_v8.1_FT2022_AP
+Kamonyi,2018,NH3,MNM,Manure management,169.863,EDGAR_v8.1_FT2022_AP
+Karongi,2018,NH3,MNM,Manure management,219.2,EDGAR_v8.1_FT2022_AP
+Kayonza,2018,NH3,MNM,Manure management,154.05,EDGAR_v8.1_FT2022_AP
+Kicukiro,2018,NH3,MNM,Manure management,44.217,EDGAR_v8.1_FT2022_AP
+Kirehe,2018,NH3,MNM,Manure management,145.553,EDGAR_v8.1_FT2022_AP
+Muhanga,2018,NH3,MNM,Manure management,220.277,EDGAR_v8.1_FT2022_AP
+Musanze,2018,NH3,MNM,Manure management,156.045,EDGAR_v8.1_FT2022_AP
+Ngoma,2018,NH3,MNM,Manure management,162.128,EDGAR_v8.1_FT2022_AP
+Ngororero,2018,NH3,MNM,Manure management,222.228,EDGAR_v8.1_FT2022_AP
+Nyabihu,2018,NH3,MNM,Manure management,153.844,EDGAR_v8.1_FT2022_AP
+Nyagatare,2018,NH3,MNM,Manure management,163.165,EDGAR_v8.1_FT2022_AP
+Nyamagabe,2018,NH3,MNM,Manure management,297.708,EDGAR_v8.1_FT2022_AP
+Nyamasheke,2018,NH3,MNM,Manure management,223.639,EDGAR_v8.1_FT2022_AP
+Nyanza,2018,NH3,MNM,Manure management,84.978,EDGAR_v8.1_FT2022_AP
+Nyarugenge,2018,NH3,MNM,Manure management,39.663,EDGAR_v8.1_FT2022_AP
+Nyaruguru,2018,NH3,MNM,Manure management,261.135,EDGAR_v8.1_FT2022_AP
+Rubavu,2018,NH3,MNM,Manure management,88.887,EDGAR_v8.1_FT2022_AP
+Ruhango,2018,NH3,MNM,Manure management,100.394,EDGAR_v8.1_FT2022_AP
+Rulindo,2018,NH3,MNM,Manure management,180.565,EDGAR_v8.1_FT2022_AP
+Rusizi,2018,NH3,MNM,Manure management,171.63,EDGAR_v8.1_FT2022_AP
+Rutsiro,2018,NH3,MNM,Manure management,196.253,EDGAR_v8.1_FT2022_AP
+Rwamagana,2018,NH3,MNM,Manure management,146.841,EDGAR_v8.1_FT2022_AP
+Bugesera,2019,NH3,AGS,Agricultural soils,550.122,EDGAR_v8.1_FT2022_AP
+Burera,2019,NH3,AGS,Agricultural soils,818.898,EDGAR_v8.1_FT2022_AP
+Gakenke,2019,NH3,AGS,Agricultural soils,712.087,EDGAR_v8.1_FT2022_AP
+Gasabo,2019,NH3,AGS,Agricultural soils,367.221,EDGAR_v8.1_FT2022_AP
+Gatsibo,2019,NH3,AGS,Agricultural soils,698.418,EDGAR_v8.1_FT2022_AP
+Gicumbi,2019,NH3,AGS,Agricultural soils,629.487,EDGAR_v8.1_FT2022_AP
+Gisagara,2019,NH3,AGS,Agricultural soils,463.332,EDGAR_v8.1_FT2022_AP
+Huye,2019,NH3,AGS,Agricultural soils,576.289,EDGAR_v8.1_FT2022_AP
+Kamonyi,2019,NH3,AGS,Agricultural soils,639.76,EDGAR_v8.1_FT2022_AP
+Karongi,2019,NH3,AGS,Agricultural soils,478.898,EDGAR_v8.1_FT2022_AP
+Kayonza,2019,NH3,AGS,Agricultural soils,705.883,EDGAR_v8.1_FT2022_AP
+Kicukiro,2019,NH3,AGS,Agricultural soils,118.357,EDGAR_v8.1_FT2022_AP
+Kirehe,2019,NH3,AGS,Agricultural soils,579.792,EDGAR_v8.1_FT2022_AP
+Muhanga,2019,NH3,AGS,Agricultural soils,592.92,EDGAR_v8.1_FT2022_AP
+Musanze,2019,NH3,AGS,Agricultural soils,332.821,EDGAR_v8.1_FT2022_AP
+Ngoma,2019,NH3,AGS,Agricultural soils,392.634,EDGAR_v8.1_FT2022_AP
+Ngororero,2019,NH3,AGS,Agricultural soils,524.644,EDGAR_v8.1_FT2022_AP
+Nyabihu,2019,NH3,AGS,Agricultural soils,442.19,EDGAR_v8.1_FT2022_AP
+Nyagatare,2019,NH3,AGS,Agricultural soils,1095.64,EDGAR_v8.1_FT2022_AP
+Nyamagabe,2019,NH3,AGS,Agricultural soils,764.717,EDGAR_v8.1_FT2022_AP
+Nyamasheke,2019,NH3,AGS,Agricultural soils,286.564,EDGAR_v8.1_FT2022_AP
+Nyanza,2019,NH3,AGS,Agricultural soils,616.308,EDGAR_v8.1_FT2022_AP
+Nyarugenge,2019,NH3,AGS,Agricultural soils,123.5,EDGAR_v8.1_FT2022_AP
+Nyaruguru,2019,NH3,AGS,Agricultural soils,534.062,EDGAR_v8.1_FT2022_AP
+Rubavu,2019,NH3,AGS,Agricultural soils,174.975,EDGAR_v8.1_FT2022_AP
+Ruhango,2019,NH3,AGS,Agricultural soils,721.208,EDGAR_v8.1_FT2022_AP
+Rulindo,2019,NH3,AGS,Agricultural soils,596.679,EDGAR_v8.1_FT2022_AP
+Rusizi,2019,NH3,AGS,Agricultural soils,219.118,EDGAR_v8.1_FT2022_AP
+Rutsiro,2019,NH3,AGS,Agricultural soils,533.282,EDGAR_v8.1_FT2022_AP
+Rwamagana,2019,NH3,AGS,Agricultural soils,378.981,EDGAR_v8.1_FT2022_AP
+Bugesera,2019,NH3,AWB,Agricultural waste burning,20.867,EDGAR_v8.1_FT2022_AP
+Burera,2019,NH3,AWB,Agricultural waste burning,17.207,EDGAR_v8.1_FT2022_AP
+Gakenke,2019,NH3,AWB,Agricultural waste burning,22.313,EDGAR_v8.1_FT2022_AP
+Gasabo,2019,NH3,AWB,Agricultural waste burning,11.264,EDGAR_v8.1_FT2022_AP
+Gatsibo,2019,NH3,AWB,Agricultural waste burning,19.963,EDGAR_v8.1_FT2022_AP
+Gicumbi,2019,NH3,AWB,Agricultural waste burning,13.986,EDGAR_v8.1_FT2022_AP
+Gisagara,2019,NH3,AWB,Agricultural waste burning,19.366,EDGAR_v8.1_FT2022_AP
+Huye,2019,NH3,AWB,Agricultural waste burning,29.14,EDGAR_v8.1_FT2022_AP
+Kamonyi,2019,NH3,AWB,Agricultural waste burning,18.081,EDGAR_v8.1_FT2022_AP
+Karongi,2019,NH3,AWB,Agricultural waste burning,19.473,EDGAR_v8.1_FT2022_AP
+Kayonza,2019,NH3,AWB,Agricultural waste burning,26.828,EDGAR_v8.1_FT2022_AP
+Kicukiro,2019,NH3,AWB,Agricultural waste burning,3.497,EDGAR_v8.1_FT2022_AP
+Kirehe,2019,NH3,AWB,Agricultural waste burning,22.525,EDGAR_v8.1_FT2022_AP
+Muhanga,2019,NH3,AWB,Agricultural waste burning,16.911,EDGAR_v8.1_FT2022_AP
+Musanze,2019,NH3,AWB,Agricultural waste burning,7.549,EDGAR_v8.1_FT2022_AP
+Ngoma,2019,NH3,AWB,Agricultural waste burning,13.733,EDGAR_v8.1_FT2022_AP
+Ngororero,2019,NH3,AWB,Agricultural waste burning,20.217,EDGAR_v8.1_FT2022_AP
+Nyabihu,2019,NH3,AWB,Agricultural waste burning,17.103,EDGAR_v8.1_FT2022_AP
+Nyagatare,2019,NH3,AWB,Agricultural waste burning,30.729,EDGAR_v8.1_FT2022_AP
+Nyamagabe,2019,NH3,AWB,Agricultural waste burning,29.833,EDGAR_v8.1_FT2022_AP
+Nyamasheke,2019,NH3,AWB,Agricultural waste burning,8.857,EDGAR_v8.1_FT2022_AP
+Nyanza,2019,NH3,AWB,Agricultural waste burning,27.367,EDGAR_v8.1_FT2022_AP
+Nyarugenge,2019,NH3,AWB,Agricultural waste burning,4.247,EDGAR_v8.1_FT2022_AP
+Nyaruguru,2019,NH3,AWB,Agricultural waste burning,20.434,EDGAR_v8.1_FT2022_AP
+Rubavu,2019,NH3,AWB,Agricultural waste burning,12.042,EDGAR_v8.1_FT2022_AP
+Ruhango,2019,NH3,AWB,Agricultural waste burning,27.088,EDGAR_v8.1_FT2022_AP
+Rulindo,2019,NH3,AWB,Agricultural waste burning,19.062,EDGAR_v8.1_FT2022_AP
+Rusizi,2019,NH3,AWB,Agricultural waste burning,8.744,EDGAR_v8.1_FT2022_AP
+Rutsiro,2019,NH3,AWB,Agricultural waste burning,23.823,EDGAR_v8.1_FT2022_AP
+Rwamagana,2019,NH3,AWB,Agricultural waste burning,11.048,EDGAR_v8.1_FT2022_AP
+Bugesera,2019,NH3,MNM,Manure management,255.077,EDGAR_v8.1_FT2022_AP
+Burera,2019,NH3,MNM,Manure management,175.904,EDGAR_v8.1_FT2022_AP
+Gakenke,2019,NH3,MNM,Manure management,280.725,EDGAR_v8.1_FT2022_AP
+Gasabo,2019,NH3,MNM,Manure management,115.864,EDGAR_v8.1_FT2022_AP
+Gatsibo,2019,NH3,MNM,Manure management,158.552,EDGAR_v8.1_FT2022_AP
+Gicumbi,2019,NH3,MNM,Manure management,212.592,EDGAR_v8.1_FT2022_AP
+Gisagara,2019,NH3,MNM,Manure management,236.886,EDGAR_v8.1_FT2022_AP
+Huye,2019,NH3,MNM,Manure management,167.108,EDGAR_v8.1_FT2022_AP
+Kamonyi,2019,NH3,MNM,Manure management,195.781,EDGAR_v8.1_FT2022_AP
+Karongi,2019,NH3,MNM,Manure management,256.234,EDGAR_v8.1_FT2022_AP
+Kayonza,2019,NH3,MNM,Manure management,165.762,EDGAR_v8.1_FT2022_AP
+Kicukiro,2019,NH3,MNM,Manure management,48.431,EDGAR_v8.1_FT2022_AP
+Kirehe,2019,NH3,MNM,Manure management,158.159,EDGAR_v8.1_FT2022_AP
+Muhanga,2019,NH3,MNM,Manure management,256.498,EDGAR_v8.1_FT2022_AP
+Musanze,2019,NH3,MNM,Manure management,180.649,EDGAR_v8.1_FT2022_AP
+Ngoma,2019,NH3,MNM,Manure management,180.682,EDGAR_v8.1_FT2022_AP
+Ngororero,2019,NH3,MNM,Manure management,258.869,EDGAR_v8.1_FT2022_AP
+Nyabihu,2019,NH3,MNM,Manure management,178.681,EDGAR_v8.1_FT2022_AP
+Nyagatare,2019,NH3,MNM,Manure management,172.691,EDGAR_v8.1_FT2022_AP
+Nyamagabe,2019,NH3,MNM,Manure management,348.848,EDGAR_v8.1_FT2022_AP
+Nyamasheke,2019,NH3,MNM,Manure management,261.573,EDGAR_v8.1_FT2022_AP
+Nyanza,2019,NH3,MNM,Manure management,96.167,EDGAR_v8.1_FT2022_AP
+Nyarugenge,2019,NH3,MNM,Manure management,43.881,EDGAR_v8.1_FT2022_AP
+Nyaruguru,2019,NH3,MNM,Manure management,303.337,EDGAR_v8.1_FT2022_AP
+Rubavu,2019,NH3,MNM,Manure management,101.526,EDGAR_v8.1_FT2022_AP
+Ruhango,2019,NH3,MNM,Manure management,114.893,EDGAR_v8.1_FT2022_AP
+Rulindo,2019,NH3,MNM,Manure management,208.189,EDGAR_v8.1_FT2022_AP
+Rusizi,2019,NH3,MNM,Manure management,196.866,EDGAR_v8.1_FT2022_AP
+Rutsiro,2019,NH3,MNM,Manure management,228.855,EDGAR_v8.1_FT2022_AP
+Rwamagana,2019,NH3,MNM,Manure management,162.43,EDGAR_v8.1_FT2022_AP
+Bugesera,2020,NH3,AGS,Agricultural soils,547.93,EDGAR_v8.1_FT2022_AP
+Burera,2020,NH3,AGS,Agricultural soils,817.558,EDGAR_v8.1_FT2022_AP
+Gakenke,2020,NH3,AGS,Agricultural soils,706.818,EDGAR_v8.1_FT2022_AP
+Gasabo,2020,NH3,AGS,Agricultural soils,364.465,EDGAR_v8.1_FT2022_AP
+Gatsibo,2020,NH3,AGS,Agricultural soils,696.631,EDGAR_v8.1_FT2022_AP
+Gicumbi,2020,NH3,AGS,Agricultural soils,627.365,EDGAR_v8.1_FT2022_AP
+Gisagara,2020,NH3,AGS,Agricultural soils,458.945,EDGAR_v8.1_FT2022_AP
+Huye,2020,NH3,AGS,Agricultural soils,570.075,EDGAR_v8.1_FT2022_AP
+Kamonyi,2020,NH3,AGS,Agricultural soils,635.281,EDGAR_v8.1_FT2022_AP
+Karongi,2020,NH3,AGS,Agricultural soils,474.173,EDGAR_v8.1_FT2022_AP
+Kayonza,2020,NH3,AGS,Agricultural soils,703.931,EDGAR_v8.1_FT2022_AP
+Kicukiro,2020,NH3,AGS,Agricultural soils,117.502,EDGAR_v8.1_FT2022_AP
+Kirehe,2020,NH3,AGS,Agricultural soils,575.932,EDGAR_v8.1_FT2022_AP
+Muhanga,2020,NH3,AGS,Agricultural soils,588.676,EDGAR_v8.1_FT2022_AP
+Musanze,2020,NH3,AGS,Agricultural soils,331.77,EDGAR_v8.1_FT2022_AP
+Ngoma,2020,NH3,AGS,Agricultural soils,389.814,EDGAR_v8.1_FT2022_AP
+Ngororero,2020,NH3,AGS,Agricultural soils,520.736,EDGAR_v8.1_FT2022_AP
+Nyabihu,2020,NH3,AGS,Agricultural soils,438.603,EDGAR_v8.1_FT2022_AP
+Nyagatare,2020,NH3,AGS,Agricultural soils,1097.293,EDGAR_v8.1_FT2022_AP
+Nyamagabe,2020,NH3,AGS,Agricultural soils,756.598,EDGAR_v8.1_FT2022_AP
+Nyamasheke,2020,NH3,AGS,Agricultural soils,285.531,EDGAR_v8.1_FT2022_AP
+Nyanza,2020,NH3,AGS,Agricultural soils,609.88,EDGAR_v8.1_FT2022_AP
+Nyarugenge,2020,NH3,AGS,Agricultural soils,122.374,EDGAR_v8.1_FT2022_AP
+Nyaruguru,2020,NH3,AGS,Agricultural soils,529.127,EDGAR_v8.1_FT2022_AP
+Rubavu,2020,NH3,AGS,Agricultural soils,174.738,EDGAR_v8.1_FT2022_AP
+Ruhango,2020,NH3,AGS,Agricultural soils,713.537,EDGAR_v8.1_FT2022_AP
+Rulindo,2020,NH3,AGS,Agricultural soils,591.778,EDGAR_v8.1_FT2022_AP
+Rusizi,2020,NH3,AGS,Agricultural soils,217.7,EDGAR_v8.1_FT2022_AP
+Rutsiro,2020,NH3,AGS,Agricultural soils,528.226,EDGAR_v8.1_FT2022_AP
+Rwamagana,2020,NH3,AGS,Agricultural soils,376.468,EDGAR_v8.1_FT2022_AP
+Bugesera,2020,NH3,AWB,Agricultural waste burning,21.293,EDGAR_v8.1_FT2022_AP
+Burera,2020,NH3,AWB,Agricultural waste burning,17.603,EDGAR_v8.1_FT2022_AP
+Gakenke,2020,NH3,AWB,Agricultural waste burning,22.667,EDGAR_v8.1_FT2022_AP
+Gasabo,2020,NH3,AWB,Agricultural waste burning,11.436,EDGAR_v8.1_FT2022_AP
+Gatsibo,2020,NH3,AWB,Agricultural waste burning,20.455,EDGAR_v8.1_FT2022_AP
+Gicumbi,2020,NH3,AWB,Agricultural waste burning,14.344,EDGAR_v8.1_FT2022_AP
+Gisagara,2020,NH3,AWB,Agricultural waste burning,19.064,EDGAR_v8.1_FT2022_AP
+Huye,2020,NH3,AWB,Agricultural waste burning,28.795,EDGAR_v8.1_FT2022_AP
+Kamonyi,2020,NH3,AWB,Agricultural waste burning,18.376,EDGAR_v8.1_FT2022_AP
+Karongi,2020,NH3,AWB,Agricultural waste burning,19.928,EDGAR_v8.1_FT2022_AP
+Kayonza,2020,NH3,AWB,Agricultural waste burning,27.263,EDGAR_v8.1_FT2022_AP
+Kicukiro,2020,NH3,AWB,Agricultural waste burning,3.55,EDGAR_v8.1_FT2022_AP
+Kirehe,2020,NH3,AWB,Agricultural waste burning,22.843,EDGAR_v8.1_FT2022_AP
+Muhanga,2020,NH3,AWB,Agricultural waste burning,17.19,EDGAR_v8.1_FT2022_AP
+Musanze,2020,NH3,AWB,Agricultural waste burning,7.705,EDGAR_v8.1_FT2022_AP
+Ngoma,2020,NH3,AWB,Agricultural waste burning,13.884,EDGAR_v8.1_FT2022_AP
+Ngororero,2020,NH3,AWB,Agricultural waste burning,20.662,EDGAR_v8.1_FT2022_AP
+Nyabihu,2020,NH3,AWB,Agricultural waste burning,17.413,EDGAR_v8.1_FT2022_AP
+Nyagatare,2020,NH3,AWB,Agricultural waste burning,31.8,EDGAR_v8.1_FT2022_AP
+Nyamagabe,2020,NH3,AWB,Agricultural waste burning,30.088,EDGAR_v8.1_FT2022_AP
+Nyamasheke,2020,NH3,AWB,Agricultural waste burning,8.851,EDGAR_v8.1_FT2022_AP
+Nyanza,2020,NH3,AWB,Agricultural waste burning,27.171,EDGAR_v8.1_FT2022_AP
+Nyarugenge,2020,NH3,AWB,Agricultural waste burning,4.312,EDGAR_v8.1_FT2022_AP
+Nyaruguru,2020,NH3,AWB,Agricultural waste burning,20.331,EDGAR_v8.1_FT2022_AP
+Rubavu,2020,NH3,AWB,Agricultural waste burning,12.078,EDGAR_v8.1_FT2022_AP
+Ruhango,2020,NH3,AWB,Agricultural waste burning,27.492,EDGAR_v8.1_FT2022_AP
+Rulindo,2020,NH3,AWB,Agricultural waste burning,19.391,EDGAR_v8.1_FT2022_AP
+Rusizi,2020,NH3,AWB,Agricultural waste burning,8.577,EDGAR_v8.1_FT2022_AP
+Rutsiro,2020,NH3,AWB,Agricultural waste burning,24.439,EDGAR_v8.1_FT2022_AP
+Rwamagana,2020,NH3,AWB,Agricultural waste burning,11.209,EDGAR_v8.1_FT2022_AP
+Bugesera,2020,NH3,MNM,Manure management,252.638,EDGAR_v8.1_FT2022_AP
+Burera,2020,NH3,MNM,Manure management,173.964,EDGAR_v8.1_FT2022_AP
+Gakenke,2020,NH3,MNM,Manure management,275.443,EDGAR_v8.1_FT2022_AP
+Gasabo,2020,NH3,MNM,Manure management,115.752,EDGAR_v8.1_FT2022_AP
+Gatsibo,2020,NH3,MNM,Manure management,158.37,EDGAR_v8.1_FT2022_AP
+Gicumbi,2020,NH3,MNM,Manure management,209.822,EDGAR_v8.1_FT2022_AP
+Gisagara,2020,NH3,MNM,Manure management,234.351,EDGAR_v8.1_FT2022_AP
+Huye,2020,NH3,MNM,Manure management,163.858,EDGAR_v8.1_FT2022_AP
+Kamonyi,2020,NH3,MNM,Manure management,192.41,EDGAR_v8.1_FT2022_AP
+Karongi,2020,NH3,MNM,Manure management,251.153,EDGAR_v8.1_FT2022_AP
+Kayonza,2020,NH3,MNM,Manure management,165.732,EDGAR_v8.1_FT2022_AP
+Kicukiro,2020,NH3,MNM,Manure management,48.217,EDGAR_v8.1_FT2022_AP
+Kirehe,2020,NH3,MNM,Manure management,157.599,EDGAR_v8.1_FT2022_AP
+Muhanga,2020,NH3,MNM,Manure management,251.547,EDGAR_v8.1_FT2022_AP
+Musanze,2020,NH3,MNM,Manure management,177.364,EDGAR_v8.1_FT2022_AP
+Ngoma,2020,NH3,MNM,Manure management,179.157,EDGAR_v8.1_FT2022_AP
+Ngororero,2020,NH3,MNM,Manure management,253.886,EDGAR_v8.1_FT2022_AP
+Nyabihu,2020,NH3,MNM,Manure management,175.339,EDGAR_v8.1_FT2022_AP
+Nyagatare,2020,NH3,MNM,Manure management,173.368,EDGAR_v8.1_FT2022_AP
+Nyamagabe,2020,NH3,MNM,Manure management,341.694,EDGAR_v8.1_FT2022_AP
+Nyamasheke,2020,NH3,MNM,Manure management,256.333,EDGAR_v8.1_FT2022_AP
+Nyanza,2020,NH3,MNM,Manure management,94.916,EDGAR_v8.1_FT2022_AP
+Nyarugenge,2020,NH3,MNM,Manure management,43.577,EDGAR_v8.1_FT2022_AP
+Nyaruguru,2020,NH3,MNM,Manure management,298.337,EDGAR_v8.1_FT2022_AP
+Rubavu,2020,NH3,MNM,Manure management,99.891,EDGAR_v8.1_FT2022_AP
+Ruhango,2020,NH3,MNM,Manure management,113.07,EDGAR_v8.1_FT2022_AP
+Rulindo,2020,NH3,MNM,Manure management,204.654,EDGAR_v8.1_FT2022_AP
+Rusizi,2020,NH3,MNM,Manure management,194.203,EDGAR_v8.1_FT2022_AP
+Rutsiro,2020,NH3,MNM,Manure management,224.413,EDGAR_v8.1_FT2022_AP
+Rwamagana,2020,NH3,MNM,Manure management,161.343,EDGAR_v8.1_FT2022_AP
+Bugesera,2021,NH3,AGS,Agricultural soils,553.635,EDGAR_v8.1_FT2022_AP
+Burera,2021,NH3,AGS,Agricultural soils,819.814,EDGAR_v8.1_FT2022_AP
+Gakenke,2021,NH3,AGS,Agricultural soils,707.678,EDGAR_v8.1_FT2022_AP
+Gasabo,2021,NH3,AGS,Agricultural soils,365.181,EDGAR_v8.1_FT2022_AP
+Gatsibo,2021,NH3,AGS,Agricultural soils,698.292,EDGAR_v8.1_FT2022_AP
+Gicumbi,2021,NH3,AGS,Agricultural soils,628.135,EDGAR_v8.1_FT2022_AP
+Gisagara,2021,NH3,AGS,Agricultural soils,461.959,EDGAR_v8.1_FT2022_AP
+Huye,2021,NH3,AGS,Agricultural soils,571.854,EDGAR_v8.1_FT2022_AP
+Kamonyi,2021,NH3,AGS,Agricultural soils,636.356,EDGAR_v8.1_FT2022_AP
+Karongi,2021,NH3,AGS,Agricultural soils,475.063,EDGAR_v8.1_FT2022_AP
+Kayonza,2021,NH3,AGS,Agricultural soils,706.425,EDGAR_v8.1_FT2022_AP
+Kicukiro,2021,NH3,AGS,Agricultural soils,117.727,EDGAR_v8.1_FT2022_AP
+Kirehe,2021,NH3,AGS,Agricultural soils,578.393,EDGAR_v8.1_FT2022_AP
+Muhanga,2021,NH3,AGS,Agricultural soils,589.541,EDGAR_v8.1_FT2022_AP
+Musanze,2021,NH3,AGS,Agricultural soils,331.93,EDGAR_v8.1_FT2022_AP
+Ngoma,2021,NH3,AGS,Agricultural soils,390.855,EDGAR_v8.1_FT2022_AP
+Ngororero,2021,NH3,AGS,Agricultural soils,521.334,EDGAR_v8.1_FT2022_AP
+Nyabihu,2021,NH3,AGS,Agricultural soils,439.275,EDGAR_v8.1_FT2022_AP
+Nyagatare,2021,NH3,AGS,Agricultural soils,1101.889,EDGAR_v8.1_FT2022_AP
+Nyamagabe,2021,NH3,AGS,Agricultural soils,758.431,EDGAR_v8.1_FT2022_AP
+Nyamasheke,2021,NH3,AGS,Agricultural soils,285.551,EDGAR_v8.1_FT2022_AP
+Nyanza,2021,NH3,AGS,Agricultural soils,611.919,EDGAR_v8.1_FT2022_AP
+Nyarugenge,2021,NH3,AGS,Agricultural soils,122.687,EDGAR_v8.1_FT2022_AP
+Nyaruguru,2021,NH3,AGS,Agricultural soils,531.036,EDGAR_v8.1_FT2022_AP
+Rubavu,2021,NH3,AGS,Agricultural soils,175.094,EDGAR_v8.1_FT2022_AP
+Ruhango,2021,NH3,AGS,Agricultural soils,715.769,EDGAR_v8.1_FT2022_AP
+Rulindo,2021,NH3,AGS,Agricultural soils,592.7,EDGAR_v8.1_FT2022_AP
+Rusizi,2021,NH3,AGS,Agricultural soils,218.656,EDGAR_v8.1_FT2022_AP
+Rutsiro,2021,NH3,AGS,Agricultural soils,529.2,EDGAR_v8.1_FT2022_AP
+Rwamagana,2021,NH3,AGS,Agricultural soils,377.064,EDGAR_v8.1_FT2022_AP
+Bugesera,2021,NH3,AWB,Agricultural waste burning,22.669,EDGAR_v8.1_FT2022_AP
+Burera,2021,NH3,AWB,Agricultural waste burning,18.26,EDGAR_v8.1_FT2022_AP
+Gakenke,2021,NH3,AWB,Agricultural waste burning,23.616,EDGAR_v8.1_FT2022_AP
+Gasabo,2021,NH3,AWB,Agricultural waste burning,11.98,EDGAR_v8.1_FT2022_AP
+Gatsibo,2021,NH3,AWB,Agricultural waste burning,21.405,EDGAR_v8.1_FT2022_AP
+Gicumbi,2021,NH3,AWB,Agricultural waste burning,15.033,EDGAR_v8.1_FT2022_AP
+Gisagara,2021,NH3,AWB,Agricultural waste burning,19.916,EDGAR_v8.1_FT2022_AP
+Huye,2021,NH3,AWB,Agricultural waste burning,29.883,EDGAR_v8.1_FT2022_AP
+Kamonyi,2021,NH3,AWB,Agricultural waste burning,19.234,EDGAR_v8.1_FT2022_AP
+Karongi,2021,NH3,AWB,Agricultural waste burning,20.752,EDGAR_v8.1_FT2022_AP
+Kayonza,2021,NH3,AWB,Agricultural waste burning,28.393,EDGAR_v8.1_FT2022_AP
+Kicukiro,2021,NH3,AWB,Agricultural waste burning,3.719,EDGAR_v8.1_FT2022_AP
+Kirehe,2021,NH3,AWB,Agricultural waste burning,23.877,EDGAR_v8.1_FT2022_AP
+Muhanga,2021,NH3,AWB,Agricultural waste burning,17.992,EDGAR_v8.1_FT2022_AP
+Musanze,2021,NH3,AWB,Agricultural waste burning,7.987,EDGAR_v8.1_FT2022_AP
+Ngoma,2021,NH3,AWB,Agricultural waste burning,14.534,EDGAR_v8.1_FT2022_AP
+Ngororero,2021,NH3,AWB,Agricultural waste burning,21.386,EDGAR_v8.1_FT2022_AP
+Nyabihu,2021,NH3,AWB,Agricultural waste burning,18.025,EDGAR_v8.1_FT2022_AP
+Nyagatare,2021,NH3,AWB,Agricultural waste burning,33.13,EDGAR_v8.1_FT2022_AP
+Nyamagabe,2021,NH3,AWB,Agricultural waste burning,31.257,EDGAR_v8.1_FT2022_AP
+Nyamasheke,2021,NH3,AWB,Agricultural waste burning,9.134,EDGAR_v8.1_FT2022_AP
+Nyanza,2021,NH3,AWB,Agricultural waste burning,28.307,EDGAR_v8.1_FT2022_AP
+Nyarugenge,2021,NH3,AWB,Agricultural waste burning,4.517,EDGAR_v8.1_FT2022_AP
+Nyaruguru,2021,NH3,AWB,Agricultural waste burning,21.232,EDGAR_v8.1_FT2022_AP
+Rubavu,2021,NH3,AWB,Agricultural waste burning,12.26,EDGAR_v8.1_FT2022_AP
+Ruhango,2021,NH3,AWB,Agricultural waste burning,28.762,EDGAR_v8.1_FT2022_AP
+Rulindo,2021,NH3,AWB,Agricultural waste burning,20.308,EDGAR_v8.1_FT2022_AP
+Rusizi,2021,NH3,AWB,Agricultural waste burning,8.832,EDGAR_v8.1_FT2022_AP
+Rutsiro,2021,NH3,AWB,Agricultural waste burning,25.362,EDGAR_v8.1_FT2022_AP
+Rwamagana,2021,NH3,AWB,Agricultural waste burning,11.727,EDGAR_v8.1_FT2022_AP
+Bugesera,2021,NH3,MNM,Manure management,256.136,EDGAR_v8.1_FT2022_AP
+Burera,2021,NH3,MNM,Manure management,175.383,EDGAR_v8.1_FT2022_AP
+Gakenke,2021,NH3,MNM,Manure management,277.259,EDGAR_v8.1_FT2022_AP
+Gasabo,2021,NH3,MNM,Manure management,117.607,EDGAR_v8.1_FT2022_AP
+Gatsibo,2021,NH3,MNM,Manure management,160.668,EDGAR_v8.1_FT2022_AP
+Gicumbi,2021,NH3,MNM,Manure management,211.566,EDGAR_v8.1_FT2022_AP
+Gisagara,2021,NH3,MNM,Manure management,238.191,EDGAR_v8.1_FT2022_AP
+Huye,2021,NH3,MNM,Manure management,164.881,EDGAR_v8.1_FT2022_AP
+Kamonyi,2021,NH3,MNM,Manure management,193.669,EDGAR_v8.1_FT2022_AP
+Karongi,2021,NH3,MNM,Manure management,252.902,EDGAR_v8.1_FT2022_AP
+Kayonza,2021,NH3,MNM,Manure management,168.378,EDGAR_v8.1_FT2022_AP
+Kicukiro,2021,NH3,MNM,Manure management,48.932,EDGAR_v8.1_FT2022_AP
+Kirehe,2021,NH3,MNM,Manure management,159.916,EDGAR_v8.1_FT2022_AP
+Muhanga,2021,NH3,MNM,Manure management,253.118,EDGAR_v8.1_FT2022_AP
+Musanze,2021,NH3,MNM,Manure management,178.53,EDGAR_v8.1_FT2022_AP
+Ngoma,2021,NH3,MNM,Manure management,181.544,EDGAR_v8.1_FT2022_AP
+Ngororero,2021,NH3,MNM,Manure management,255.569,EDGAR_v8.1_FT2022_AP
+Nyabihu,2021,NH3,MNM,Manure management,176.512,EDGAR_v8.1_FT2022_AP
+Nyagatare,2021,NH3,MNM,Manure management,175.816,EDGAR_v8.1_FT2022_AP
+Nyamagabe,2021,NH3,MNM,Manure management,343.854,EDGAR_v8.1_FT2022_AP
+Nyamasheke,2021,NH3,MNM,Manure management,258.029,EDGAR_v8.1_FT2022_AP
+Nyanza,2021,NH3,MNM,Manure management,95.773,EDGAR_v8.1_FT2022_AP
+Nyarugenge,2021,NH3,MNM,Manure management,44.163,EDGAR_v8.1_FT2022_AP
+Nyaruguru,2021,NH3,MNM,Manure management,301.472,EDGAR_v8.1_FT2022_AP
+Rubavu,2021,NH3,MNM,Manure management,100.516,EDGAR_v8.1_FT2022_AP
+Ruhango,2021,NH3,MNM,Manure management,113.8,EDGAR_v8.1_FT2022_AP
+Rulindo,2021,NH3,MNM,Manure management,206.196,EDGAR_v8.1_FT2022_AP
+Rusizi,2021,NH3,MNM,Manure management,196.56,EDGAR_v8.1_FT2022_AP
+Rutsiro,2021,NH3,MNM,Manure management,225.931,EDGAR_v8.1_FT2022_AP
+Rwamagana,2021,NH3,MNM,Manure management,163.553,EDGAR_v8.1_FT2022_AP
+Bugesera,2022,NH3,AGS,Agricultural soils,559.694,EDGAR_v8.1_FT2022_AP
+Burera,2022,NH3,AGS,Agricultural soils,822.048,EDGAR_v8.1_FT2022_AP
+Gakenke,2022,NH3,AGS,Agricultural soils,708.493,EDGAR_v8.1_FT2022_AP
+Gasabo,2022,NH3,AGS,Agricultural soils,365.875,EDGAR_v8.1_FT2022_AP
+Gatsibo,2022,NH3,AGS,Agricultural soils,699.944,EDGAR_v8.1_FT2022_AP
+Gicumbi,2022,NH3,AGS,Agricultural soils,628.865,EDGAR_v8.1_FT2022_AP
+Gisagara,2022,NH3,AGS,Agricultural soils,465.177,EDGAR_v8.1_FT2022_AP
+Huye,2022,NH3,AGS,Agricultural soils,573.572,EDGAR_v8.1_FT2022_AP
+Kamonyi,2022,NH3,AGS,Agricultural soils,637.416,EDGAR_v8.1_FT2022_AP
+Karongi,2022,NH3,AGS,Agricultural soils,475.89,EDGAR_v8.1_FT2022_AP
+Kayonza,2022,NH3,AGS,Agricultural soils,708.939,EDGAR_v8.1_FT2022_AP
+Kicukiro,2022,NH3,AGS,Agricultural soils,117.944,EDGAR_v8.1_FT2022_AP
+Kirehe,2022,NH3,AGS,Agricultural soils,580.854,EDGAR_v8.1_FT2022_AP
+Muhanga,2022,NH3,AGS,Agricultural soils,590.394,EDGAR_v8.1_FT2022_AP
+Musanze,2022,NH3,AGS,Agricultural soils,332.086,EDGAR_v8.1_FT2022_AP
+Ngoma,2022,NH3,AGS,Agricultural soils,391.891,EDGAR_v8.1_FT2022_AP
+Ngororero,2022,NH3,AGS,Agricultural soils,521.873,EDGAR_v8.1_FT2022_AP
+Nyabihu,2022,NH3,AGS,Agricultural soils,439.903,EDGAR_v8.1_FT2022_AP
+Nyagatare,2022,NH3,AGS,Agricultural soils,1106.527,EDGAR_v8.1_FT2022_AP
+Nyamagabe,2022,NH3,AGS,Agricultural soils,760.194,EDGAR_v8.1_FT2022_AP
+Nyamasheke,2022,NH3,AGS,Agricultural soils,285.556,EDGAR_v8.1_FT2022_AP
+Nyanza,2022,NH3,AGS,Agricultural soils,613.976,EDGAR_v8.1_FT2022_AP
+Nyarugenge,2022,NH3,AGS,Agricultural soils,122.993,EDGAR_v8.1_FT2022_AP
+Nyaruguru,2022,NH3,AGS,Agricultural soils,533.027,EDGAR_v8.1_FT2022_AP
+Rubavu,2022,NH3,AGS,Agricultural soils,175.462,EDGAR_v8.1_FT2022_AP
+Ruhango,2022,NH3,AGS,Agricultural soils,717.971,EDGAR_v8.1_FT2022_AP
+Rulindo,2022,NH3,AGS,Agricultural soils,593.584,EDGAR_v8.1_FT2022_AP
+Rusizi,2022,NH3,AGS,Agricultural soils,219.697,EDGAR_v8.1_FT2022_AP
+Rutsiro,2022,NH3,AGS,Agricultural soils,530.081,EDGAR_v8.1_FT2022_AP
+Rwamagana,2022,NH3,AGS,Agricultural soils,377.637,EDGAR_v8.1_FT2022_AP
+Bugesera,2022,NH3,AWB,Agricultural waste burning,23.3,EDGAR_v8.1_FT2022_AP
+Burera,2022,NH3,AWB,Agricultural waste burning,18.207,EDGAR_v8.1_FT2022_AP
+Gakenke,2022,NH3,AWB,Agricultural waste burning,23.743,EDGAR_v8.1_FT2022_AP
+Gasabo,2022,NH3,AWB,Agricultural waste burning,12.152,EDGAR_v8.1_FT2022_AP
+Gatsibo,2022,NH3,AWB,Agricultural waste burning,21.426,EDGAR_v8.1_FT2022_AP
+Gicumbi,2022,NH3,AWB,Agricultural waste burning,15.038,EDGAR_v8.1_FT2022_AP
+Gisagara,2022,NH3,AWB,Agricultural waste burning,20.11,EDGAR_v8.1_FT2022_AP
+Huye,2022,NH3,AWB,Agricultural waste burning,30.112,EDGAR_v8.1_FT2022_AP
+Kamonyi,2022,NH3,AWB,Agricultural waste burning,19.587,EDGAR_v8.1_FT2022_AP
+Karongi,2022,NH3,AWB,Agricultural waste burning,20.657,EDGAR_v8.1_FT2022_AP
+Kayonza,2022,NH3,AWB,Agricultural waste burning,28.542,EDGAR_v8.1_FT2022_AP
+Kicukiro,2022,NH3,AWB,Agricultural waste burning,3.773,EDGAR_v8.1_FT2022_AP
+Kirehe,2022,NH3,AWB,Agricultural waste burning,24.011,EDGAR_v8.1_FT2022_AP
+Muhanga,2022,NH3,AWB,Agricultural waste burning,18.324,EDGAR_v8.1_FT2022_AP
+Musanze,2022,NH3,AWB,Agricultural waste burning,7.963,EDGAR_v8.1_FT2022_AP
+Ngoma,2022,NH3,AWB,Agricultural waste burning,14.646,EDGAR_v8.1_FT2022_AP
+Ngororero,2022,NH3,AWB,Agricultural waste burning,21.218,EDGAR_v8.1_FT2022_AP
+Nyabihu,2022,NH3,AWB,Agricultural waste burning,17.916,EDGAR_v8.1_FT2022_AP
+Nyagatare,2022,NH3,AWB,Agricultural waste burning,33.046,EDGAR_v8.1_FT2022_AP
+Nyamagabe,2022,NH3,AWB,Agricultural waste burning,31.307,EDGAR_v8.1_FT2022_AP
+Nyamasheke,2022,NH3,AWB,Agricultural waste burning,9.099,EDGAR_v8.1_FT2022_AP
+Nyanza,2022,NH3,AWB,Agricultural waste burning,28.606,EDGAR_v8.1_FT2022_AP
+Nyarugenge,2022,NH3,AWB,Agricultural waste burning,4.584,EDGAR_v8.1_FT2022_AP
+Nyaruguru,2022,NH3,AWB,Agricultural waste burning,21.384,EDGAR_v8.1_FT2022_AP
+Rubavu,2022,NH3,AWB,Agricultural waste burning,12.26,EDGAR_v8.1_FT2022_AP
+Ruhango,2022,NH3,AWB,Agricultural waste burning,29.279,EDGAR_v8.1_FT2022_AP
+Rulindo,2022,NH3,AWB,Agricultural waste burning,20.515,EDGAR_v8.1_FT2022_AP
+Rusizi,2022,NH3,AWB,Agricultural waste burning,8.851,EDGAR_v8.1_FT2022_AP
+Rutsiro,2022,NH3,AWB,Agricultural waste burning,25.064,EDGAR_v8.1_FT2022_AP
+Rwamagana,2022,NH3,AWB,Agricultural waste burning,11.868,EDGAR_v8.1_FT2022_AP
+Bugesera,2022,NH3,MNM,Manure management,259.743,EDGAR_v8.1_FT2022_AP
+Burera,2022,NH3,MNM,Manure management,176.821,EDGAR_v8.1_FT2022_AP
+Gakenke,2022,NH3,MNM,Manure management,279.095,EDGAR_v8.1_FT2022_AP
+Gasabo,2022,NH3,MNM,Manure management,119.509,EDGAR_v8.1_FT2022_AP
+Gatsibo,2022,NH3,MNM,Manure management,163.025,EDGAR_v8.1_FT2022_AP
+Gicumbi,2022,NH3,MNM,Manure management,213.339,EDGAR_v8.1_FT2022_AP
+Gisagara,2022,NH3,MNM,Manure management,242.238,EDGAR_v8.1_FT2022_AP
+Huye,2022,NH3,MNM,Manure management,165.913,EDGAR_v8.1_FT2022_AP
+Kamonyi,2022,NH3,MNM,Manure management,194.944,EDGAR_v8.1_FT2022_AP
+Karongi,2022,NH3,MNM,Manure management,254.669,EDGAR_v8.1_FT2022_AP
+Kayonza,2022,NH3,MNM,Manure management,171.092,EDGAR_v8.1_FT2022_AP
+Kicukiro,2022,NH3,MNM,Manure management,49.664,EDGAR_v8.1_FT2022_AP
+Kirehe,2022,NH3,MNM,Manure management,162.296,EDGAR_v8.1_FT2022_AP
+Muhanga,2022,NH3,MNM,Manure management,254.704,EDGAR_v8.1_FT2022_AP
+Musanze,2022,NH3,MNM,Manure management,179.709,EDGAR_v8.1_FT2022_AP
+Ngoma,2022,NH3,MNM,Manure management,183.988,EDGAR_v8.1_FT2022_AP
+Ngororero,2022,NH3,MNM,Manure management,257.268,EDGAR_v8.1_FT2022_AP
+Nyabihu,2022,NH3,MNM,Manure management,177.698,EDGAR_v8.1_FT2022_AP
+Nyagatare,2022,NH3,MNM,Manure management,178.326,EDGAR_v8.1_FT2022_AP
+Nyamagabe,2022,NH3,MNM,Manure management,346.032,EDGAR_v8.1_FT2022_AP
+Nyamasheke,2022,NH3,MNM,Manure management,259.744,EDGAR_v8.1_FT2022_AP
+Nyanza,2022,NH3,MNM,Manure management,96.66,EDGAR_v8.1_FT2022_AP
+Nyarugenge,2022,NH3,MNM,Manure management,44.762,EDGAR_v8.1_FT2022_AP
+Nyaruguru,2022,NH3,MNM,Manure management,304.727,EDGAR_v8.1_FT2022_AP
+Rubavu,2022,NH3,MNM,Manure management,101.149,EDGAR_v8.1_FT2022_AP
+Ruhango,2022,NH3,MNM,Manure management,114.539,EDGAR_v8.1_FT2022_AP
+Rulindo,2022,NH3,MNM,Manure management,207.759,EDGAR_v8.1_FT2022_AP
+Rusizi,2022,NH3,MNM,Manure management,199.021,EDGAR_v8.1_FT2022_AP
+Rutsiro,2022,NH3,MNM,Manure management,227.465,EDGAR_v8.1_FT2022_AP
+Rwamagana,2022,NH3,MNM,Manure management,165.813,EDGAR_v8.1_FT2022_AP

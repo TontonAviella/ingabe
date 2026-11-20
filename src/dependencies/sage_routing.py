@@ -143,6 +143,7 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "get_anomaly_alerts": AGRICULTURE,
     "get_yield_risk": AGRICULTURE,
     "get_drought_status": AGRICULTURE,
+    "get_farm_emissions": AGRICULTURE,
     "get_crop_growth_stage": AGRICULTURE,
     "get_weather_stats": AGRICULTURE,
     "get_forecast": AGRICULTURE,

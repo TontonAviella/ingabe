@@ -413,6 +413,32 @@
   {
     "type": "function",
     "function": {
+      "name": "get_farm_emissions",
+      "description": "Read farm greenhouse gas estimates (EDGAR, European Commission) for a district, a province or all of Rwanda, for one year from 2018 to 2022: methane from livestock and manure, nitrous oxide and carbon dioxide from farm soils, burning of crop waste, with a CO2-equivalent total and ammonia. Farming only, and estimates, not measurements. WHEN TO USE: emissions, greenhouse gases, methane, nitrous oxide, carbon footprint of farming or livestock in a place. Also when the user asks for a place's emissions in general: call it, then say plainly that Ingabe holds farm emissions only. WHEN NOT TO USE: emissions of one farm, field or herd (no data); transport, energy, industry or forest emissions alone (no data, answer in words).",
+      "strict": false,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "district": {
+            "type": "string",
+            "description": "District name, for example Nyagatare. Leave out, with province, for all of Rwanda."
+          },
+          "province": {
+            "type": "string",
+            "description": "Province name: Kigali City, Northern, Southern, Eastern or Western. For 'Kigali' use this."
+          },
+          "year": {
+            "type": "integer",
+            "description": "Year from 2018 to 2022. Leave out for the latest year held (2022)."
+          }
+        },
+        "required": []
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
       "name": "get_crop_growth_stage",
       "description": "Read pre-computed crop growth stage analysis, refreshed weekly. Uses NDVI phenology curve analysis to identify current crop stage per district: dormant, green_up, peak, senescence, or harvest. Returns current stage, peak NDVI date, and key phenological transition dates. Use when the user asks about crop growth, planting, harvesting, or growing season.",
       "strict": false,
