@@ -39,7 +39,7 @@ from rasterio.windows import from_bounds
 MODELS = ["ecmwf_ifs025", "gfs_global", "icon_global", "gfs_graphcast025"]
 LEADS = range(1, 8)
 RAIN_DAY_MM = 1.0
-CHIRPS_DAILY = ("https://data.chc.ucsb.edu/products/CHIRPS-2.0/global_daily/cogs/p05/"
+CHIRPS_DAILY = ("https://data.chc.ucsb.edu/products/CHIRPS/v2.0/global_daily/cogs/p05/"
                 "{y}/chirps-v2.0.{y}.{m:02d}.{d:02d}.cog")
 PREVIOUS_RUNS = "https://previous-runs-api.open-meteo.com/v1/forecast"
 RWANDA_BOUNDS = (28.8, -2.9, 30.95, -1.0)
