@@ -321,6 +321,20 @@ tests:
         alertname: DomainExpiresSoon
         exp_alerts: []
 
+  # One afternoon of app builds (2026-11-22): free disk flat at 136 GB for 60 hours, then 24 GB gone in 6 hours, then
+  # flat again. That is build cache, not a leak, and 112 GB is free: no alarm. (A 24-hour forecast did fire here.)
+  - interval: 5m
+    input_series:
+      - series: 'node_filesystem_avail_bytes{job="docker-vm",mountpoint="/",device="/dev/sda1",fstype="ext4"}'
+        values: '136e9x720 136e9-0.333e9x72 112e9x120'
+    alert_rule_test:
+      - eval_time: 68h
+        alertname: DiskFullWithin7Days
+        exp_alerts: []
+      - eval_time: 74h
+        alertname: DiskFullWithin7Days
+        exp_alerts: []
+
   # Review cases: Redis stops while its exporter keeps running (only the exact name counts); a container stuck in a
   # restart loop; load 40 on 8 cores; then the watcher stops: the container alarms go quiet and one stale alarm fires.
   - interval: 1m
