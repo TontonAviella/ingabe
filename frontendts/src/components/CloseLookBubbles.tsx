@@ -221,7 +221,8 @@ export function CloseLookBubbles({
   map: MLMap | null;
   layers: MapLayer[];
   hiddenLayerIDs: string[];
-  /** A field is being outlined: the bubbles leave the map so that a tap reaches the photo. */
+  /** A field is being outlined, or an answer to a question is drawn on the photo: the bubbles leave the map, so
+   * that a tap reaches the photo and the answer is not covered. */
   quiet?: boolean;
 }) {
   const inspections = useMemo(

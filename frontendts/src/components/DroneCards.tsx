@@ -760,6 +760,14 @@ function newSeed() {
   return 1 + Math.floor(Math.random() * 1_000_000);
 }
 
+/** Tells the map whether an answer is drawn on the photo, and that none is once the cards are gone. */
+export function useAnswerOnPhoto(drawn: boolean, tell?: (drawn: boolean) => void) {
+  useEffect(() => {
+    tell?.(drawn);
+    return () => tell?.(false);
+  }, [drawn, tell]);
+}
+
 export function DroneCards({
   map,
   layers,
@@ -767,6 +775,7 @@ export function DroneCards({
   historyOpen,
   chatsHidden = false,
   onAskSage,
+  onAnswerOnPhoto,
 }: {
   map: MLMap | null;
   layers: MapLayer[];
@@ -777,6 +786,8 @@ export function DroneCards({
   chatsHidden?: boolean;
   /** Sends a question to Sage in the chat. */
   onAskSage: (prompt: string) => void;
+  /** An answer is drawn on the photo (true) or taken off it (false): whatever else lies on the photo steps aside. */
+  onAnswerOnPhoto?: (drawn: boolean) => void;
 }) {
   const [seed, setSeed] = useState(0);
   const reader = useReaderRole();
@@ -798,6 +809,8 @@ export function DroneCards({
   // The answer is asked with the deck's own seed (the day's set when none was picked), so its question reads the same.
   const answer = useDroneCardAnswer(layerId, openCard, audience, deck.data?.seed ?? seed);
   useAnswerOverlay(map, collapsed ? null : (answer.data ?? null), deck.data?.photo.bounds ?? null);
+  // The one thing asked is what the photo shows: while an answer is drawn on it, the close-look bubbles are not.
+  useAnswerOnPhoto(!collapsed && Boolean(answer.data?.overlay), onAnswerOnPhoto);
 
   // A photo the cards cannot read because its file does not name its bands: the reader is asked which is which.
   const bands = usePhotoBands(layerId, deck.error?.status === 422);

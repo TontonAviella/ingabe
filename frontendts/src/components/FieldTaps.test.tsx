@@ -143,6 +143,8 @@ function fakeMap() {
     queryRenderedFeatures: () => (under ? [{ properties: { id: under } }] : []),
     easeTo: vi.fn(),
     fitBounds: vi.fn(),
+    // the camera that shows a box; a test makes it undefined for a screen with no room left
+    cameraForBounds: vi.fn((): { center: [number, number]; zoom: number } | undefined => ({ center: [31, -1], zoom: 15 })),
     // one degree is 1000 px on this map
     project: (c: [number, number]) => ({ x: c[0] * 1000, y: -c[1] * 1000 }),
     unproject: (p: [number, number]) => ({ lng: p[0] / 1000, lat: -p[1] / 1000 }),
@@ -201,6 +203,11 @@ function fakeMap() {
     /** What the check of the count has on the map: the part, the app's rings and the reader's marks. */
     checkDrawn: () => sources.get('count-check')?.features ?? [],
     fitted: () => map.fitBounds.mock.calls.length,
+    /** Each camera asked for: the box and how it is to be fitted. */
+    cameras: () => map.cameraForBounds.mock.calls as unknown as [unknown, { maxZoom: number; padding: { top: number } }][],
+    /** Makes the map say no camera shows the box (the room left is too small). */
+    noRoom: () => map.cameraForBounds.mockReturnValue(undefined),
+    eases: () => map.easeTo.mock.calls.map((c) => c[0] as { center: [number, number]; zoom?: number }),
   };
 }
 
@@ -894,5 +901,43 @@ describe('outlining a field by tapping it', () => {
     }
     await vi.waitFor(() => expect(byText(/No corrections left/)).not.toBeNull());
     expect((byButton('This part too') as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it('frames the whole field when it is picked from the list, however close the map was left', async () => {
+    const server = fakeServer(true);
+    server.kept.push(
+      { id: 'a', number: 3, centre: [30.5, -1.5], geometry: square(1), area_ha: 0.18, corrections: 0, kept_at: 'then' },
+      { id: 'b', number: 7, centre: [30.25, -1.75], geometry: square(2), area_ha: 1.6, corrections: 0, by_hand: true, kept_at: 'then' },
+    );
+    const m = fakeMap();
+    mount(<FieldTaps map={m.map} layers={[photo]} hiddenLayerIDs={[]} />);
+    await vi.waitFor(() => expect(byButton(/^2 fields outlined · show$/)).not.toBeNull());
+    click(byButton(/^2 fields outlined · show$/) as HTMLButtonElement);
+    await vi.waitFor(() => expect(byButton(/^Field 7 · 1\.6 ha · by hand$/)).not.toBeNull());
+    click(byButton(/^Field 7 · 1\.6 ha · by hand$/) as HTMLButtonElement);
+    // its outline is fitted into the room beside the drawer: a centre alone left a large field running off the screen
+    const [box, how] = m.cameras()[0];
+    expect(box).toEqual([
+      [30, -2],
+      [32, 0],
+    ]);
+    expect(how.maxZoom).toBe(20);
+    expect(how.padding.top).toBeGreaterThan(0);
+    expect(m.eases()).toEqual([{ center: [31, -1], zoom: 15, duration: 600 }]);
+  });
+
+  it('still brings the field to the middle when the screen has no room to frame it', async () => {
+    const server = fakeServer(true);
+    server.kept.push({ id: 'b', number: 7, centre: [30.25, -1.75], geometry: square(2), area_ha: 1.6, corrections: 0, kept_at: 'then' });
+    const m = fakeMap();
+    m.noRoom();
+    mount(<FieldTaps map={m.map} layers={[photo]} hiddenLayerIDs={[]} />);
+    await vi.waitFor(() => expect(byButton(/^1 field outlined · show$/)).not.toBeNull());
+    click(byButton(/^1 field outlined · show$/) as HTMLButtonElement);
+    await vi.waitFor(() => expect(byButton(/^Field 7 · 1\.6 ha$/)).not.toBeNull());
+    click(byButton(/^Field 7 · 1\.6 ha$/) as HTMLButtonElement);
+    expect(m.eases()).toHaveLength(1);
+    expect(m.eases()[0].center).toEqual([30.25, -1.75]);
+    expect(m.eases()[0].zoom).toBeUndefined();
   });
 });

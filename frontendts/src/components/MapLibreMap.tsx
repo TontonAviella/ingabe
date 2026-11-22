@@ -311,6 +311,8 @@ export default function MapLibreMap({
   // (controls, basemap, click handler) re-attach to the new map instance.
   const [mapInstanceId, setMapInstanceId] = useState(0);
   const [tappingField, setTappingField] = useState(false);
+  // an answer to a question is drawn on the photo: the close-look bubbles step off it, as while a field is outlined
+  const [answerOnPhoto, setAnswerOnPhoto] = useState(false);
   // The one drawer beside the map (components/MapDrawer.tsx), when this device asked for it: the tools then live
   // in it and nothing is placed over the photo.
   const drawer = useMapDrawer();
@@ -1869,6 +1871,7 @@ export default function MapLibreMap({
               historyOpen={mobileWorkspacePanel === 'history'}
               chatsHidden={chatsHidden}
               onAskSage={askSage}
+              onAnswerOnPhoto={setAnswerOnPhoto}
             />
           </ToolSlot>
           <ToolSlot tool="questions">
@@ -1888,7 +1891,7 @@ export default function MapLibreMap({
             map={mapRef.current}
             layers={mapData?.layers ?? []}
             hiddenLayerIDs={hiddenLayerIDs}
-            quiet={tappingField}
+            quiet={tappingField || answerOnPhoto}
           />
         </div>
         {/* With the one drawer Sage's side may be closed: what went wrong is still said on the map, where it

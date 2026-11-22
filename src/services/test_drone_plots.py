@@ -222,3 +222,14 @@ def test_plots_that_bring_their_own_numbers_keep_them(photo):
     mixed = drone_plots.measure_own_plots(
         str(photo), [drone_plots.MapPlot(south_east, number=2), drone_plots.MapPlot(north_west)], "Test plots")
     assert [p["number"] for p in mixed.plots()] == [1, 2] and mixed.plots()[0]["lat"] > mixed.plots()[1]["lat"]
+
+
+def test_the_bare_percent_shown_stays_on_the_plots_side_of_the_cut():
+    assert drone_plots.bare_percent(0.496, mostly_soil=False) == 49  # a plot with a crop never reads 50%
+    assert drone_plots.bare_percent(0.36, mostly_soil=False) == 36
+    assert drone_plots.bare_percent(0.5, mostly_soil=True) == 50
+    assert drone_plots.bare_percent(0.504, mostly_soil=True) == 50
+    assert drone_plots.bare_percent(0.93, mostly_soil=True) == 93
+    assert drone_plots._kept_share(0.4996) == 0.499  # kept to three decimals, still under the cut
+    assert drone_plots._kept_share(0.4994) == 0.499 and drone_plots._kept_share(0.5) == 0.5
+    assert drone_plots.plot_groups([(0.1, drone_plots._kept_share(0.4996))] * 5)[0] != drone_plots.MOSTLY_SOIL

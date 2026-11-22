@@ -1,7 +1,7 @@
 import { act } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { CardsPanel } from '@/components/CardAnswer';
-import { StatusLine, waitingOnPhoto } from '@/components/DroneCards';
+import { StatusLine, useAnswerOnPhoto, waitingOnPhoto } from '@/components/DroneCards';
 import type { DroneCard } from '@/hooks/useDroneCards';
 import { byButton, click, mount, unmountAll } from '@/test/dom';
 
@@ -127,5 +127,28 @@ describe("a card's status line", () => {
   it('keeps the words when the answer is not (fully) ready', () => {
     show(<StatusLine card={card('a', 'partly', { status_label: 'Partly answered' })} />);
     expect(document.body.textContent).toBe('Partly answered');
+  });
+});
+
+describe('telling the map that an answer is drawn on the photo', () => {
+  function Teller({ drawn, tell }: { drawn: boolean; tell: (drawn: boolean) => void }) {
+    useAnswerOnPhoto(drawn, tell);
+    return null;
+  }
+
+  it('says so while one is drawn, and that none is once the cards are gone', async () => {
+    const tell = vi.fn();
+    mount(<Teller drawn tell={tell} />);
+    await vi.waitFor(() => expect(tell).toHaveBeenLastCalledWith(true));
+    unmountAll();
+    // the close-look bubbles come back: the map is never left believing an answer is still drawn
+    await vi.waitFor(() => expect(tell).toHaveBeenLastCalledWith(false));
+  });
+
+  it('says none is drawn for an answer with nothing to draw', async () => {
+    const tell = vi.fn();
+    mount(<Teller drawn={false} tell={tell} />);
+    await vi.waitFor(() => expect(tell).toHaveBeenCalled());
+    expect(tell.mock.calls.every(([drawn]) => drawn === false)).toBe(true);
   });
 });
