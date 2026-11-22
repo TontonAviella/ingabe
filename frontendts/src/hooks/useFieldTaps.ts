@@ -100,6 +100,9 @@ export interface FieldTapState {
   kept: KeptOutline[];
   /** The day this photo was flown, as the reader gave it (ISO); null until given. */
   flown_on?: string | null;
+  /** What the photo's own file says of its day, in the server's words, while the reader has given none: `day` (ISO)
+   * is offered for the reader to take as the flight day; null `day` is a sentence only (a month, or no date at all). */
+  file_day?: { day: string | null; said: string } | null;
   /** How the flights of a field are to be read, written by the server. */
   flights_note?: string;
   /** Photos of this place added the same day as this one, with no flight day given: not known to be other flights. */

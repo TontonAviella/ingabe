@@ -39,6 +39,8 @@ function fakeServer(prepared: boolean) {
   // check a square: what was asked, and the checks kept
   const checkAsked: { url: string; square?: [number, number]; shown?: string; wrong?: number[]; missed?: unknown[] }[] = [];
   const checks: { app: number; you: number; wrong: number; missed: number }[] = [];
+  // what the photo's own file says of its day, when the server has something to offer
+  let fileDay: { day: string | null; said: string } | null = null;
   const outlines = (taps: Tap[], pick: number | null) =>
     taps.length === 1
       ? [0, 1, 2].map((choice) => ({ choice, geometry: square(choice + 1), area_ha: 0.1 * (choice + 1) }))
@@ -57,6 +59,7 @@ function fakeServer(prepared: boolean) {
         cover_measured: 'Green cover is the share of the field under living green plants of any kind.',
         kept,
         turned_down: turnedDown.length,
+        file_day: fileDay,
       });
     if (url.endsWith('/moved-line')) {
       measured.push(body);
@@ -128,7 +131,19 @@ function fakeServer(prepared: boolean) {
     }
     return json({ detail: 'Not Found' }, 404);
   });
-  return { kept, asked, turnedDown, measured, cropAsked, cropAnswers, checkAsked };
+  return {
+    kept,
+    asked,
+    turnedDown,
+    measured,
+    cropAsked,
+    cropAnswers,
+    checkAsked,
+    /** The server now has a day from the photo's own file to offer. */
+    offer: (day: { day: string | null; said: string }) => {
+      fileDay = day;
+    },
+  };
 }
 
 /** The few things the component asks of the map; `tap` plays a reader's tap on the photo. */
@@ -939,5 +954,17 @@ describe('outlining a field by tapping it', () => {
     expect(m.eases()).toHaveLength(1);
     expect(m.eases()[0].center).toEqual([30.25, -1.75]);
     expect(m.eases()[0].zoom).toBeUndefined();
+  });
+
+  it("offers the day the photo's own file gives, where the flight day is asked", async () => {
+    const server = fakeServer(true);
+    server.kept.push({ id: 'b', number: 7, centre: [30.25, -1.75], geometry: square(2), area_ha: 0.02, corrections: 0, kept_at: 'then' });
+    server.offer({ day: '2026-03-14', said: 'The file says its pictures were taken on 14 March 2026.' });
+    const m = fakeMap();
+    mount(<FieldTaps map={m.map} layers={[photo]} hiddenLayerIDs={[]} />);
+    await vi.waitFor(() => expect(byButton(/^1 field outlined · show$/)).not.toBeNull());
+    m.clickOn('b');
+    await vi.waitFor(() => expect(byText('The file says its pictures were taken on 14 March 2026.')).not.toBeNull());
+    expect(byButton('Use this day')).not.toBeNull();
   });
 });

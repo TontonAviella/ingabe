@@ -6,7 +6,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from datetime import date, datetime, timedelta, timezone
-from typing import Annotated, Any, Optional
+from typing import Annotated, Any, Optional, cast
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
@@ -136,6 +136,23 @@ async def get_field_taps(layer: MapLayer = Depends(get_layer),
     state["photos_not_told_apart"] = unsure
     given = field_flights.flown_on(layer.metadata_dict or {})
     state["flown_on"] = given.isoformat() if given else None
+    # what the photo's own file says of its day, offered to a reader who has not given one (never taken for them)
+    state["file_day"] = None
+    if given is None:
+        added_as, name = cast(Optional[str], layer.s3_key), cast(Optional[str], layer.name)
+        names = ((layer.metadata_dict or {}).get("original_filename"), name)
+        try:
+            copies = [cog_url] if cog_url else []
+            if added_as and added_as != key:  # the file as it was added comes before the app's copy of it
+                copies.insert(0, await s3.generate_presigned_url(
+                    "get_object", Params={"Bucket": bucket, "Key": added_as}, ExpiresIn=900))
+            read, in_file = await field_flights.day_in_file(s3, bucket, key, copies)
+        except Exception as why:  # noqa: BLE001 - the fields are still shown, and the day is asked as before
+            # no traceback: a storage error's words can hold a signed link
+            logger.warning("field taps: the photo's file could not be asked for its day (%s)", type(why).__name__)
+            read, in_file = False, None
+        state["file_day"] = field_flights.file_day_offered(
+            in_file, names, datetime.now(timezone.utc).date() + timedelta(days=1), file_read=read)
     state["flights_note"] = field_flights.NOTE
     state["flights_measuring"] = any(entry["said"] == field_flights.NOT_YET
                                      for row in state["kept"] for entry in (row.get("facts") or {}).get("flights", ()))

@@ -5,17 +5,21 @@ const day = 'min-h-11 rounded-[12px] border border-white/10 bg-panel-2 px-3 text
 const save = 'inline-flex min-h-11 cursor-pointer items-center px-2 text-[12.5px] text-fg-soft underline disabled:opacity-50 sm:min-h-9';
 
 /** One field on every flight of its place, oldest first, in the server's own words; and the day this photo was
- * flown, which only the reader knows. Nothing here says better or worse: the flights stand side by side. */
+ * flown, which only the reader knows. A day the photo's own file gives is offered, and becomes the flight day only
+ * when the reader takes it. Nothing here says better or worse: the flights stand side by side. */
 export function FieldFlights({
   layerId,
   flights,
   flownOn,
+  fileDay = null,
   note,
   notToldApart = 0,
 }: {
   layerId: string;
   flights: FieldFlight[];
   flownOn: string | null;
+  /** What the file says of its day, while the reader has given none (the server's words). */
+  fileDay?: { day: string | null; said: string } | null;
   note?: string;
   /** Photos of this place added the same day with no flight day: the reader is told how to set them apart. */
   notToldApart?: number;
@@ -74,6 +78,16 @@ export function FieldFlights({
           </button>
         )}
         {!flownOn && given === null && <span className="text-[12px] text-fg-muted">Not given yet: it goes by the day it was added.</span>}
+        {!flownOn && given === null && fileDay && (
+          <span className="flex basis-full flex-wrap items-center gap-x-2 text-[12px] text-fg-muted">
+            <span>{fileDay.said}</span>
+            {fileDay.day && (
+              <button type="button" className={save} disabled={say.isPending} onClick={() => say.mutate(fileDay.day)}>
+                Use this day
+              </button>
+            )}
+          </span>
+        )}
         {say.error && (
           <span role="alert" className="basis-full text-[12px] text-caramel-hi">
             {say.error.message}
