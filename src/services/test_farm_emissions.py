@@ -54,8 +54,12 @@ def test_a_place_is_the_sum_of_its_districts_and_co2e_uses_the_stated_factors():
     assert sum(s["tonnes_co2e"] for s in out["by_source"]) == out["farm_greenhouse_gases_tonnes_co2e"]
     # Ammonia is reported, and never counted as a greenhouse gas.
     assert out["ammonia_tonnes_not_a_greenhouse_gas"] == 7.0
-    assert out["farm_greenhouse_gases_by_year_tonnes_co2e"] == {2021: 5.0, 2022: 4596.0}
+    # Farm carbon dioxide has no national figure behind it, so a CO2 row is never read: 2021 holds only one.
+    assert out["years_available"] == [2022]
+    assert out["farm_greenhouse_gases_by_year_tonnes_co2e"] == {2022: 4596.0}
+    assert "indirect nitrous oxide" in out["note"]
     assert "farming only" in out["note"] and "not measurements" in out["note"]
+    assert "estimates, not measurements; farming only" in out["what_these_figures_are"]
 
 
 def test_a_year_or_place_without_rows_gets_no_figure():
@@ -100,6 +104,9 @@ async def test_district_rwanda_and_an_unknown_place():
     rwanda, _ = await _ask()
     assert rwanda["place"] == "Rwanda" and rwanda["districts_summed"] == 30
     assert "rough" not in district["note"]
+    # The size of the left-out indirect nitrous oxide is known for Rwanda only, so only Rwanda's note gives it.
+    assert "about 3%" in rwanda["note"] and "about 3%" not in district["note"]
+    assert "NOT known for a district or a province" in district["note"]
     assert "rough" in (await _ask(district="Kicukiro"))[0]["note"]
     unknown, conn = await _ask(district="Kampala")
     assert unknown["status"] == "no_data" and not conn.calls
