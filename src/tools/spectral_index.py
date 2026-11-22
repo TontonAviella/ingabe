@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import math
 import uuid
 from typing import Any, Dict, Optional
 
@@ -80,7 +81,8 @@ def _compute_stats_from_cogs(
     part of the box inside the scene is read.
 
     With the scene's class map (scl_href), cloud, cloud shadow, thin cloud, snow and empty pixels are
-    left out (stac_service.SCL_UNUSABLE) and ``clear_share`` says how much of the box was left. The
+    left out (stac_service.SCL_UNUSABLE) and ``clear_share`` says how much of the whole box was left
+    (ground outside the scene counts as not clear). ``cloud_masked`` False means no class map was read. The
     class map misses haze: a pass it called fully clear read NDVI 0.25 with half the usual spread
     (Cyampirita, 2026-10-23). None when the box has no usable pixel.
     """
@@ -94,17 +96,20 @@ def _compute_stats_from_cogs(
     from src.services.stac_service import SCL_UNUSABLE
 
     def over_box(src):
-        """The part of the box inside this band file, as a window on its grid; None when they do not meet."""
-        window = from_bounds(*transform_bounds("EPSG:4326", src.crs, *bbox), transform=src.transform)
+        """(the part of the box inside this band file as a window on its grid, that part's share of the box);
+        (None, 0.0) when they do not meet."""
+        whole = from_bounds(*transform_bounds("EPSG:4326", src.crs, *bbox), transform=src.transform)
         try:
-            window = window.intersection(Window(0, 0, src.width, src.height))
+            inside = whole.intersection(Window(0, 0, src.width, src.height))
         except WindowError:
-            return None
-        return window if window.width > 0 and window.height > 0 else None
+            return None, 0.0
+        if inside.width <= 0 or inside.height <= 0 or whole.width <= 0 or whole.height <= 0:
+            return None, 0.0
+        return inside, (inside.width * inside.height) / (whole.width * whole.height)
 
     with RasterioEnv(**_GDAL_ENV):
         with rasterio.open(band1_href) as src1, rasterio.open(band2_href) as src2:
-            window1, window2 = over_box(src1), over_box(src2)
+            (window1, in_scene_share), (window2, _) = over_box(src1), over_box(src2)
             if window1 is None or window2 is None:
                 return None
             max_size = 1024
@@ -117,7 +122,7 @@ def _compute_stats_from_cogs(
             scl = None
             if scl_href is not None:
                 with rasterio.open(scl_href) as scl_src:
-                    scl_window = over_box(scl_src)
+                    scl_window, _ = over_box(scl_src)
                     if scl_window is not None:
                         scl = scl_src.read(1, window=scl_window, out_shape=shape, resampling=Resampling.nearest)
 
@@ -130,7 +135,6 @@ def _compute_stats_from_cogs(
 
     valid = (index_arr >= -1.0) & (index_arr <= 1.0) & np.isfinite(index_arr)
     valid &= (b1 > 0) | (b2 > 0)
-    in_scene = int(np.count_nonzero(valid))
     if scl is not None:
         valid &= ~np.isin(scl, list(SCL_UNUSABLE))
     vals = index_arr[valid]
@@ -146,7 +150,8 @@ def _compute_stats_from_cogs(
         "median": round(float(np.median(vals)), 4),
         "valid_pixels": int(len(vals)),
         "cloud_masked": scl is not None,
-        "clear_share": round(len(vals) / in_scene, 2) if scl is not None else None,
+        # of the whole box: ground outside the scene or with no data counts as not clear
+        "clear_share": round(float(len(vals) / (shape[0] * shape[1]) * in_scene_share), 4) if scl is not None else None,
     }
 
 
@@ -164,6 +169,12 @@ async def compute_spectral_index(
             return {"status": "error", "error": "bbox must have 4 values: west,south,east,north"}
     except ValueError:
         return {"status": "error", "error": "bbox values must be numbers"}
+    west, south, east, north = bbox
+    if not all(math.isfinite(v) for v in bbox) or not (-180 <= west < east <= 180 and -90 <= south < north <= 90):
+        return {
+            "status": "error",
+            "error": "bbox must be west,south,east,north in degrees, with west < east and south < north",
+        }
 
     datetime_range = f"{args.date_from}/{args.date_to}"
     formula = _INDEX_FORMULAS[index_name]
@@ -208,6 +219,7 @@ async def compute_spectral_index(
         }
 
     scl_href = _resolve_band_href(assets, "scl")
+    read_failed = False
     try:
         stats = await loop.run_in_executor(
             None,
@@ -216,6 +228,7 @@ async def compute_spectral_index(
     except Exception as e:
         logger.warning("Stats computation failed for %s: %s", index_name, e)
         stats = None
+        read_failed = True
 
     from src.tools.display_layer import _build_cog_tile_url
 
@@ -260,13 +273,20 @@ async def compute_spectral_index(
     if stats:
         response["statistics"] = stats
         clear = stats.get("clear_share")
-        if clear is not None and clear < MOSTLY_CLEAR:
+        if clear is None:
+            response["warning"] = "Cloud could not be left out of these statistics in this scene."
+        elif clear < MOSTLY_CLEAR:
             response["warning"] = (
-                f"Only {clear:.0%} of this area was clear of cloud in this scene; "
-                "the statistics describe that part only, and the map layer still shows the cloud."
+                f"Only {clear:.0%} of this area was clear ground in this scene (the rest is cloud, shadow or "
+                "outside the scene); the statistics describe that part only, and the map layer still shows the cloud."
             )
     else:
         response["statistics"] = None
-        response["warning"] = "No clear ground in this area in this scene, so there are no statistics."
+        response["warning"] = (
+            "The scene's files could not be read, so there are no statistics."
+            if read_failed
+            else "No clear ground in this area in this scene (cloud, shadow, or the area lies outside the scene), "
+            "so there are no statistics."
+        )
 
     return response

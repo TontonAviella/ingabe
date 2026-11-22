@@ -34,15 +34,17 @@ META = IngabeToolCallMetaArgs(
 )
 
 
-def _band(path: Path, pixel_m: int, value_left: int, value_right: Optional[int] = None, dtype: str = "uint16") -> str:
-    """A band file covering BOX with 300 m to spare; the western half holds value_left, the eastern value_right."""
+def _band(path: Path, pixel_m: int, value_west: int, value_east: Optional[int] = None, dtype: str = "uint16") -> str:
+    """A band file covering BOX with 300 m to spare. West of one line it holds value_west, east of it value_east;
+    the line lies a whole number of 20 m from the file's left edge, so 10 m and 20 m files split at the same place."""
     west, south, east, north = transform_bounds("EPSG:4326", "EPSG:32736", *BOX)
     left, top = west - 300, north + 300
     width = int((east - west + 600) // pixel_m) + 1
     height = int((north - south + 600) // pixel_m) + 1
-    data = np.full((height, width), value_left, dtype=dtype)
-    if value_right is not None:
-        data[:, width // 2:] = value_right
+    data = np.full((height, width), value_west, dtype=dtype)
+    if value_east is not None:
+        split_m = 20 * int((east - west + 600) // 40)  # metres from the left edge, about the middle
+        data[:, split_m // pixel_m:] = value_east
     with rasterio.open(
         path, "w", driver="GTiff", height=height, width=width, count=1, dtype=dtype, crs="EPSG:32736",
         transform=from_origin(left, top, pixel_m, pixel_m),
@@ -69,9 +71,9 @@ def test_a_latitude_longitude_box_gets_numbers_from_a_scene_on_a_metre_grid(scen
     assert stats["mean"] == pytest.approx(0.5)  # (3000 - 1000) / (3000 + 1000) on the clear half
     assert stats["max"] == pytest.approx(0.5) and stats["min"] == pytest.approx(0.5)
     # the box is about 1,556 m by 886 m: about 13,800 pixels of 10 m, half of them clear
-    assert 6000 < stats["valid_pixels"] < 7800
+    assert 6600 < stats["valid_pixels"] < 7200
     assert stats["cloud_masked"] is True
-    assert 0.4 < stats["clear_share"] < 0.6
+    assert 0.47 < stats["clear_share"] < 0.53
 
 
 def test_without_a_class_map_cloud_is_counted_and_the_result_says_so(scene):
@@ -125,20 +127,58 @@ async def _ask(scene: Dict[str, str], bbox: str) -> Dict[str, Any]:
         return await compute_spectral_index(args, META)
 
 
-async def test_the_tool_returns_numbers_for_the_photo_and_warns_when_little_of_it_is_clear(scene):
-    result = await _ask(scene, ",".join(str(v) for v in BOX))
+WEST_PART = "30.4180,-1.6990,30.4230,-1.6940"  # all clear
+MOSTLY_CLOUD = "30.4225,-1.6990,30.4310,-1.6940"  # the eastern part: about a quarter of it clear
+ALL_CLOUD = "30.4275,-1.6990,30.4310,-1.6940"
+
+
+async def test_the_tool_returns_numbers_and_warns_when_little_of_the_area_is_clear(scene):
+    result = await _ask(scene, WEST_PART)
     assert result["status"] == "displayed"
     assert result["statistics"]["mean"] == pytest.approx(0.5)
-    assert "warning" not in result  # half the box is clear: no warning at exactly the line or above it
+    assert result["statistics"]["clear_share"] == pytest.approx(1.0, abs=0.02)
+    assert "warning" not in result
 
-    mostly_cloud = "30.4230,-1.6990,30.4310,-1.6940"  # the box's eastern part: under a quarter of it clear
-    result = await _ask(scene, mostly_cloud)
-    assert result["statistics"]["clear_share"] < spectral_index.MOSTLY_CLEAR
-    assert result["warning"].startswith("Only ")
-    assert "clear of cloud" in result["warning"]
+    result = await _ask(scene, MOSTLY_CLOUD)
+    assert 0.1 < result["statistics"]["clear_share"] < 0.4
+    assert result["statistics"]["mean"] == pytest.approx(0.5)
+    assert result["warning"].startswith(f"Only {result['statistics']['clear_share']:.0%} of this area was clear ground")
 
 
 async def test_the_tool_says_there_is_no_clear_ground_when_the_box_is_all_cloud(scene):
-    result = await _ask(scene, "30.4275,-1.6990,30.4310,-1.6940")
+    result = await _ask(scene, ALL_CLOUD)
     assert result["statistics"] is None
-    assert result["warning"] == "No clear ground in this area in this scene, so there are no statistics."
+    assert result["warning"].startswith("No clear ground in this area in this scene")
+
+
+async def test_a_read_that_fails_is_not_reported_as_cloud(scene):
+    result = await _ask({**scene, "red": scene["red"] + ".missing"}, WEST_PART)
+    assert result["statistics"] is None
+    assert result["warning"] == "The scene's files could not be read, so there are no statistics."
+
+
+async def test_without_a_class_map_the_tool_says_cloud_was_not_left_out(scene):
+    result = await _ask({k: v for k, v in scene.items() if k != "scl"}, WEST_PART)
+    assert result["statistics"]["cloud_masked"] is False
+    assert result["warning"] == "Cloud could not be left out of these statistics in this scene."
+
+
+def test_a_box_reaching_past_the_scene_counts_the_missing_ground_as_not_clear(scene):
+    # the file reaches 300 m past the box; this box reaches about 1,100 m further west than the file does
+    wider = [BOX[0] - 0.0126, BOX[1], BOX[0] + 0.004, BOX[3]]
+    stats = _compute_stats_from_cogs(scene["red"], scene["nir"], wider, "ndvi", scene["scl"])
+    assert stats is not None and stats["mean"] == pytest.approx(0.5)
+    assert 0.3 < stats["clear_share"] < 0.5  # about 745 m of the box's 1,850 m lie inside the file
+
+
+@pytest.mark.parametrize("bbox", [
+    "30.43,-1.70,30.41,-1.69",  # west and east swapped
+    "30.41,-1.69,30.43,-1.70",  # south and north swapped
+    "30.41,-1.70,nan,-1.69",
+    "30.41,-91,30.43,-1.69",
+])
+async def test_a_box_that_is_not_a_box_is_refused_before_any_search(bbox):
+    args = ComputeSpectralIndexArgs(bbox=bbox, index="ndvi", date_from="2026-11-01", date_to="2026-11-23", layer_name="x")
+    with patch.object(STACService, "search_imagery", side_effect=AssertionError("searched")):
+        result = await compute_spectral_index(args, META)
+    assert result["status"] == "error" and result["error"].startswith("bbox must be west,south,east,north")
