@@ -1050,3 +1050,47 @@ def test_fertilizer_card_shows_zones_and_gives_no_rate(photo):
     assert "Ingabe gives no rate" in answer["todo"] and answer["overlay"]["kind"] == "plot_groups"
     assert answer["downloads"][0]["href"].endswith("/zones.geojson")
     assert "rate" not in " ".join(f["label"] + f["value"] for f in answer["facts"])
+
+
+def test_a_plot_with_a_crop_never_reads_as_half_bare(photo):
+    # 49.6% rounds to 50%, the share the same answer calls "mostly soil": the list would contradict its own rule
+    plots = _plot_set()
+    for f in plots.geojson["features"]:
+        if f["properties"]["number"] == 3:
+            f["properties"]["bare_share"] = 0.496
+    assert plots.geojson["features"][2]["properties"]["group"] == drone_plots.LEAST_GREEN
+    answer = drone_cards.answer_card("plots_green", _analysis(photo), "farmer", drone_cards.Here(photos=1, plots=plots))
+    assert answer["items"][0]["detail"].endswith("49% bare soil")
+    assert "under 50% bare soil" in drone_cards.answer_card("plots_green", _analysis(photo), "agronomist",
+                                                            drone_cards.Here(photos=1, plots=plots))["why"]
+    # a trace of bare soil is not "0%"
+    plots.geojson["features"][2]["properties"]["bare_share"] = 0.004
+    answer = drone_cards.answer_card("plots_green", _analysis(photo), "farmer", drone_cards.Here(photos=1, plots=plots))
+    assert answer["items"][0]["detail"].endswith("under 1% bare soil")
+
+
+def test_sage_questions_on_the_list_follow_the_reader(photo):
+    plots = _plot_set()
+    here = drone_cards.Here(photos=1, plots=plots)
+    own = {"Was this land planted last season?", "How green was this place in past seasons?"}
+    for seed in range(8):
+        deck = drone_cards.build_deck(_analysis(photo), "insurance", dataclasses.replace(here, seed=seed))
+        labels = [ask["label"] for ask in deck["ask_sage"]]
+        assert "What fertilizer does this soil need?" not in labels, seed  # farming advice is not an insurer's
+        assert set(labels[:2]) == own, seed  # the cards an insurer is steered to ask first; one other fills
+    # with nothing shuffled, the card the role is steered to most asks first
+    assert drone_cards.build_deck(_analysis(photo), "insurance", here)["ask_sage"][0]["label"] == "Was this land planted last season?"
+    for role in ("agronomist", "farmer"):  # those who farm are still offered it: steered (agronomist) or as a filler
+        seen = {ask["label"] for seed in range(8)
+                for ask in drone_cards.build_deck(_analysis(photo), role, dataclasses.replace(here, seed=seed))["ask_sage"]}
+        assert "What fertilizer does this soil need?" in seen, role
+
+
+def test_sage_is_not_told_of_a_crop_nobody_named(photo):
+    plots = _plot_set()
+    unnamed = drone_cards.answer_card("crop_types", _analysis(photo), "insurance", drone_cards.Here(plots=plots))
+    assert unnamed["ask_sage"][0]["label"] == "How is the crop doing this season?"
+    assert "most plots" not in unnamed["ask_sage"][0]["prompt"]
+    named = drone_cards.answer_card("crop_types", _analysis(photo), "insurance",
+                                    drone_cards.Here(plots=plots, survey=_survey(plots, ["maize"] * 10, {})))
+    assert "most plots the model could name grow maize" in named["ask_sage"][0]["prompt"]

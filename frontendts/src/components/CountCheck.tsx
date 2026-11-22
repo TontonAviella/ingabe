@@ -10,6 +10,7 @@ import {
   type SquareToCheck,
   squareToCheck,
 } from '@/hooks/useFieldTaps';
+import { boundsOf } from '@/lib/outlineBounds';
 import type { ServerError } from '@/lib/serverError';
 import { inside } from '@/lib/traceEdge';
 
@@ -181,23 +182,15 @@ export function CountCheck({
   // The map goes to the part shown, close enough to judge each ring.
   useEffect(() => {
     if (!map || !shown) return;
-    const all = polygons(shown.part).flat(2);
-    if (!all.length) return;
-    const lons = all.map((c) => c[0]);
-    const lats = all.map((c) => c[1]);
+    const box = boundsOf(polygons(shown.part).flat(2));
+    if (!box) return;
     // the panel sits over the lower part of the map: the part being checked is fitted into what is left above it
     const tall = map.getCanvas().clientHeight || 0;
-    map.fitBounds(
-      [
-        [Math.min(...lons), Math.min(...lats)],
-        [Math.max(...lons), Math.max(...lats)],
-      ],
-      {
-        padding: drawerPadding() ?? { top: 70, bottom: Math.max(260, Math.round(tall * 0.55)), left: 40, right: 40 },
-        maxZoom: 23,
-        duration: 600,
-      },
-    );
+    map.fitBounds(box, {
+      padding: drawerPadding() ?? { top: 70, bottom: Math.max(260, Math.round(tall * 0.55)), left: 40, right: 40 },
+      maxZoom: 23,
+      duration: 600,
+    });
   }, [map, shown]);
 
   // A tap on a ring says "not a plant" (again: it is one after all); a tap on a plant the reader added takes it

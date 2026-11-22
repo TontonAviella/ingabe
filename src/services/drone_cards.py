@@ -335,6 +335,14 @@ def _pct(share: float) -> str:
     return f"{round(share * 100)}%"
 
 
+def _plot_bare(plot: dict[str, Any]) -> str:
+    """A plot's bare soil in whole percent, on the same side of the 'mostly soil' cut as the plot's group."""
+    share = plot["bare_share"]
+    if 0 < share < 0.01:
+        return "under 1%"
+    return f"{drone_plots.bare_percent(share, plot['group'] == drone_plots.MOSTLY_SOIL)}%"
+
+
 def _soil_digits(value: float) -> int:
     """Decimals for about three significant figures: 167, 10.6, 1.44."""
     return 0 if value >= 100 else 1 if value >= 10 else 2
@@ -1220,7 +1228,7 @@ def _plots_green(analysis: PhotoAnalysis, audience: str, here: Here) -> dict[str
         why = ("Less green can mean plants short of water or food, missing plants, or weeds cleared. A crop "
                "planted later than its neighbours is also less green, so look before acting.")
         todo = f"Walk to plots {_plot_names(first)} first and look at the plants and the soil. Tap a plot to see its name."
-    items = [_plot_item(analysis, _named(p, here.plots), f"{_ha(p['area_ha'])}" + (f" · {_pct(p['bare_share'])} bare soil" if p["bare_share"] else ""))
+    items = [_plot_item(analysis, _named(p, here.plots), f"{_ha(p['area_ha'])}" + (f" · {_plot_bare(p)} bare soil" if p["bare_share"] else ""))
              for p in least[:5]]
     facts = [{"label": "Plots with a crop", "value": str(len(with_crop))},
              {"label": "Least green fifth", "value": f"{len(least)} plots, {_ha(least_ha)}"},
@@ -2149,8 +2157,10 @@ def _asks(card_id: str, analysis: PhotoAnalysis, here: Here, items: list[dict[st
                             "should the farmer check on the ground?")] if items else [])
         + [(f"Which pests threaten {crop} now?", f"{ctx}: which pests or diseases are a risk for {crop} in this "
             "district at this time of the season, and what are the first signs to look for?")],
-        "crop_types": [(f"How is {crop} doing this season?", f"{ctx}, most plots the model could name grow {crop}. "
-                        f"How is {crop} doing this season around this photo, in its cell: rain, satellite greenness "
+        # with no crop named yet there is no "most plots grow ...": Sage is not told a finding nobody made
+        "crop_types": [(f"How is {crop} doing this season?", (f"{ctx}, most plots the model could name grow {crop}. "
+                                                              if _main_crop(here) else f"{ctx}: ")
+                        + f"How is {crop} doing this season around this photo, in its cell: rain, satellite greenness "
                         "and risks?"),
                        ("Which crop suits this soil best?", f"{ctx}: what does the soil here suit best, and what is it "
                         "short of?")],
@@ -2205,22 +2215,41 @@ def _asks(card_id: str, analysis: PhotoAnalysis, here: Here, items: list[dict[st
     return [{"label": label, "prompt": prompt} for label, prompt in chosen[:ASKS_PER_ANSWER]]
 
 
+# Roles that work the land or advise those who do. Farming advice (which fertilizer, how much) is theirs: an insurer,
+# a buyer or a district reading the same photo is not offered it unless their role is steered to that card.
+_GROWERS = frozenset({"farmer", "cooperative", "agronomist"})
+_ADVICE_CARDS = frozenset({"soil"})
+
+
 def _deck_asks(analysis: PhotoAnalysis, here: Here) -> list[dict[str, str]]:
-    """A few questions for Sage built from what this photo shows; the seed picks which."""
-    candidates: list[dict[str, str]] = []
+    """A few questions for Sage built from what this photo shows, for the reader's role: the questions of the cards
+    that role is steered to (_READER_BOOST) come first, strongest first, and the others only fill what is left
+    (farming advice only for those who farm). A seed moves them as it moves the cards (_score): a strong steer
+    still tends to lead, and the fillers change."""
+    steer = _READER_BOOST.get(here.role or "", {})
+    found: dict[str, tuple[int, dict[str, str]]] = {}  # by label: the strongest steer among the cards that ask it
     for card_id in ("plot_problems", "plot_stage", "plots_green", "crop_types", "water", "bare_ground", "soil", "history"):
         if card_id in _SURVEY_CARDS and here.survey is None or card_id in _PLOT_CARDS and here.plots is None:
+            continue
+        if card_id in _ADVICE_CARDS and not steer.get(card_id) and here.role not in _GROWERS:
             continue
         items: list[dict[str, Any]] = []
         if card_id in ("plot_problems", "plot_stage", "plots_green"):
             items = answer_card(card_id, analysis, None, here)["items"]
             if not items:
                 continue
-        candidates.extend(_asks(card_id, analysis, here, items)[:1])
-    unique = list({ask["label"]: ask for ask in candidates}.values())
+        for ask in _asks(card_id, analysis, here, items)[:1]:
+            weight, first = found.get(ask["label"], (0, ask))
+            found[ask["label"]] = (max(weight, steer.get(card_id, 0)), first)
+    def strength(label: str) -> float:
+        nudge = random.Random(f"{here.seed}:{label}").uniform(0, SHUFFLE_POINTS) if here.seed else 0.0
+        return found[label][0] + nudge
+
+    for_role = sorted((label for label, (weight, _) in found.items() if weight > 0), key=strength, reverse=True)
+    others = [label for label, (weight, _) in found.items() if weight == 0]
     if here.seed:
-        random.Random(here.seed).shuffle(unique)
-    return unique[:ASKS_PER_DECK]
+        random.Random(here.seed).shuffle(others)
+    return [found[label][1] for label in (for_role + others)[:ASKS_PER_DECK]]
 
 
 def answer_card(card_id: str, analysis: PhotoAnalysis, audience: Optional[str], here: Here) -> dict[str, Any]:

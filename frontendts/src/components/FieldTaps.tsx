@@ -18,6 +18,7 @@ import {
   useRemoveOutline,
 } from '@/hooks/useFieldTaps';
 import { fewCorners, grabbed, merged } from '@/lib/cornerEdit';
+import { boundsOf } from '@/lib/outlineBounds';
 import type { ServerError } from '@/lib/serverError';
 import { inside, type Pixel } from '@/lib/traceEdge';
 import type { MapLayer } from '@/lib/types';
@@ -85,6 +86,7 @@ const closed = (ring: Corner[]): GeoJSON.Polygon => ({ type: 'Polygon', coordina
 const GRAB_PX = 28; // a finger is wide: a press this close to a dot or the line takes hold of it
 const PULL_START_PX = 3; // a press that moves less than this is not a pull
 const MERGE_PX = 12; // a corner let go this close to its neighbour is removed
+const FIELD_MAX_ZOOM = 20; // a small field tapped in the list is shown this close at most
 const MOST_HANDLES = 24; // an outline to drag by hand has no more corners than this
 const CORNER_TOLERANCE_M = 1.0; // a point this close to a straight side is not a corner
 
@@ -922,9 +924,15 @@ export function FieldTaps({
                   setRemoving(false);
                   setNaming(null);
                   setListed(false);
-                  // the field lands above this panel, not under it
+                  // the whole field lands above (or beside) this panel, not under it: closer when it was a
+                  // speck on the screen, further out when the map was left so close that its line ran off
                   const room = drawerPadding();
-                  map?.easeTo({ center: k.centre, offset: room ? [0, (room.top - room.bottom) / 2] : [0, -140] });
+                  const box = boundsOf(k.geometry.coordinates[0] ?? []);
+                  // no camera: the room left is smaller than what the drawer takes (a phone on its side); a fit
+                  // would then leave the map where it was, so the field is centred as before
+                  const camera = room && box ? map?.cameraForBounds(box, { padding: room, maxZoom: FIELD_MAX_ZOOM }) : undefined;
+                  if (camera) map?.easeTo({ ...camera, duration: 600 });
+                  else map?.easeTo({ center: k.centre, offset: room ? [0, (room.top - room.bottom) / 2] : [0, -140] });
                 }}
               >
                 {k.facts?.name ?? fieldName(k)} · {ha(k.area_ha)}

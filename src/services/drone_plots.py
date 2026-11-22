@@ -78,6 +78,25 @@ TAIL_SHARE = 0.2  # the least green and the greenest fifth of the plots with a c
 # greenness with plots in full crop says nothing about the crop (on Cyampirita 81 of 445 plots).
 MOSTLY_BARE = 0.5
 
+
+def bare_percent(share: float, mostly_soil: bool) -> int:
+    """A plot's bare soil as the whole percent a reader is shown. The plot was grouped by its exact share, so the
+    rounded figure stays on the plot's own side of MOSTLY_BARE: a plot with a crop at 49.6% reads 49%, never the
+    50% that the same answer calls 'mostly soil'."""
+    cut = round(MOSTLY_BARE * 100)
+    shown = round(share * 100)
+    if mostly_soil:
+        return max(shown, cut)
+    return min(shown, cut - 1)
+
+
+def _kept_share(bare: float) -> float:
+    """The bare share kept with a plot, to three decimals, still on its own side of MOSTLY_BARE (0.4996 is a plot
+    with a crop and is not kept as 0.5)."""
+    kept = round(bare, 3)
+    return round(MOSTLY_BARE - 0.001, 3) if bare < MOSTLY_BARE <= kept else kept
+
+
 MOSTLY_SOIL = "mostly_soil"
 LEAST_GREEN = "least_green"
 BETWEEN = "between"
@@ -344,7 +363,7 @@ def _plot_set(ds: Any, found: list[_Outline], source: str, seconds: float) -> Pl
             "tag": outline.name if outline.name and len(outline.name) <= TAG_CHARS else str(number),
             "area_ha": round(ground_area.area_ha(wgs84), 3),
             "greenness": None if greenness is None else round(greenness, 4),
-            "bare_share": None if bare is None else round(bare, 3),
+            "bare_share": None if bare is None else _kept_share(bare),
             "group": groups[i],
             "confidence": None if outline.confidence is None else round(outline.confidence, 2),
             "lon": round(centre.x, 6),
