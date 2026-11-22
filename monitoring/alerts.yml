@@ -339,8 +339,10 @@ groups:
   - name: server-early-warning
     rules:
       - alert: DiskFullWithin7Days
-        # Straight-line forecast from the last 24 hours of free disk space.
-        expr: predict_linear(node_filesystem_avail_bytes{mountpoint="/"}[24h], 7 * 86400) < 0
+        # Straight-line forecast from the last 3 days of free disk space. One day was too short: on 2026-11-22
+        # four app builds in one afternoon took 24 GB (build cache the nightly prune gives back) and a 24-hour
+        # line read that as "full in 7 days" with 112 GB free. Three days still catches a leak of 16 GB a day.
+        expr: predict_linear(node_filesystem_avail_bytes{mountpoint="/"}[72h], 7 * 86400) < 0
         for: 1h
         labels:
           severity: warning
