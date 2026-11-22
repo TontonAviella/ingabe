@@ -23,7 +23,11 @@ _BAND_ASSET_KEYS = {
     "green": ["green", "B03"],
     "nir": ["nir", "B08"],
     "swir22": ["swir22", "B12"],
+    "scl": ["scl", "SCL"],
 }
+
+# Below this share of clear ground the numbers describe too little of the area to stand without a warning.
+MOSTLY_CLEAR = 0.5
 
 _GDAL_ENV = {
     "GDAL_HTTP_MERGE_CONSECUTIVE_RANGES": "YES",
@@ -65,56 +69,85 @@ def _resolve_band_href(assets: dict, role: str) -> Optional[str]:
 
 
 def _compute_stats_from_cogs(
-    band1_href: str, band2_href: str, bbox: list[float], index_name: str
+    band1_href: str, band2_href: str, bbox: list[float], index_name: str, scl_href: Optional[str] = None
 ) -> Optional[Dict[str, Any]]:
+    """Index statistics over bbox (west, south, east, north in latitude and longitude) from two band files.
+
+    Each band file keeps its own grid in metres (UTM), so the box is moved onto that grid before any
+    pixel is read. Until 2026-11-23 the latitude/longitude box was laid straight onto the metre grid,
+    which pointed outside every scene: no place in Rwanda ever got numbers (five of five tried). Both
+    bands are read onto the first band's pixel grid, so a 20 m band lines up with a 10 m one. Only the
+    part of the box inside the scene is read.
+
+    With the scene's class map (scl_href), cloud, cloud shadow, thin cloud, snow and empty pixels are
+    left out (stac_service.SCL_UNUSABLE) and ``clear_share`` says how much of the box was left. The
+    class map misses haze: a pass it called fully clear read NDVI 0.25 with half the usual spread
+    (Cyampirita, 2026-10-23). None when the box has no usable pixel.
+    """
     import rasterio
+    from rasterio.enums import Resampling
     from rasterio.env import Env as RasterioEnv
-    from rasterio.windows import from_bounds
+    from rasterio.errors import WindowError
+    from rasterio.warp import transform_bounds
+    from rasterio.windows import Window, from_bounds
+
+    from src.services.stac_service import SCL_UNUSABLE
+
+    def over_box(src):
+        """The part of the box inside this band file, as a window on its grid; None when they do not meet."""
+        window = from_bounds(*transform_bounds("EPSG:4326", src.crs, *bbox), transform=src.transform)
+        try:
+            window = window.intersection(Window(0, 0, src.width, src.height))
+        except WindowError:
+            return None
+        return window if window.width > 0 and window.height > 0 else None
 
     with RasterioEnv(**_GDAL_ENV):
         with rasterio.open(band1_href) as src1, rasterio.open(band2_href) as src2:
-            window1 = from_bounds(*bbox, transform=src1.transform)
-            window2 = from_bounds(*bbox, transform=src2.transform)
-
-            max_size = 1024
-            w1_width = min(int(window1.width), max_size)
-            w1_height = min(int(window1.height), max_size)
-            w2_width = min(int(window2.width), max_size)
-            w2_height = min(int(window2.height), max_size)
-
-            b1 = src1.read(
-                1, window=window1, out_shape=(w1_height, w1_width)
-            ).astype(np.float32)
-            b2 = src2.read(
-                1, window=window2, out_shape=(w2_height, w2_width)
-            ).astype(np.float32)
-
-            min_h = min(b1.shape[0], b2.shape[0])
-            min_w = min(b1.shape[1], b2.shape[1])
-            b1 = b1[:min_h, :min_w]
-            b2 = b2[:min_h, :min_w]
-
-            denom = b1 + b2
-            if index_name == "ndvi":
-                index_arr = np.where(denom != 0, (b2 - b1) / denom, 0.0)
-            else:
-                index_arr = np.where(denom != 0, (b1 - b2) / denom, 0.0)
-
-            valid = (index_arr >= -1.0) & (index_arr <= 1.0) & np.isfinite(index_arr)
-            valid &= (b1 > 0) | (b2 > 0)
-            vals = index_arr[valid]
-
-            if len(vals) == 0:
+            window1, window2 = over_box(src1), over_box(src2)
+            if window1 is None or window2 is None:
                 return None
+            max_size = 1024
+            shape = (
+                min(max(int(round(window1.height)), 1), max_size),
+                min(max(int(round(window1.width)), 1), max_size),
+            )
+            b1 = src1.read(1, window=window1, out_shape=shape).astype(np.float32)
+            b2 = src2.read(1, window=window2, out_shape=shape).astype(np.float32)
+            scl = None
+            if scl_href is not None:
+                with rasterio.open(scl_href) as scl_src:
+                    scl_window = over_box(scl_src)
+                    if scl_window is not None:
+                        scl = scl_src.read(1, window=scl_window, out_shape=shape, resampling=Resampling.nearest)
 
-            return {
-                "mean": round(float(np.mean(vals)), 4),
-                "std": round(float(np.std(vals)), 4),
-                "min": round(float(np.min(vals)), 4),
-                "max": round(float(np.max(vals)), 4),
-                "median": round(float(np.median(vals)), 4),
-                "valid_pixels": int(len(vals)),
-            }
+    denom = b1 + b2
+    safe = np.where(denom != 0, denom, 1.0)
+    if index_name == "ndvi":
+        index_arr = np.where(denom != 0, (b2 - b1) / safe, 0.0)
+    else:
+        index_arr = np.where(denom != 0, (b1 - b2) / safe, 0.0)
+
+    valid = (index_arr >= -1.0) & (index_arr <= 1.0) & np.isfinite(index_arr)
+    valid &= (b1 > 0) | (b2 > 0)
+    in_scene = int(np.count_nonzero(valid))
+    if scl is not None:
+        valid &= ~np.isin(scl, list(SCL_UNUSABLE))
+    vals = index_arr[valid]
+
+    if len(vals) == 0:
+        return None
+
+    return {
+        "mean": round(float(np.mean(vals)), 4),
+        "std": round(float(np.std(vals)), 4),
+        "min": round(float(np.min(vals)), 4),
+        "max": round(float(np.max(vals)), 4),
+        "median": round(float(np.median(vals)), 4),
+        "valid_pixels": int(len(vals)),
+        "cloud_masked": scl is not None,
+        "clear_share": round(len(vals) / in_scene, 2) if scl is not None else None,
+    }
 
 
 async def compute_spectral_index(
@@ -174,10 +207,11 @@ async def compute_spectral_index(
             "error": f"Scene missing required bands for {index_name.upper()}: need {formula['band1']} and {formula['band2']}",
         }
 
+    scl_href = _resolve_band_href(assets, "scl")
     try:
         stats = await loop.run_in_executor(
             None,
-            lambda: _compute_stats_from_cogs(band1_href, band2_href, bbox, index_name),
+            lambda: _compute_stats_from_cogs(band1_href, band2_href, bbox, index_name, scl_href),
         )
     except Exception as e:
         logger.warning("Stats computation failed for %s: %s", index_name, e)
@@ -225,8 +259,14 @@ async def compute_spectral_index(
 
     if stats:
         response["statistics"] = stats
+        clear = stats.get("clear_share")
+        if clear is not None and clear < MOSTLY_CLEAR:
+            response["warning"] = (
+                f"Only {clear:.0%} of this area was clear of cloud in this scene; "
+                "the statistics describe that part only, and the map layer still shows the cloud."
+            )
     else:
         response["statistics"] = None
-        response["warning"] = "No valid pixels found for statistics computation"
+        response["warning"] = "No clear ground in this area in this scene, so there are no statistics."
 
     return response
