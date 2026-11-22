@@ -11,19 +11,32 @@ as well as in the crop, and no cut-off for a real change has been tested.
 
 The day of a flight is the day the reader gave (layer metadata "flown_on"). A photo with no day given is said by
 the day it was added, in those words, so an upload day is never passed off as a flight day.
+
+A day the photo's own file gives (a date kept inside it, or in its name) is offered to the reader beside the place
+where the day is asked, and is never taken as the flight day on its own: a photo map is often put together days
+after the flight, a camera's clock can be wrong, and most programs that make photo maps write no date at all (of
+the 8 photos kept on 2026-11-22, all from Pix4D, none had one). It becomes the flight day only when the reader
+says so, and is then their word like any other day they give.
 """
 
 from __future__ import annotations
 
+import asyncio
+import hashlib
+import json
 import logging
+import re
+import time
 from datetime import date, datetime
 from zoneinfo import ZoneInfo
-from typing import Any, Awaitable, Callable, Optional
+from typing import Any, Awaitable, Callable, Iterable, Optional
 
+import rasterio
 from shapely.errors import ShapelyError
 from shapely.geometry import box, shape
 
-from src.services import field_health, photo_plots
+from src.services import field_health, photo_plots, raster_process, stored_files
+from src.services.gdal_http import GDAL_HTTP_TIMEOUTS
 
 logger = logging.getLogger(__name__)
 
@@ -66,6 +79,219 @@ def check_day(day: date, today: date) -> None:
 def day_said(day: date, flown: bool) -> str:
     words = f"{day.day} {day.strftime('%B %Y')}"
     return words if flown else f"added {words}"
+
+
+# --- The day a photo's own file gives: offered to the reader, never taken as the flight day -----------------------
+
+TAKEN, MADE = "taken", "made"  # what a date inside the file is the date of: the pictures, or the file's writing
+FILE_DAY_PREFIX = "flight_day/v1"  # object storage: what a photo's file says of its day, read once per photo
+FILE_DAY_METHOD = "file-day-1"  # change when what is read from a file changes: older records are read again
+FILE_DAY_RETRY_SECONDS = 600  # a file that could not be read is not opened again sooner than this
+FILE_DAY_WAIT_SECONDS = 4.0  # a request waits this long for a file's first reading; a slower one is said on a later ask
+NO_FILE_DAY = "This file does not say when it was flown."
+# Tags that say when the pictures were taken, then tags that only say when the file was written (GDAL's names).
+_TAKEN_TAGS = ("ACQUISITIONDATETIME", "EXIF_DateTimeOriginal", "EXIF_DateTimeDigitized")
+_MADE_TAGS = ("TIFFTAG_DATETIME", "EXIF_DateTime")
+_XMP_MOMENT = r"(\d{4}-\d{2}-\d{2}(?:T[\d:.]+(?:Z|[+-]\d{2}:?\d{2})?)?)"
+_XMP_TAKEN = re.compile(r"(?:exif:DateTimeOriginal|photoshop:DateCreated)\s*(?:=\s*[\"']|>)\s*" + _XMP_MOMENT)
+_XMP_MADE = re.compile(r"xmp:CreateDate\s*(?:=\s*[\"']|>)\s*" + _XMP_MOMENT)
+_TAG_DAY = re.compile(r"\s*(\d{4})[:-](\d{2})[:-](\d{2})")  # EXIF's "2026:03:14 10:15:00" and ISO's "2026-03-14T..."
+# a moment that names its own time zone ("2026-03-14T23:30:00Z"): its day is taken where the first farms are
+_ZONED_MOMENT = re.compile(r"\s*(\d{4}-\d{2}-\d{2})[T ](\d{2}:\d{2}(?::\d{2})?)(?:\.\d+)?\s*(Z|[+-]\d{2}:?\d{2})\s*$")
+_MONTH_NUMBER = {name: number for number, names in enumerate((
+    ("january", "jan"), ("february", "feb"), ("march", "mar"), ("april", "apr"), ("may",), ("june", "jun"),
+    ("july", "jul"), ("august", "aug"), ("september", "sept", "sep"), ("october", "oct"), ("november", "nov"),
+    ("december", "dec")), start=1) for name in names}
+_MONTH_WORD = "|".join(sorted(_MONTH_NUMBER, key=len, reverse=True))
+# A whole day in a name, in an order that cannot be read two ways: year first ("2026-03-14", "20260314"), or with the
+# month in letters ("14Mar2026"). "03-04-2026" is not read: it is the 3rd of April to some and the 4th of March to others.
+# A digit that ends a word is part of the word ("Kaber1_Jan2019" is January 2019, not the 1st).
+_NAME_YEAR_FIRST = re.compile(r"(?<!\d)(20\d{2})[-_.]?(0[1-9]|1[0-2])[-_.]?(0[1-9]|[12]\d|3[01])(?!\d)")
+_NAME_MONTH_IN_LETTERS = re.compile(
+    rf"(?<![A-Za-z\d])(0?[1-9]|[12]\d|3[01])[-_. ]?({_MONTH_WORD})(?![a-z])[-_., ]*(20\d{{2}})(?!\d)", re.IGNORECASE)
+_NAME_MONTH_ONLY = re.compile(rf"(?<![a-z])({_MONTH_WORD})(?![a-z])[-_., ]*(20\d{{2}})(?!\d)", re.IGNORECASE)
+_file_day_failed_at: dict[str, float] = {}
+_file_day_reading: dict[str, "asyncio.Task[Optional[dict[str, Any]]]"] = {}  # one reading at a time per photo
+
+
+def _real_day(year: Any, month: Any, day: Any) -> Optional[date]:
+    try:
+        return date(int(year), int(month), int(day))
+    except ValueError:
+        return None
+
+
+def _tag_day(text: str) -> Optional[date]:
+    """The day in a tag's text. A camera's own clock ("2026:03:14 10:15:00") is taken as it stands; a moment that
+    names its zone is the day it was in UPLOAD_DAY_ZONE (23:30 UTC on the 14th is the 15th in Kigali)."""
+    found = _TAG_DAY.match(text)
+    day = _real_day(*found.groups()) if found else None
+    zoned = _ZONED_MOMENT.match(text) if day is not None else None
+    if zoned:
+        offset = "+00:00" if zoned.group(3) == "Z" else zoned.group(3)
+        try:
+            return datetime.fromisoformat(f"{zoned.group(1)}T{zoned.group(2)}{offset}").astimezone(UPLOAD_DAY_ZONE).date()
+        except ValueError:
+            return day
+    return day
+
+
+def day_in_tags(tags: dict[str, dict[str, Any]]) -> Optional[tuple[date, str]]:
+    """(day, TAKEN or MADE) from a file's tags by domain ("" for the default one), the day the pictures were taken
+    before the day the file was written; None when no tag holds a day."""
+    plain: dict[str, Any] = {}
+    for domain, items in tags.items():
+        if "xmp" not in domain.lower():
+            plain.update(items)
+    xmp = " ".join(str(value) for domain, items in tags.items() if "xmp" in domain.lower() for value in items.values())
+    for names, pattern, kind in ((_TAKEN_TAGS, _XMP_TAKEN, TAKEN), (_MADE_TAGS, _XMP_MADE, MADE)):
+        texts = [str(plain[name]) for name in names if plain.get(name)] + pattern.findall(xmp)
+        for text in texts:
+            day = _tag_day(text)
+            if day is not None:
+                return day, kind
+    return None
+
+
+def day_in_name(name: str) -> tuple[Optional[date], Optional[tuple[int, int]]]:
+    """(a whole day a file's name holds, else the (year, month) it holds); (None, None) for a name with neither."""
+    found = _NAME_YEAR_FIRST.search(name)
+    if found:
+        day = _real_day(*found.groups())
+        if day is not None:
+            return day, None
+    found = _NAME_MONTH_IN_LETTERS.search(name)
+    if found:
+        day = _real_day(found.group(3), _MONTH_NUMBER[found.group(2).lower()], found.group(1))
+        if day is not None:
+            return day, None
+    found = _NAME_MONTH_ONLY.search(name)
+    if found:
+        return None, (int(found.group(2)), _MONTH_NUMBER[found.group(1).lower()])
+    return None, None
+
+
+def _could_be(day: date, today: date) -> bool:
+    try:
+        check_day(day, today)
+    except ValueError:
+        return False
+    return True
+
+
+def file_day_offered(in_file: Optional[tuple[date, str]], names: Iterable[Optional[str]], today: date,
+                     file_read: bool = True) -> Optional[dict[str, Optional[str]]]:
+    """What the photo's file says of its day, as the reader is told it: {"day": the day offered (ISO) or None,
+    "said": the sentence}. The day the pictures were taken comes first; then a whole day in the file's name (someone
+    wrote it there for the flight); then the day the file was written (often days later); then a month in the name.
+    A day that cannot be a flight is not offered. None when the name tells nothing and the file could not be read:
+    it is not said to hold no date."""
+    inside = in_file if in_file is not None and _could_be(in_file[0], today) else None
+    if inside is not None and inside[1] == TAKEN:
+        return {"day": inside[0].isoformat(),
+                "said": f"The file says its pictures were taken on {day_said(inside[0], True)}."}
+    month: Optional[tuple[int, int]] = None
+    for name in names:
+        day, in_month = day_in_name(name or "")
+        if day is not None and _could_be(day, today):
+            return {"day": day.isoformat(), "said": f"The file's name says {day_said(day, True)}."}
+        month = month or in_month
+    if inside is not None:
+        return {"day": inside[0].isoformat(),
+                "said": (f"The file says it was made on {day_said(inside[0], True)}. "
+                         "A photo map is often put together some days after the flight.")}
+    if month is not None and _could_be(date(month[0], month[1], 1), today):
+        return {"day": None, "said": f"The file's name says {date(month[0], month[1], 1).strftime('%B %Y')}."}
+    return {"day": None, "said": NO_FILE_DAY} if file_read else None
+
+
+def _day_in_copies(urls: list[str], env: dict[str, str]) -> tuple[int, Optional[tuple[date, str]]]:
+    """(which of these copies of a photo opened, the day its tags hold), the first copy that opens (blocking, in a
+    worker process: no logging here). The file as it was added comes first: the app's own copy may not carry every
+    tag over. Only the day comes back, never the tags (an XMP packet can be megabytes), and an error names no link:
+    the links are signed."""
+    for number, url in enumerate(urls):
+        try:
+            with rasterio.Env(**env), rasterio.open(url) as ds:
+                tags = {"": dict(ds.tags())}
+                for domain in ds.tag_namespaces() or ():
+                    if domain not in ("IMAGE_STRUCTURE", "DERIVED_SUBDATASETS"):
+                        tags[domain] = dict(ds.tags(ns=domain))
+                return number, day_in_tags(tags)
+        except rasterio.errors.RasterioIOError:
+            continue
+    raise OSError("no copy of the photo could be opened")
+
+
+def file_day_key(photo_key: str) -> str:
+    """Where what a photo's file says of its day is kept (deleted with the photo's last layer)."""
+    return f"{FILE_DAY_PREFIX}/{hashlib.sha256(photo_key.encode()).hexdigest()[:32]}.json"
+
+
+def _not_read(photo_key: str) -> None:
+    now = time.monotonic()
+    if len(_file_day_failed_at) > 2000:  # photos that never open: the ones past their wait are let go
+        for key in [key for key, at in _file_day_failed_at.items() if now - at >= FILE_DAY_RETRY_SECONDS]:
+            del _file_day_failed_at[key]
+    _file_day_failed_at[photo_key] = now
+
+
+async def _read_file_day(s3: Any, bucket: str, photo_key: str, urls: list[str]) -> Optional[dict[str, Any]]:
+    """What the file says, read now and kept; None when it could not be told (said as not read, tried again later)."""
+    try:
+        copy, found = await asyncio.to_thread(raster_process.run, _day_in_copies, urls, GDAL_HTTP_TIMEOUTS)
+    except Exception as why:  # noqa: BLE001 - whatever stopped the reading, the fields are still shown
+        # the error's own words can hold the signed link to the photo: only its kind is logged
+        logger.warning("flight day: photo %s could not be read for its date (%s)", photo_key, type(why).__name__)
+        _not_read(photo_key)
+        return None
+    if found is None and copy > 0:
+        # only a later copy opened, and it holds no day: the file as it was added may still hold one. Not kept as
+        # "no date", which would then be said for good.
+        _not_read(photo_key)
+        return None
+    record = {"method": FILE_DAY_METHOD, "day": found[0].isoformat() if found else None,
+              "kind": found[1] if found else None}
+    try:
+        await s3.put_object(Bucket=bucket, Key=file_day_key(photo_key), Body=json.dumps(record).encode(),
+                            ContentType="application/json")
+    except Exception as why:  # noqa: BLE001 - said this time all the same; read again on a later ask
+        logger.warning("flight day: what the file of photo %s says could not be kept (%s)", photo_key,
+                       type(why).__name__)
+        _not_read(photo_key)
+    return record
+
+
+async def day_in_file(s3: Any, bucket: str, photo_key: str,
+                      urls: list[str]) -> tuple[bool, Optional[tuple[date, str]]]:
+    """(whether the file was read, the day inside it with what it is the day of), from the first of `urls` (links to
+    copies of the photo, the file as it was added first) that opens. The file is opened once per photo and what it
+    says is kept. A request waits FILE_DAY_WAIT_SECONDS for a first reading, which goes on beside it; a file not
+    read yet, or one that could not be read, is said as not read and asked again later. Never raises for the file."""
+    try:
+        kept = await stored_files.load_json(s3, bucket, file_day_key(photo_key))
+    except ValueError:  # a kept record that is no JSON is read as none, and written again
+        kept = None
+    if not (isinstance(kept, dict) and kept.get("method") == FILE_DAY_METHOD):
+        if time.monotonic() - _file_day_failed_at.get(photo_key, float("-inf")) < FILE_DAY_RETRY_SECONDS:
+            return False, None
+        reading = _file_day_reading.get(photo_key)
+        if reading is None or reading.done():
+            reading = asyncio.create_task(_read_file_day(s3, bucket, photo_key, urls))
+            _file_day_reading[photo_key] = reading
+            reading.add_done_callback(
+                lambda done, key=photo_key: _file_day_reading.pop(key, None) if _file_day_reading.get(key) is done else None)
+        try:
+            kept = await asyncio.wait_for(asyncio.shield(reading), FILE_DAY_WAIT_SECONDS)
+        except asyncio.TimeoutError:
+            return False, None
+        if kept is None:
+            return False, None
+    try:
+        day = date.fromisoformat(str(kept.get("day") or ""))
+    except ValueError:
+        return True, None
+    return True, (day, MADE if kept.get("kind") != TAKEN else TAKEN)
 
 
 def when(metadata: dict[str, Any], uploaded: Any) -> Optional[tuple[date, bool]]:

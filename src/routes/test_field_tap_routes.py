@@ -484,6 +484,75 @@ async def test_an_uploaded_document_is_removed_for_good_with_its_links(client, p
 
 
 @pytest.mark.anyio
+async def test_the_photos_own_file_is_asked_for_its_day_and_the_reader_decides(client, photo, taps_on, monkeypatch):
+    from rasterio.io import MemoryFile
+    from rasterio.transform import from_origin
+
+    from src.services import field_flights
+
+    # other tests' photos share this one's storage key and have no file: their failed read must not hold this one off
+    monkeypatch.setattr(field_flights, "FILE_DAY_RETRY_SECONDS", 0)
+    ids = await photo()
+    with MemoryFile() as memory:
+        with memory.open(driver="GTiff", width=4, height=4, count=1, dtype="uint8", crs="EPSG:4326",
+                         transform=from_origin(30, -2, 0.001, 0.001)) as ds:
+            ds.write(np.zeros((1, 4, 4), dtype="uint8"))
+            ds.update_tags(TIFFTAG_DATETIME="2026:03:16 08:30:00")
+        get_s3_client().put_object(Bucket=get_bucket_name(), Key=ids["key"], Body=memory.read())
+    base = f"/api/layer/{ids['layer']}/field-taps"
+    _as(ids["owner"])
+    state = (await client.get(base)).json()
+    # the day the file was written is offered in those words, and is not taken as the flight day
+    assert state["file_day"]["day"] == "2026-03-16" and "it was made on 16 March 2026" in state["file_day"]["said"]
+    assert state["flown_on"] is None
+    assert (await client.put(f"{base}/flown-on", json={"day": state["file_day"]["day"]})).json() == {
+        "flown_on": "2026-03-16"}
+    after = (await client.get(base)).json()
+    assert after["flown_on"] == "2026-03-16" and after["file_day"] is None  # the reader's word now; nothing offered
+    # what the file said is kept by the photo's key, which other tests reuse: it is taken away again
+    get_s3_client().delete_object(Bucket=get_bucket_name(), Key=field_flights.file_day_key(ids["key"]))
+
+
+@pytest.mark.anyio
+async def test_the_file_as_it_was_added_is_read_before_the_apps_copy_and_a_failure_still_shows_the_fields(
+        client, photo, taps_on, monkeypatch):
+    from rasterio.io import MemoryFile
+    from rasterio.transform import from_origin
+
+    from src.services import field_flights
+
+    monkeypatch.setattr(field_flights, "FILE_DAY_RETRY_SECONDS", 0)
+    ids = await photo()
+    added_as = f"test/field_taps/added-{ids['layer']}.tif"
+    store, bucket = get_s3_client(), get_bucket_name()
+    for key, tags in ((added_as, {"EXIF_DateTimeOriginal": "2026:03:14 10:15:00"}), (ids["key"], {})):
+        with MemoryFile() as memory:
+            with memory.open(driver="GTiff", width=4, height=4, count=1, dtype="uint8", crs="EPSG:4326",
+                             transform=from_origin(30, -2, 0.001, 0.001)) as ds:
+                ds.write(np.zeros((1, 4, 4), dtype="uint8"))
+                ds.update_tags(**tags)
+            store.put_object(Bucket=bucket, Key=key, Body=memory.read())
+    conn = await _admin()
+    try:
+        await conn.execute("UPDATE map_layers SET s3_key = $2 WHERE layer_id = $1", ids["layer"], added_as)
+    finally:
+        await conn.close()
+    base = f"/api/layer/{ids['layer']}/field-taps"
+    _as(ids["owner"])
+    state = (await client.get(base)).json()
+    # the app's copy holds no day; the file as it was added does, and it is the one read
+    assert state["file_day"] == {"day": "2026-03-14", "said": "The file says its pictures were taken on 14 March 2026."}
+    store.delete_object(Bucket=bucket, Key=field_flights.file_day_key(ids["key"]))
+
+    async def storage_down(*args, **kwargs):
+        raise OSError("storage is down")
+
+    monkeypatch.setattr(field_flights, "day_in_file", storage_down)
+    again = await client.get(base)
+    assert again.status_code == 200 and again.json()["file_day"] is None and "kept" in again.json()
+
+
+@pytest.mark.anyio
 async def test_a_field_is_followed_on_the_other_flights_of_its_place_by_the_day_the_reader_gives(client, photo, taps_on,
                                                                                                  monkeypatch):
     from src.services import field_health
@@ -494,10 +563,13 @@ async def test_a_field_is_followed_on_the_other_flights_of_its_place_by_the_day_
     kept = (await client.post(f"{base}/kept", json=_json(_tap(60, 10), pick=0))).json()
     first = (await client.get(base)).json()
     assert first["flown_on"] is None and first["kept"][0]["facts"]["flights"] == []  # one photo: nothing about flights
+    # this test photo has no file in storage: it could not be read, so it is not said to hold no date
+    assert first["file_day"] is None
     # the day of the flight is the reader's to give; not a day to come, and not a viewer's to give
     assert (await client.put(f"{base}/flown-on", json={"day": "2999-01-01"})).status_code == 422
     assert (await client.put(f"{base}/flown-on", json={"day": "soon"})).status_code == 422
     assert (await client.put(f"{base}/flown-on", json={"day": "2026-04-02"})).json() == {"flown_on": "2026-04-02"}
+    assert (await client.get(base)).json()["file_day"] is None  # the reader's word stands: nothing more is offered
     _as(VIEWER)
     assert (await client.put(f"{base}/flown-on", json={"day": "2026-04-03"})).status_code == 403
     _as(ids["owner"])

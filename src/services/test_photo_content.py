@@ -61,7 +61,7 @@ class _Layers:
 def test_a_photo_and_its_analyses_go_with_its_last_layer():
     """Copies share one optimised photo: it, its index entry and its found plots stay while any layer uses it and
     are deleted with the last one; another photo's index entry for the same bytes is left alone (audit R1-23)."""
-    from src.services import drone_plots
+    from src.services import drone_plots, field_flights
 
     cog = "cog/layer/L1.cog.tif"
     meta = {"cog_key": cog, "content_sha256": "sha"}
@@ -70,6 +70,7 @@ def test_a_photo_and_its_analyses_go_with_its_last_layer():
         s3 = _S3WithDelete()
         s3.objects[cog] = b"cog"
         s3.objects[drone_plots.stored_plots_key(cog)] = b"{}"
+        s3.objects[field_flights.file_day_key(cog)] = b"{}"
         await photo_content.remember(s3, "b", "sha", "EPSG:3857", cog, "EPSG:3857")
         await photo_content.remember(s3, "b", "sha", "EPSG:4326", "cog/layer/L2.cog.tif", "EPSG:4326")
 
@@ -77,7 +78,8 @@ def test_a_photo_and_its_analyses_go_with_its_last_layer():
         assert cog in s3.objects
 
         deleted = await photo_content.forget_if_unused(_Layers(using=0), s3, "b", meta)
-        assert set(deleted) == {cog, drone_plots.stored_plots_key(cog), photo_content.index_key("sha", "EPSG:3857")}
+        assert set(deleted) == {cog, drone_plots.stored_plots_key(cog), field_flights.file_day_key(cog),
+                                photo_content.index_key("sha", "EPSG:3857")}
         assert photo_content.index_key("sha", "EPSG:4326") in s3.objects  # the other CRS's photo is not this one
         assert await photo_content.forget_if_unused(_Layers(using=0), s3, "b", {}) == []  # no photo: nothing to do
 
