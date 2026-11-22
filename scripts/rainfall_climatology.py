@@ -26,7 +26,7 @@ import rasterio
 from rasterio.features import geometry_mask
 from rasterio.windows import from_bounds
 
-COG = "https://data.chc.ucsb.edu/products/CHIRPS-2.0/global_monthly/cogs/chirps-v2.0.{y}.{m:02d}.cog"
+COG = "https://data.chc.ucsb.edu/products/CHIRPS/v2.0/global_monthly/cogs/chirps-v2.0.{y}.{m:02d}.cog"
 RWANDA_BOUNDS = (28.8, -2.9, 30.95, -1.0)  # west, south, east, north
 SEASON_MONTHS = {"A": (9, 10, 11, 12, 13), "B": (2, 3, 4, 5)}  # 13 = January of next year
 

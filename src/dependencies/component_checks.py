@@ -343,8 +343,9 @@ async def check_earth_search() -> str:
 
 async def check_chirps() -> str:
     day = date.today() - timedelta(days=60)  # the final product lags three weeks or more
-    url = (f"https://data.chc.ucsb.edu/products/CHIRPS-2.0/africa_daily/tifs/p05/{day:%Y}/"
-           f"chirps-v2.0.{day:%Y.%m.%d}.tif.gz")
+    from src.services.forecast_fusion import chirps_final_url  # the address the rain reads use, not a copy
+
+    url = chirps_final_url(day)
     status, _ = await _in_thread(_http, url, "HEAD", None, None, 20)
     if status != 200:
         raise CheckFailed(f"HTTP {status} for the {day} file")

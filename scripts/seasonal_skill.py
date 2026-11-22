@@ -37,7 +37,7 @@ YEARS = list(range(1993, 2026))
 FORECAST_YEAR = 2026
 AREA = [-0.5, 28.5, -3.5, 31.5]  # N, W, S, E: the 1-degree grid points around Rwanda
 RWANDA_BOUNDS = (28.8, -2.9, 30.95, -1.0)
-COG = "https://data.chc.ucsb.edu/products/CHIRPS-2.0/global_monthly/cogs/chirps-v2.0.{y}.{m:02d}.cog"
+COG = "https://data.chc.ucsb.edu/products/CHIRPS/v2.0/global_monthly/cogs/chirps-v2.0.{y}.{m:02d}.cog"
 MONTHS = (10, 11, 12)
 
 

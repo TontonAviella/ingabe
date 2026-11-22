@@ -62,7 +62,7 @@ import urllib.error
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor, wait
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -77,12 +77,17 @@ _ARCHIVE_API = "https://archive-api.open-meteo.com/v1/archive"
 # product lags by weeks (e.g. on 2026-10-04 it ended on 2026-08-31); the
 # preliminary global daily product (fewer gauges) lags by about 5 days and is
 # used for days the final product does not have yet.
-_CHIRPS_BASE = (
-    "https://data.chc.ucsb.edu/products/CHIRPS-2.0/africa_daily/tifs/p05"
-)
-_CHIRPS_PRELIM_BASE = (
-    "https://data.chc.ucsb.edu/products/CHIRPS-2.0/prelim/global_daily/tifs/p05"
-)
+# The Climate Hazards Center moved the whole product from /products/CHIRPS-2.0/ to /products/CHIRPS/v2.0/
+# (found 2026-11-22: every old address answered 404, so rain read as unknown). One root, so the health
+# check (component_checks.check_chirps) asks for the same address the rain reads use.
+CHIRPS_ROOT = "https://data.chc.ucsb.edu/products/CHIRPS/v2.0"
+_CHIRPS_BASE = f"{CHIRPS_ROOT}/africa_daily/tifs/p05"
+_CHIRPS_PRELIM_BASE = f"{CHIRPS_ROOT}/prelim/global_daily/tifs/p05"
+
+
+def chirps_final_url(day: date) -> str:
+    """Where the final daily rain file for ``day`` lives. The rain reads and the health check both ask here."""
+    return f"{_CHIRPS_BASE}/{day.year}/chirps-v2.0.{day:%Y.%m.%d}.tif.gz"
 
 # Variables we correct — mapped to their archive API names
 _CORRECTABLE_VARS = {
@@ -228,7 +233,7 @@ def _fetch_chirps_one(
     dt = datetime.strptime(date_str, "%Y-%m-%d")
     fname = f"chirps-v2.0.{dt.strftime('%Y.%m.%d')}.tif.gz"
     try:
-        return date_str, _chirps_pixel(f"{_CHIRPS_BASE}/{dt.year}/{fname}", lat, lon), False
+        return date_str, _chirps_pixel(chirps_final_url(dt), lat, lon), False
     except urllib.error.HTTPError as e:
         if e.code != 404:
             return date_str, None, False
