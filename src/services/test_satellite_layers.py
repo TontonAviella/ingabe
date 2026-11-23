@@ -74,6 +74,18 @@ def test_the_plants_layer_is_solid_hexagons_in_the_shared_shades_with_older_look
     assert scale["mark"]["at"] == sv.plants_facts(_plants(), TODAY)["median"]  # the number the sentences say
     assert legend["notes"] == [{"label": "Grey: an older look", "color": sl.OLDER_IN_LEGEND}]
     assert "notes" not in sl.plants_legend(_plants(old_part=False))
+    # the grey is named by which side of the main look it lies on (the day in the title is the one in colour)
+    newer = _plants(old_part=False)
+    newer.seen[:, 3] = (TODAY - timedelta(days=31)).toordinal()
+    newer.seen[:, :3] = (TODAY - timedelta(days=60)).toordinal()  # most of it seen long before: that is the main look
+    assert sl.plants_legend(newer)["title"] == "Plants from the satellite (NDVI), seen 24 Sep 2026"
+    assert sl.plants_legend(newer)["notes"] == [{"label": "Grey: a newer look", "color": sl.OLDER_IN_LEGEND}]
+    assert sl.plants_legend(newer)["items"][-1]["label"] == "Grey: a newer look, darker where greener (tap it for its day)"
+    both = _plants(old_part=False)
+    both.seen[:, 0] = (TODAY - timedelta(days=31)).toordinal()
+    both.seen[:, 1:3] = (TODAY - timedelta(days=60)).toordinal()
+    both.seen[0, 1] = (TODAY - timedelta(days=120)).toordinal()
+    assert sl.plants_legend(both)["notes"] == [{"label": "Grey: seen on another day", "color": sl.OLDER_IN_LEGEND}]
     layers = sl.plants_style("L1", legend, PLANTS_BANDS)
     assert [layer["id"] for layer in layers] == [
         "satellite-plants-L1-r10", "satellite-plants-edge-L1-r10", "satellite-plants-L1-r11", "satellite-plants-edge-L1-r11",
@@ -85,8 +97,9 @@ def test_the_plants_layer_is_solid_hexagons_in_the_shared_shades_with_older_look
     assert small["minzoom"] == 16.5 and "maxzoom" not in small
     assert small["filter"] == ["any", ["==", ["get", "h3_resolution"], 12], ["==", ["get", "h3_resolution"], "12"]]
     assert wide["source"] == "L1" and wide["metadata"]["mundi:legend"] == legend
-    case, is_older, grey, fresh = wide["paint"]["fill-color"]
-    assert case == "case" and is_older == ["==", ["get", "older"], True]
+    case, another_moment, grey, fresh = wide["paint"]["fill-color"]
+    # one moment in colour: a look two weeks or more from the main one is grey, older or newer
+    assert case == "case" and another_moment == ["any", ["==", ["get", "older"], True], ["==", ["get", "newer"], True]]
     assert grey[0] == "interpolate" and grey[-4:] == [0, "#f3f4f6", 0.8, "#4b5563"]
     assert fresh == ["step", ["coalesce", ["get", "ndvi"], -1], "#d73027", 0.1, "#f46d43", 0.2, "#fdae61", 0.3, "#d9ef8b",
                      0.4, "#a6d96a", 0.5, "#66bd63", 0.6, "#1a9850", 0.7, "#006837"]
@@ -150,9 +163,9 @@ def test_the_soil_legend_is_one_figure_and_where_it_sits_in_its_year_in_the_sent
 
 
 def test_the_stamps_change_when_the_satellites_have_something_newer_or_the_drawing_changes():
-    assert sl.plants_stamp(_plants()) == "hexagons-2:2026-10-23,2026-11-19"
-    assert sl.plants_stamp(_plants(old_part=False)) == "hexagons-2:2026-11-19"
-    assert sl.soil_stamp(_soil()) == "hexagons-2:2026-11-D1:first" and sl.soil_stamp(_soil(first=False)) == "hexagons-2:2026-11-D1:final"
+    assert sl.plants_stamp(_plants()) == "hexagons-3:2026-10-23,2026-11-19"
+    assert sl.plants_stamp(_plants(old_part=False)) == "hexagons-3:2026-11-19"
+    assert sl.soil_stamp(_soil()) == "hexagons-3:2026-11-D1:first" and sl.soil_stamp(_soil(first=False)) == "hexagons-3:2026-11-D1:final"
 
 
 @pytest.fixture
@@ -187,10 +200,10 @@ async def test_two_layers_are_saved_plants_first_so_soil_moisture_is_drawn_over_
     plants, soil = saved
     assert soil["metadata"] == {
         "source": "satellite_view", "analysis_kind": sl.SOIL_KIND, "source_layer_id": "Lphoto",
-        "data_stamp": "hexagons-2:2026-11-D1:first", "h3_resolutions": [10],
+        "data_stamp": "hexagons-3:2026-11-D1:first", "h3_resolutions": [10],
         "zoom_resolution_map": [{"h3_resolution": 10, "minzoom": 0.0, "maxzoom": 24.0}], "square_m": 100, "period": "2026-11-D1"}
     assert plants["metadata"]["analysis_kind"] == sl.PLANTS_KIND
-    assert plants["metadata"]["data_stamp"] == "hexagons-2:2026-10-23,2026-11-19" and plants["metadata"]["h3_resolutions"] == [12]
+    assert plants["metadata"]["data_stamp"] == "hexagons-3:2026-10-23,2026-11-19" and plants["metadata"]["h3_resolutions"] == [12]
     assert plants["maxzoom"] == sl.PLANTS_MAXZOOM and soil["maxzoom"] == sl.SOIL_MAXZOOM
     assert {f["geometry"]["type"] for f in plants["feature_collection"]["features"]} == {"Polygon"}
     assert {f["geometry"]["type"] for f in soil["feature_collection"]["features"]} == {"Polygon", "Point"}
@@ -201,8 +214,8 @@ async def test_two_layers_are_saved_plants_first_so_soil_moisture_is_drawn_over_
 @pytest.mark.anyio
 async def test_asked_again_with_nothing_newer_the_layers_already_there_are_used(saving):
     there, saved = saving
-    there[sl.PLANTS_KIND] = ("Lold1", "Plants (NDVI) - Cyampirita", "hexagons-2:2026-10-23,2026-11-19", list(BOX))
-    there[sl.SOIL_KIND] = ("Lold2", "Soil moisture - Cyampirita", "hexagons-2:2026-11-D1:first", list(BOX))
+    there[sl.PLANTS_KIND] = ("Lold1", "Plants (NDVI) - Cyampirita", "hexagons-3:2026-10-23,2026-11-19", list(BOX))
+    there[sl.SOIL_KIND] = ("Lold2", "Soil moisture - Cyampirita", "hexagons-3:2026-11-D1:first", list(BOX))
     layers = await _put(_view())
     assert saved == [] and [(layer.layer_id, layer.reused) for layer in layers] == [("Lold1", True), ("Lold2", True)]
 
@@ -210,7 +223,7 @@ async def test_asked_again_with_nothing_newer_the_layers_already_there_are_used(
 @pytest.mark.anyio
 async def test_a_newer_picture_or_one_drawn_the_old_way_gives_its_place_on_the_map(saving):
     there, saved = saving
-    there[sl.PLANTS_KIND] = ("Lold1", "Plants (NDVI) - Cyampirita", "hexagons-2:2026-10-23", list(BOX))
+    there[sl.PLANTS_KIND] = ("Lold1", "Plants (NDVI) - Cyampirita", "hexagons-3:2026-10-23", list(BOX))
     there[sl.SOIL_KIND] = ("Lold2", "Soil moisture - Cyampirita", "2026-11-D1:first", list(BOX))  # squares, before hexagons
     layers = await _put(_view())
     assert [layer["replaces"] for layer in saved] == [("Lold1",), ("Lold2",)]

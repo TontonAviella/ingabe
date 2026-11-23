@@ -15,9 +15,11 @@ project_satellite_ndvi_soil_check_2026_11_23):
   squares flagged under 0.1% of the squares on the 22 sharpest passes of the year, and 38% and 49% on the two
   passes seen hazy by eye. One place, judged by eye: a first rule, not a tested one.
 - A square seen a month before its neighbour is not the same crop moment: NDVI went 0.31 to 0.55 between
-  8 Oct and 19 Nov on the same squares. So every square carries the day it was seen, and a hexagon whose
-  look is older than the photo's main one is drawn in grey: in the legend's colours a month-old look reads as a
-  sick crop beside a fresh one (seen on the Cyampirita photo: the third last seen 23 Oct drew orange).
+  8 Oct and 19 Nov on the same squares. So every square carries the day it was seen, and one moment is drawn
+  in colour: the day most of the photo was seen, with looks within two weeks of it. A hexagon whose look is two
+  weeks or more from it, older or newer, is drawn in grey: in the legend's colours a month-old look reads as a
+  sick crop beside a fresh one (seen on the Cyampirita photo: the third last seen 23 Oct drew orange), and a
+  newer look beside an older main one reads as a healthier patch for the same reason.
 - FAO WaPOR soil moisture (L2-RSM-D, 100 m, every 10 days) has a value on every square of Rwanda. It follows
   the wet and dry seasons (12 of 12 places) but not whether rain was above or below usual (rank correlation
   0.14 against CHIRPS, bar 0.40), and FAO replaces each file about 67 days later with a steadier one. So it
@@ -30,7 +32,13 @@ project_satellite_ndvi_soil_check_2026_11_23):
   with the offset still in the file it could not read under 1,000. Applying it again would pull every NDVI.
 - At 11 other farming places (2026-11-23, boxes of 108 ha in both of Rwanda's satellite zones) the kept NDVI
   equalled a separate read of the same files on every square, and every square had a clear look. At 5 of them
-  the main look was the older one, with a newer look on 6% to 40% of the box: the sentences say so.
+  the main look was the older one, with a newer look on 6% to 40% of the box. Since the same evening that
+  newer look is in grey too (Roger: decide how to draw it). The day most of the photo was seen stays the one in
+  colour and is not swapped for the newest: the coloured part is then never less than the largest day's share
+  (45% to 97% at the 11 places), and no share of the photo decides, by a point or two, which day is the picture.
+  The cost: where clouds let the newest pass see only a part (5% to 40% of the box at 7 of the 11 places), that
+  fresher part is the grey one; its hexagons
+  still say their NDVI and day, and the sentences say how much of the photo it is.
 
 Nothing here is drawn or worded for a screen: `view` returns measured values, `plants_hexagons` and
 `soil_hexagons` the hexagons to draw, `words` the plain facts cards and Sage both read, and `of_fields` what
@@ -82,7 +90,7 @@ SQUARE_M = 10  # Sentinel-2's red and near-infrared pixels
 LOOKBACKS = (45, 100, 180)
 HAZE_BLUE = 900.0  # blue reflectance x 10,000; sharp passes read 330-750 across the photo, hazy ground 1,080+
 HAZE_BLOCK = 7  # squares on a side (70 m): haze is wide, a bright roof or bare plot is not
-OLDER_AFTER_DAYS = 14  # a square seen this long before the photo's main look is marked as an older look
+OLDER_AFTER_DAYS = 14  # a square seen this long before or after the photo's main look is another moment: drawn in grey
 EARLIER_GAP_DAYS = 14  # a change is measured against a look at least this much older
 EARLIER_SHARE = 0.5  # of the main look's squares that the earlier look must cover before change is stated
 EARLIER_PASSES = 6  # older passes read at most, after the photo is covered, to find that earlier look
@@ -924,8 +932,8 @@ def plants_hexagons(plants: Plants, bbox: Sequence[float]) -> dict[str, Any]:
 
     Every size covers the whole frame wherever a pass saw the ground. A hexagon says the mean NDVI of the squares
     under it, its class in ndvi_classes' words, the day most of it was seen (with its year: the layer is saved on
-    a map and read on later days), whether that is an older look than the photo's main one, and, on the wider
-    sizes, its weakest square: the reason to zoom in."""
+    a map and read on later days), whether that is an older or a newer look than the photo's main one, and, on the
+    wider sizes, its weakest square: the reason to zoom in."""
     count = int((plants.seen > 0).sum())
     side = max(1, int(np.ceil(np.sqrt(count / MAX_SQUARES))))
     ndvi = _blocks(plants.ndvi, side, "mean")
@@ -974,11 +982,14 @@ def plants_hexagons(plants: Plants, bbox: Sequence[float]) -> dict[str, Any]:
             value = round(float(mean[i]), 2)
             cls = ndvi_classes.ndvi_class(value)
             older = (main - day).days >= OLDER_AFTER_DAYS
+            newer = (day - main).days >= OLDER_AFTER_DAYS
             properties: dict[str, Any] = {"plants": ndvi_classes.ground_label(cls) if cls else "", "ndvi": value}
             if size != sizes[-1]:
                 properties["weakest"] = round(float(weakest[i]), 2)
-            properties.update({"seen_on": f"{day.day} {day:%b %Y}", "older": bool(older), "h3_resolution": size})
+            properties.update({"seen_on": f"{day.day} {day:%b %Y}", "older": bool(older), "newer": bool(newer),
+                               "h3_resolution": size})
             notes = (["An older look than most of the photo"] if older else []) + (
+                ["A newer look than most of the photo"] if newer else []) + (
                 ["Parts of it were seen on other days"] if mixed[i] else []) + (
                 ["Seen through haze: may read low"] if through_haze[i] else [])
             if notes:
@@ -1066,6 +1077,7 @@ class FieldSeen:
     older: bool  # that day is an older look than the photo's main one
     soil: Optional[float]  # soil moisture of the 100 m square under the field's middle
     period: Optional[str]  # the ten days that reading is for
+    newer: bool = False  # that day is a newer look than the photo's main one
 
 
 def _whole_squares(outline: Any, grid: Grid) -> np.ndarray:
@@ -1098,7 +1110,7 @@ def field_seen(seen: View, geometry: dict[str, Any], to_grid: Optional[Callable[
         return None
     if outline.is_empty:
         return None
-    whole_squares, squares, ndvi, day, older = 0, 0, None, None, False
+    whole_squares, squares, ndvi, day, older, newer = 0, 0, None, None, False, False
     plants = seen.plants
     if plants is not None:
         to_grid = to_grid or Transformer.from_crs("EPSG:4326", plants.grid.crs, always_xy=True).transform
@@ -1111,6 +1123,7 @@ def field_seen(seen: View, geometry: dict[str, Any], to_grid: Optional[Callable[
             on_day = sharp & (plants.seen == main)
             squares, day = int(on_day.sum()), date.fromordinal(main)
             older = main <= plants.main_day.toordinal() - OLDER_AFTER_DAYS
+            newer = main >= plants.main_day.toordinal() + OLDER_AFTER_DAYS
             if squares >= FIELD_SQUARES:
                 ndvi = float(np.median(plants.ndvi[on_day]))
     soil, period = None, None
@@ -1123,7 +1136,8 @@ def field_seen(seen: View, geometry: dict[str, Any], to_grid: Optional[Callable[
             soil, period = float(seen.soil.percent[row, col]), seen.soil.period
     if plants is None and soil is None:
         return None
-    return FieldSeen(whole=whole_squares, squares=squares, ndvi=ndvi, day=day, older=older, soil=soil, period=period)
+    return FieldSeen(whole=whole_squares, squares=squares, ndvi=ndvi, day=day, older=older, soil=soil, period=period,
+                     newer=newer)
 
 
 def field_words(field: FieldSeen, today: date, plants_held: bool = True) -> tuple[Optional[str], Optional[str]]:
@@ -1133,14 +1147,17 @@ def field_words(field: FieldSeen, today: date, plants_held: bool = True) -> tupl
     short, sentences = None, []
     if field.ndvi is not None and field.day is not None:
         when = _day_words(field.day, today)
-        short = f"satellite NDVI {field.ndvi:.2f} on {when}" + (", an older look" if field.older else "")
+        short = f"satellite NDVI {field.ndvi:.2f} on {when}" + (
+            ", an older look" if field.older else ", a newer look" if field.newer else "")
         made_of = (f"the {field.squares} whole {SQUARE_M} m squares inside this field" if field.squares == field.whole
                    else f"{field.squares} of the {field.whole} whole {SQUARE_M} m squares inside this field (the others "
                         "had no clear look that day)")
         sentences.append(
             f"From the satellite (Sentinel-2): NDVI {field.ndvi:.2f} on {when}, the middle of {made_of}."
             + (" That is weeks older than the look most of the photo has, so do not read it against fields seen later."
-               if field.older else ""))
+               if field.older else
+               " That is weeks newer than the look most of the photo has, so do not read it against fields seen earlier."
+               if field.newer else ""))
     elif plants_held and field.whole < FIELD_SQUARES:
         holds = "none" if field.whole == 0 else str(field.whole)
         sentences.append(f"From the satellite: this field holds {holds} of the satellite's {SQUARE_M} m squares whole, "
@@ -1255,14 +1272,14 @@ def plants_facts(plants: Plants, today: date) -> dict[str, Any]:
         parts["older"] = (f"{_percent(old)} of the photo holds an older look, drawn in grey: clouds hid it on "
                           f"{_day_words(main, today)}, so it must not be read against the fresh part.")
     # The main look can itself be the older one: at 5 of 11 other farming places (2026-11-23) a newer look, two weeks
-    # or more after the main one, covered 6% to 40% of the box. It is drawn in the legend's colours beside the main
-    # look, so the words must say that the two parts are weeks apart.
+    # or more after the main one, covered 6% to 40% of the box. It is drawn in grey like an older one, and the
+    # words say why.
     later = plants.seen >= main.toordinal() + OLDER_AFTER_DAYS
     if float(later.mean()) >= 0.05:
         newest = date.fromordinal(int(plants.seen[later].max()))
-        parts["newer"] = (f"{_percent(float(later.mean()))} of the photo holds a newer look (up to {_day_words(newest, today)}) "
-                          f"than the main one of {_day_words(main, today)}: a difference between the two parts can be "
-                          "the weeks between them, not the crop.")
+        parts["newer"] = (f"{_percent(float(later.mean()))} of the photo holds a newer look (up to {_day_words(newest, today)}), "
+                          f"drawn in grey: clouds hid the rest then, so it must not be read against the main look of "
+                          f"{_day_words(main, today)}.")
     haze_share = float(plants.hazy.mean())
     if haze_share >= 0.01:
         parts["haze"] = f"{_percent(haze_share)} was only seen through haze and may read low."

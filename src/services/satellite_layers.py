@@ -5,7 +5,8 @@ layer holds its picture in up to three hexagon sizes, and the map shows one size
 smaller ones as it is zoomed in, so a weak patch can be followed down to where it sits.
 
 - Plants: filled hexagons in ndvi_classes' shades, nearly solid so a colour on the map is the colour in the
-  legend. A hexagon whose look is older than the photo's main one is drawn in grey, darker where it was
+  legend. One moment is in colour: a hexagon whose look is two weeks or more from the photo's main one, older or
+  newer, is drawn in grey, darker where it was
   greener: in colour it read as a sick patch beside the fresh part.
 - Soil moisture: a fine outline in one ink and the reading in small figures at the middle, with no fill. It is always drawn wider than the plants under it, so both can be read at once and either can be
   hidden. The map shows the facts of the topmost thing tapped: with nothing filled, a tap inside a soil hexagon
@@ -49,7 +50,7 @@ logger = logging.getLogger(__name__)
 
 PLANTS_KIND = "satellite_plants"
 SOIL_KIND = "satellite_soil_moisture"
-DRAWING = "hexagons-2"  # part of each layer's stamp: a layer drawn another way is made again, not reused
+DRAWING = "hexagons-3"  # part of each layer's stamp: a layer drawn another way is made again, not reused
 # Tiles are cut to this zoom and stretched beyond it. A tile's grid is 4,096 steps wide: 0.3 m at zoom 15, against
 # a smallest plants hexagon 9 m on a side; 1.2 m at zoom 13, against a smallest soil hexagon 66 m on a side.
 PLANTS_MAXZOOM = 15
@@ -134,9 +135,14 @@ def plants_legend(plants: satellite_view.Plants) -> dict[str, Any]:
             "mark": {"at": middle, "label": f"{middle:.2f}", "says": f"The middle square of this photo reads {middle:.2f}."},
         },
     })
-    if ((plants.seen > 0) & (plants.seen <= main.toordinal() - satellite_view.OLDER_AFTER_DAYS)).any():
-        legend["items"].append({"label": "Grey: an older look, darker where greener (tap it for its day)", "color": OLDER_IN_LEGEND})
-        legend["notes"] = [{"label": "Grey: an older look", "color": OLDER_IN_LEGEND}]
+    apart = satellite_view.OLDER_AFTER_DAYS
+    older = bool(((plants.seen > 0) & (plants.seen <= main.toordinal() - apart)).any())
+    newer = bool((plants.seen >= main.toordinal() + apart).any())
+    if older or newer:
+        # one moment is in colour (the day in the title); what is grey is said by which side of it lies
+        what = "seen on another day" if older and newer else "an older look" if older else "a newer look"
+        legend["items"].append({"label": f"Grey: {what}, darker where greener (tap it for its day)", "color": OLDER_IN_LEGEND})
+        legend["notes"] = [{"label": f"Grey: {what}", "color": OLDER_IN_LEGEND}]
     return legend
 
 
@@ -152,7 +158,7 @@ def plants_style(layer_id: str, legend: dict[str, Any], bands: Sequence[dict[str
             {**_in_band(layer_id, band), "id": f"satellite-plants-{layer_id}-r{size}", "type": "fill",
              "metadata": {"mundi:legend": legend},
              # nearly solid from afar; closer in, the photo's own ground shows through the hexagon it explains
-             "paint": {"fill-color": ["case", ["==", ["get", "older"], True], older, fresh],
+             "paint": {"fill-color": ["case", ["any", ["==", ["get", "older"], True], ["==", ["get", "newer"], True]], older, fresh],
                        "fill-opacity": ["interpolate", ["linear"], ["zoom"], 15, 0.88, 18, 0.62]}},
             {**_in_band(layer_id, band), "id": f"satellite-plants-edge-{layer_id}-r{size}", "type": "line",
              "paint": {"line-color": "#ffffff", "line-width": 0.7, "line-opacity": 0.75}},
