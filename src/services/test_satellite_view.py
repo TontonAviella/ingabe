@@ -1013,8 +1013,8 @@ def test_a_newer_look_beside_an_older_main_one_is_drawn_in_grey_and_said():
     plants = _newer_beside_older_main()
     said = sv.plants_facts(plants, TODAY)
     assert "older" not in said["parts"]
-    assert said["parts"]["newer"] == ("36% of the photo holds a newer look (up to 19 Nov), drawn in grey: clouds hid the "
-                                      "rest then, so it must not be read against the main look of 23 Oct.")
+    assert said["parts"]["newer"] == ("36% of the photo holds a newer look (up to 19 Nov), drawn in grey: the newest pass "
+                                      "saw only this part, so it must not be read against the rest, seen 23 Oct.")
     assert list(said["parts"]) == ["covered", "seen", "newer", "greenness"] and said["care"] == [said["parts"]["newer"]]
     assert "newer" not in sv.plants_facts(_two_looks(), TODAY)["parts"]  # there the main look is the fresh one
     # on the map: every hexagon of the newer part says so, and none is both

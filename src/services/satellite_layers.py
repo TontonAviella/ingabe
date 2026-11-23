@@ -117,9 +117,13 @@ def _day(day: date) -> str:
     return f"{day.day} {day:%b %Y}"
 
 
-def plants_legend(plants: satellite_view.Plants) -> dict[str, Any]:
+def plants_legend(plants: satellite_view.Plants, hexagons: Optional[Sequence[dict[str, Any]]] = None) -> dict[str, Any]:
     """The plants' key. "title" and "items" list every shade in words (what a screen reader and a plain list read);
-    "scale" is the same shades as one strip from bare to dense, with the photo's middle square marked on it."""
+    "scale" is the same shades as one strip from bare to dense, with the photo's middle square marked on it.
+
+    hexagons: the layer's features as drawn. The key names a grey only when a hexagon is drawn in it: a hexagon
+    takes the day most of its squares were seen, so a few squares of another day scattered through the photo
+    turn no hexagon grey, and the key must not promise one. Without them (nothing drawn yet) the squares decide."""
     main = plants.main_day
     legend = ndvi_classes.shade_legend(f"Plants from the satellite (NDVI), seen {_day(main)}")
     shades = ndvi_classes.NDVI_SHADES
@@ -135,9 +139,13 @@ def plants_legend(plants: satellite_view.Plants) -> dict[str, Any]:
             "mark": {"at": middle, "label": f"{middle:.2f}", "says": f"The middle square of this photo reads {middle:.2f}."},
         },
     })
-    apart = satellite_view.OLDER_AFTER_DAYS
-    older = bool(((plants.seen > 0) & (plants.seen <= main.toordinal() - apart)).any())
-    newer = bool((plants.seen >= main.toordinal() + apart).any())
+    if hexagons is not None:
+        older = any(feature["properties"].get("older") for feature in hexagons)
+        newer = any(feature["properties"].get("newer") for feature in hexagons)
+    else:
+        apart = satellite_view.OLDER_AFTER_DAYS
+        older = bool(((plants.seen > 0) & (plants.seen <= main.toordinal() - apart)).any())
+        newer = bool(((plants.seen > 0) & (plants.seen >= main.toordinal() + apart)).any())
     if older or newer:
         # one moment is in colour (the day in the title); what is grey is said by which side of it lies
         what = "seen on another day" if older and newer else "an older look" if older else "a newer look"
@@ -260,7 +268,8 @@ async def put_on_map(seen: satellite_view.View, *, photo_layer_id: str, photo_na
         if kind == PLANTS_KIND:
             drawn = satellite_view.plants_hexagons(part, seen.bbox)
             bands = zoom_bands(drawn["sizes"], drawn["latitude"], PLANTS_PIXELS_ACROSS)
-            legend, maxzoom, extra = plants_legend(part), PLANTS_MAXZOOM, {"square_m": drawn["square_m"]}
+            legend = plants_legend(part, drawn["geojson"]["features"])
+            maxzoom, extra = PLANTS_MAXZOOM, {"square_m": drawn["square_m"]}
 
             def style(layer_id: str, legend: dict[str, Any] = legend, bands: list[dict[str, Any]] = bands) -> list[dict[str, Any]]:
                 return plants_style(layer_id, legend, bands)

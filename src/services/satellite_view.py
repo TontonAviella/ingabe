@@ -1278,8 +1278,8 @@ def plants_facts(plants: Plants, today: date) -> dict[str, Any]:
     if float(later.mean()) >= 0.05:
         newest = date.fromordinal(int(plants.seen[later].max()))
         parts["newer"] = (f"{_percent(float(later.mean()))} of the photo holds a newer look (up to {_day_words(newest, today)}), "
-                          f"drawn in grey: clouds hid the rest then, so it must not be read against the main look of "
-                          f"{_day_words(main, today)}.")
+                          f"drawn in grey: the newest pass saw only this part, so it must not be read against the "
+                          f"rest, seen {_day_words(main, today)}.")
     haze_share = float(plants.hazy.mean())
     if haze_share >= 0.01:
         parts["haze"] = f"{_percent(haze_share)} was only seen through haze and may read low."

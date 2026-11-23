@@ -86,6 +86,12 @@ def test_the_plants_layer_is_solid_hexagons_in_the_shared_shades_with_older_look
     both.seen[:, 1:3] = (TODAY - timedelta(days=60)).toordinal()
     both.seen[0, 1] = (TODAY - timedelta(days=120)).toordinal()
     assert sl.plants_legend(both)["notes"] == [{"label": "Grey: seen on another day", "color": sl.OLDER_IN_LEGEND}]
+    # the key names a grey only when a hexagon is drawn in it: a hexagon takes the day most of its squares share, so
+    # one square of another day in each turns none grey
+    drawn = [{"properties": {"older": False, "newer": False}}, {"properties": {"older": False, "newer": False}}]
+    assert "notes" not in sl.plants_legend(both, drawn) and len(sl.plants_legend(both, drawn)["items"]) == 8
+    drawn[1]["properties"]["newer"] = True
+    assert sl.plants_legend(both, drawn)["notes"] == [{"label": "Grey: a newer look", "color": sl.OLDER_IN_LEGEND}]
     layers = sl.plants_style("L1", legend, PLANTS_BANDS)
     assert [layer["id"] for layer in layers] == [
         "satellite-plants-L1-r10", "satellite-plants-edge-L1-r10", "satellite-plants-L1-r11", "satellite-plants-edge-L1-r11",
