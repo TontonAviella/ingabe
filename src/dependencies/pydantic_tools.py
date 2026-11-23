@@ -81,6 +81,10 @@ from src.tools.rgb_visual import (
     analyze_rgb_field,
     AnalyzeRgbFieldArgs,
 )
+from src.tools.satellite_view import (
+    ShowPlantsAndSoilFromSatelliteArgs,
+    show_plants_and_soil_from_satellite,
+)
 from src.tools.raster_h3_context import (
     create_raster_h3_context_layer,
     CreateRasterH3ContextLayerArgs,
@@ -222,6 +226,11 @@ def get_pydantic_tool_calls() -> PydanticToolRegistry:
         "create_raster_h3_context_layer": (
             create_raster_h3_context_layer,
             CreateRasterH3ContextLayerArgs,
+            IngabeToolCallMetaArgs,
+        ),
+        "show_plants_and_soil_from_satellite": (
+            show_plants_and_soil_from_satellite,
+            ShowPlantsAndSoilFromSatelliteArgs,
             IngabeToolCallMetaArgs,
         ),
         "analyze_raster_object_candidates": (

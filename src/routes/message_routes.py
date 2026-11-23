@@ -90,6 +90,7 @@ from src.dependencies.sage_routing import (
     RASTER_FACT_TOOL,
     RASTER_H3_CONTEXT_TOOL,
     RASTER_OBJECT_CANDIDATES_TOOL,
+    SATELLITE_VIEW_TOOL,
     build_project_fast_tool_call,
     detect_raster_building_count_question,
     extract_last_user_text,
@@ -1974,6 +1975,90 @@ async def _maybe_run_fast_raster_fact_turn(
     return True
 
 
+async def _maybe_run_fast_satellite_view_turn(
+    *,
+    map_id: str,
+    session: UserContext,
+    user_id: str,
+    conversation: Conversation,
+    openai_messages: list[dict],
+) -> bool:
+    """A question about the crops on a farm project's drone photo: the satellite view (plants and soil moisture)
+    is put on the map and told in the tool's own sentences, with no model call."""
+    user_text = extract_last_user_text(openai_messages)
+    fast_call = build_project_fast_tool_call(user_text, get_request_industry())
+    if not fast_call or fast_call.tool_name != SATELLITE_VIEW_TOOL:
+        return False
+
+    started = asyncio.get_running_loop().time()
+    turn_id = f"fast-satellite-view-{conversation.id}-{_uuid.uuid4().hex[:8]}"
+    partner_id = session.get_org_id()
+    async with async_conn("sage.fast_satellite_view", user_id=user_id, partner_id=partner_id) as conn:
+        project_row = await conn.fetchrow("SELECT project_id FROM user_mundiai_maps WHERE id = $1", map_id)
+        if not project_row:
+            return False
+        rows = await _map_rasters(conn, map_id)
+    layer = select_ready_fast_raster_layer(user_text, rows)
+    if not layer:
+        return False
+
+    from src.tools.pyd import IngabeToolCallMetaArgs
+    from src.tools.satellite_view import (
+        ShowPlantsAndSoilFromSatelliteArgs,
+        reply as satellite_view_reply,
+        show_plants_and_soil_from_satellite,
+    )
+
+    async with kue_ephemeral_action(conversation.id, "Reading the satellite over this photo...", layer_id=str(layer["layer_id"])):
+        result = await show_plants_and_soil_from_satellite(
+            ShowPlantsAndSoilFromSatelliteArgs(layer_id=str(layer["layer_id"])),
+            IngabeToolCallMetaArgs(
+                user_uuid=user_id,
+                conversation_id=conversation.id,
+                map_id=map_id,
+                project_id=str(project_row["project_id"]),
+                session=session,
+            ),
+        )
+    assistant_text = satellite_view_reply(result)
+    capture_for_session(
+        "backend_sage_fast_satellite_view_answered",
+        session,
+        {
+            "map_id": map_id,
+            "conversation_id": conversation.id,
+            "layer_id": str(layer["layer_id"]),
+            "status": result.get("status"),
+            "has_plants": bool(result.get("plants")),
+            "has_soil": bool(result.get("soil")),
+            "layers_reused": sum(1 for item in result.get("layers") or [] if item.get("already_on_map")),
+            "duration_ms": int((asyncio.get_running_loop().time() - started) * 1000),
+        },
+    )
+    async with async_conn("sage.fast_satellite_view.persist", user_id=user_id, partner_id=partner_id) as conn:
+        await conn.execute(
+            """
+            INSERT INTO chat_completion_messages
+            (map_id, sender_id, message_json, conversation_id)
+            VALUES ($1, $2, $3, $4)
+            """,
+            map_id,
+            user_id,
+            json.dumps({"role": "assistant", "content": assistant_text}),
+            conversation.id,
+        )
+    await kue_stream_token(conversation.id, assistant_text, turn_id=turn_id)
+    await kue_stream_token(conversation.id, "", done=True, turn_id=turn_id)
+    logger.info(
+        "Sage fast satellite view route: conv=%s layer_id=%s status=%s elapsed=%.3fs",
+        conversation.id,
+        layer["layer_id"],
+        result.get("status"),
+        asyncio.get_running_loop().time() - started,
+    )
+    return True
+
+
 async def _run_first_fast_path(
     *,
     map_id: str,
@@ -1988,6 +2073,7 @@ async def _run_first_fast_path(
     handlers = (
         ("admin_boundary", _maybe_run_fast_admin_boundary_turn),
         ("raster_object", _maybe_run_fast_raster_object_turn),
+        ("satellite_view", _maybe_run_fast_satellite_view_turn),
         ("raster_context", _maybe_run_fast_raster_context_turn),
         ("raster_fact", _maybe_run_fast_raster_fact_turn),
     )

@@ -5,7 +5,7 @@ import logging
 import os
 import tempfile
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Callable, Sequence
 
 from src.services.h3_risk_classes import legend, maplibre_color_expression
 from src.database.models import LAYER_TYPE_VECTOR
@@ -32,40 +32,43 @@ class PersistedH3Layer:
     geometry_type: str
 
 
-async def persist_h3_layer(
+@dataclass(frozen=True)
+class SavedLayer:
+    layer_id: str
+    style_id: str
+    pmtiles_key: str
+    geoparquet_key: str | None
+    bounds: list[float] | None
+    feature_count: int
+    geometry_type: str
+
+
+async def save_analysis_layer(
     *,
-    result: dict[str, Any],
+    feature_collection: dict[str, Any],
     user_uuid: str,
     map_id: str,
     project_id: str,
     layer_name: str,
-    render_3d: bool,
-    analysis_kind: str,
-) -> PersistedH3Layer:
-    """Persist an H3 analysis as a real map layer.
+    maxzoom: int,
+    metadata: dict[str, Any],
+    style_for: Callable[[str], list[dict[str, Any]]],
+    replaces: Sequence[str] = (),
+) -> SavedLayer:
+    """Save a result drawn as polygons as a real layer of the map, with its own style.
 
-    GeoJSON is used only as an internal construction format here. The browser
-    sees PMTiles for rendering, while GeoParquet is cached for downstream
-    analytics and reuse.
+    GeoJSON is used only as an internal construction format here. The browser sees PMTiles for rendering,
+    while GeoParquet is cached for downstream analytics and reuse. ``metadata`` is added to what the vector
+    pipeline records; ``style_for(layer_id)`` gives the MapLibre layers. ``replaces`` are layers this one
+    takes the place of on the map (an older picture of the same thing): they leave the map's list in the
+    same step, and their rows stay.
     """
-
-    feature_collection = result.get("geojson")
-    if not isinstance(feature_collection, dict):
-        raise ValueError("H3 result is missing GeoJSON feature collection")
     features = feature_collection.get("features")
     if not isinstance(features, list) or not features:
-        raise ValueError("H3 result contains no features to persist")
+        raise ValueError("The result contains no features to save")
 
     layer_id = generate_id(prefix="L")
     style_id = generate_id(prefix="S")
-    feature_count = len(features)
-    summary = (
-        result.get("summary", {}) if isinstance(result.get("summary"), dict) else {}
-    )
-    zoom_resolution_map = summary.get("zoom_resolution_map")
-    pmtiles_maxzoom = h3_pmtiles_maxzoom_for_zoom_map(
-        zoom_resolution_map if isinstance(zoom_resolution_map, list) else None
-    )
 
     with tempfile.TemporaryDirectory() as temp_dir:
         geojson_path = os.path.join(temp_dir, f"{layer_id}.geojson")
@@ -78,41 +81,27 @@ async def persist_h3_layer(
             layer_name,
             user_uuid,
             project_id,
-            tippecanoe_maxzoom=pmtiles_maxzoom,
+            tippecanoe_maxzoom=maxzoom,
         )
 
     if not processed.pmtiles_key:
-        raise RuntimeError("H3 PMTiles generation failed")
+        raise RuntimeError("PMTiles generation failed")
 
     geoparquet_key = processed.metadata.geoparquet_key
-    metadata = processed.metadata.model_dump(exclude_none=True)
-    metadata.update(
+    layer_metadata = processed.metadata.model_dump(exclude_none=True)
+    layer_metadata.update(
         {
-            "source": f"sage_{analysis_kind}",
-            "analysis_kind": analysis_kind,
-            "screening_model": result.get("screening_model", "h3_spatial_insight_v1"),
-            "source_layer_id": summary.get("source_layer_id"),
             "browser_transport": "pmtiles",
             "analytics_format": "geoparquet" if geoparquet_key else "pending",
             "geoparquet_key": geoparquet_key,
             "source_storage_format": "geoparquet" if geoparquet_key else None,
             "geojson_role": "temporary_backend_conversion_only",
             "pmtiles_key": processed.pmtiles_key,
-            "pmtiles_maxzoom": pmtiles_maxzoom,
-            "h3_resolution": summary.get("h3_resolution"),
-            "h3_resolutions": summary.get("h3_resolutions"),
-            "adaptive_resolution": summary.get("adaptive_resolution"),
-            "resolution_count": summary.get("resolution_count"),
-            "resolution_cell_counts": summary.get("resolution_cell_counts"),
-            "zoom_resolution_map": zoom_resolution_map,
-            "risk_score_property": "risk_score",
+            "pmtiles_maxzoom": maxzoom,
+            **metadata,
         }
     )
-    style_json = build_h3_risk_maplibre_layers(
-        layer_id,
-        render_3d=render_3d,
-        zoom_resolution_map=zoom_resolution_map if isinstance(zoom_resolution_map, list) else None,
-    )
+    style_json = style_for(layer_id)
 
     async with get_async_db_connection() as conn:
         async with conn.transaction():
@@ -128,7 +117,7 @@ async def persist_h3_layer(
                 user_uuid,
                 layer_name,
                 LAYER_TYPE_VECTOR,
-                json.dumps(metadata),
+                json.dumps(layer_metadata),
                 processed.bounds,
                 processed.geometry_type,
                 processed.feature_count,
@@ -158,7 +147,7 @@ async def persist_h3_layer(
                 "SELECT layers FROM user_mundiai_maps WHERE id = $1 FOR UPDATE",
                 map_id,
             )
-            current_layers = list(map_row["layers"] or []) if map_row else []
+            current_layers = [kept for kept in (map_row["layers"] or []) if kept not in replaces] if map_row else []
             if layer_id not in current_layers:
                 await conn.execute(
                     """
@@ -170,15 +159,75 @@ async def persist_h3_layer(
                     map_id,
                 )
 
-    return PersistedH3Layer(
+    return SavedLayer(
         layer_id=layer_id,
         style_id=style_id,
         pmtiles_key=processed.pmtiles_key,
         geoparquet_key=geoparquet_key,
-        pmtiles_maxzoom=pmtiles_maxzoom,
         bounds=processed.bounds,
-        feature_count=feature_count,
+        feature_count=len(features),
         geometry_type=processed.geometry_type,
+    )
+
+
+async def persist_h3_layer(
+    *,
+    result: dict[str, Any],
+    user_uuid: str,
+    map_id: str,
+    project_id: str,
+    layer_name: str,
+    render_3d: bool,
+    analysis_kind: str,
+) -> PersistedH3Layer:
+    """Persist an H3 analysis as a real map layer (save_analysis_layer), styled by its risk score."""
+
+    feature_collection = result.get("geojson")
+    if not isinstance(feature_collection, dict):
+        raise ValueError("H3 result is missing GeoJSON feature collection")
+    features = feature_collection.get("features")
+    if not isinstance(features, list) or not features:
+        raise ValueError("H3 result contains no features to persist")
+
+    summary = (
+        result.get("summary", {}) if isinstance(result.get("summary"), dict) else {}
+    )
+    zoom_resolution_map = summary.get("zoom_resolution_map")
+    zoom_map = zoom_resolution_map if isinstance(zoom_resolution_map, list) else None
+    pmtiles_maxzoom = h3_pmtiles_maxzoom_for_zoom_map(zoom_map)
+    saved = await save_analysis_layer(
+        feature_collection=feature_collection,
+        user_uuid=user_uuid,
+        map_id=map_id,
+        project_id=project_id,
+        layer_name=layer_name,
+        maxzoom=pmtiles_maxzoom,
+        metadata={
+            "source": f"sage_{analysis_kind}",
+            "analysis_kind": analysis_kind,
+            "screening_model": result.get("screening_model", "h3_spatial_insight_v1"),
+            "source_layer_id": summary.get("source_layer_id"),
+            "h3_resolution": summary.get("h3_resolution"),
+            "h3_resolutions": summary.get("h3_resolutions"),
+            "adaptive_resolution": summary.get("adaptive_resolution"),
+            "resolution_count": summary.get("resolution_count"),
+            "resolution_cell_counts": summary.get("resolution_cell_counts"),
+            "zoom_resolution_map": zoom_resolution_map,
+            "risk_score_property": "risk_score",
+        },
+        style_for=lambda layer_id: build_h3_risk_maplibre_layers(
+            layer_id, render_3d=render_3d, zoom_resolution_map=zoom_map
+        ),
+    )
+    return PersistedH3Layer(
+        layer_id=saved.layer_id,
+        style_id=saved.style_id,
+        pmtiles_key=saved.pmtiles_key,
+        geoparquet_key=saved.geoparquet_key,
+        pmtiles_maxzoom=pmtiles_maxzoom,
+        bounds=saved.bounds,
+        feature_count=saved.feature_count,
+        geometry_type=saved.geometry_type,
     )
 
 

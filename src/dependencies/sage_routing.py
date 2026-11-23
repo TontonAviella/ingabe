@@ -89,6 +89,9 @@ RASTER_OBJECT_CANDIDATES_TOOL = "analyze_raster_object_candidates"
 ADMIN_BOUNDARY_TOOL = "show_admin_boundary"
 RASTER_H3_CONTEXT_TOOL = "create_raster_h3_context_layer"
 RASTER_FACT_TOOL = "describe_user_raster"
+# In a farm project a question about the crops on a drone photo is answered from the satellite (NDVI over the
+# whole photo, and soil moisture), not from the photo's colours (Roger, 2026-11-22).
+SATELLITE_VIEW_TOOL = "show_plants_and_soil_from_satellite"
 
 # Tools that build_fast_tool_call can return and that message_routes runs
 # deterministically, without a model call, when the map state allows it.
@@ -97,6 +100,7 @@ FAST_PATH_TOOLS = frozenset({
     RASTER_H3_CONTEXT_TOOL,
     RASTER_OBJECT_CANDIDATES_TOOL,
     RASTER_FACT_TOOL,
+    SATELLITE_VIEW_TOOL,
 })
 
 # Map tool name -> category. Tools not in this dict are treated as
@@ -134,6 +138,7 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "compute_spectral_index": SATELLITE,
     # --- Agricultural data products ---
     "get_field_health": AGRICULTURE,
+    "show_plants_and_soil_from_satellite": AGRICULTURE,
     "get_ndvi_stats": AGRICULTURE,
     "get_cell_ndvi_stats": AGRICULTURE,
     "get_soil_properties": AGRICULTURE,
@@ -1469,7 +1474,23 @@ def build_project_fast_tool_call(text: str, project_industry: str | None) -> Fas
     fast = build_fast_tool_call(text)
     if fast is None or not industry.available(fast.tool_name, project_industry):
         return None
+    crop_screening = fast.tool_name == RASTER_H3_CONTEXT_TOOL and fast.arguments.get("domain") == "agriculture"
+    asks_greenness_or_soil_water = (
+        fast.tool_name in (RASTER_H3_CONTEXT_TOOL, RASTER_OBJECT_CANDIDATES_TOOL) and _PLANTS_OR_SOIL_WATER.search(text)
+    )
+    if (crop_screening or asks_greenness_or_soil_water) and industry.available(SATELLITE_VIEW_TOOL, project_industry):
+        return FastToolCall(SATELLITE_VIEW_TOOL, {}, "fast:plants_and_soil_from_satellite")
     return fast
+
+
+# In a farm project these words about a drone photo ask for the satellite view even when the surface screening
+# would file the question under water or environment ("is the soil wet enough under this photo?") or the
+# object finder would take "show plant greenness" for a request to outline plants.
+_PLANTS_OR_SOIL_WATER = re.compile(
+    r"\b(ndvi|crop\s+health|plant\s+health|greenness|soil\s+moisture|moisture"
+    r"|soil\b[^.?!]*\b(wet|dry|moist)\w*|(wet|dry|moist)\w*\b[^.?!]*\bsoil)\b",
+    re.IGNORECASE,
+)
 
 
 def _raster_object_max_area_m2(targets: list[str]) -> float:

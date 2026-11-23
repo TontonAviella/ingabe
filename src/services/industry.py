@@ -108,6 +108,7 @@ CAPABILITIES: dict[str, frozenset[str]] = {
     "get_yield_risk": AGRICULTURE,
     "interpret_raster_health": AGRICULTURE,
     "predict_ndvi_from_sar": AGRICULTURE,
+    "show_plants_and_soil_from_satellite": AGRICULTURE,
     # --- Automatic jobs on a drone photo ---
     "drone_first_look": AGRICULTURE,  # Sage's first message about green cover and plots
     "drone_cards": AGRICULTURE,  # the question cards: plots, crops, bare ground, the crop survey

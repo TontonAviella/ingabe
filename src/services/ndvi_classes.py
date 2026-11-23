@@ -53,6 +53,21 @@ def ndvi_class(value: Optional[float]) -> Optional[NdviClass]:
     return found
 
 
+def ground_label(cls: NdviClass) -> str:
+    """The class's label where cloud has already been left out (a square's own clear look): "Bare soil", not
+    "Bare soil or cloud"."""
+    return "Bare soil" if cls.key == "bare" else cls.label
+
+
+def ground_legend(title: str) -> dict[str, Any]:
+    """The legend for a picture with cloud left out, under the given title."""
+    return {
+        "title": title,
+        "items": [{"key": c.key, "label": ground_label(c), "range": _range(i), "color": c.color}
+                  for i, c in enumerate(NDVI_CLASSES)],
+    }
+
+
 def _range(i: int) -> str:
     cls = NDVI_CLASSES[i]
     if i == 0:

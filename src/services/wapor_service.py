@@ -83,6 +83,25 @@ def _dekad_dates(date_from: date, date_to: date) -> list[str]:
     return dekads
 
 
+def dekad_of(day: date) -> str:
+    """The ten-day period `day` falls in, in FAO's code (YYYY-MM-D1, D2 or D3)."""
+    return _date_to_dekad(day)
+
+
+def dekad_days(dekad: str) -> tuple[date, date]:
+    """The first and last day of a ten-day period; the third one runs to the month's end."""
+    year, month, part = int(dekad[:4]), int(dekad[5:7]), int(dekad[-1])
+    if part < 3:
+        return date(year, month, 10 * part - 9), date(year, month, 10 * part)
+    next_month = date(year + (month == 12), month % 12 + 1, 1)
+    return date(year, month, 21), next_month - timedelta(days=1)
+
+
+def dekad_before(dekad: str) -> str:
+    """The ten-day period just before `dekad`."""
+    return _date_to_dekad(dekad_days(dekad)[0] - timedelta(days=1))
+
+
 def raster_url(layer_code: str, dekad: str) -> str:
     """Build GCS URL for a WaPOR raster."""
     return f"{GCS_BASE}/{layer_code}/WAPOR-3.{layer_code}.{dekad}.tif"
@@ -149,8 +168,76 @@ def _read_point(url: str, lat: float, lon: float, scale: float, offset: float) -
         raw = None if got == NODATA else got
         with _cache_lock:
             _points[key] = raw
-        disk_memo.put(_MEMO, memo_key, raw)
+        if _settled(url, date.today()):
+            disk_memo.put(_MEMO, memo_key, raw)
     return None if raw is None else raw * scale + offset
+
+
+# FAO puts a first version of each file up 2-6 days after its ten days end and replaces it 66-70 days later
+# (2026 bucket listing, read 2026-11-23); the first versions step about three times more from one period to
+# the next. A reading is kept on disk for good only once its period ended this long ago; before that it is
+# kept in memory, so a restart reads the file again and picks up FAO's replacement.
+SETTLED_AFTER_DAYS = 80
+_SERIES_THREADS = 8
+
+
+def _settled(url: str, today: date) -> bool:
+    """Whether the ten-day file at `url` is old enough to be FAO's replaced, final version."""
+    return (today - dekad_days(url.rsplit(".", 2)[-2])[1]).days >= SETTLED_AFTER_DAYS
+
+
+def _read_points_raw(urls: list[str], lat: float, lon: float, env: dict[str, str]) -> list[tuple[str, int | str]]:
+    """In a raster worker: _read_point_raw for several files side by side (threads wait on the network)."""
+    with ThreadPoolExecutor(max_workers=min(len(urls), _SERIES_THREADS)) as pool:
+        return list(pool.map(lambda url: _read_point_raw(url, lat, lon, env), urls))
+
+
+def point_series(layer_code: str, dekads: list[str], lat: float, lon: float) -> dict[str, float | None]:
+    """The layer's value at one place for each ten-day period, in the layer's own unit (LAYERS); None where
+    the file is not published, holds no value there, or could not be read.
+
+    Readings already kept are not read again; the others are read together in one raster worker, so a year
+    of periods costs about as long as its slowest few files instead of one file after another.
+    """
+    scale, offset, _, _ = LAYERS[layer_code]
+    raw: dict[str, int | None] = {}
+    to_read: list[tuple[str, str]] = []
+    for dk in dekads:
+        url = raster_url(layer_code, dk)
+        key = (url, lat, lon)
+        with _cache_lock:
+            if url in _unpublished:
+                raw[dk] = None
+                continue
+            known = key in _points
+            value = _points.get(key)
+        if not known:
+            known, value = disk_memo.get(_MEMO, f"{url}|{lat!r}|{lon!r}")
+        if known:
+            raw[dk] = value
+        else:
+            to_read.append((dk, url))
+    if to_read:
+        try:
+            answers = raster_process.run(_read_points_raw, [url for _, url in to_read], lat, lon, GDAL_COG_ENV)
+        except Exception as e:  # the worker died or never answered
+            answers = [("error", f"raster worker: {e!r}")] * len(to_read)
+        today = date.today()
+        for (dk, url), (kind, got) in zip(to_read, answers):
+            if kind == "error":
+                logger.warning("WaPOR read failed for %s: %s", url, got)
+                if "HTTP response code: 404" in str(got):
+                    with _cache_lock:
+                        _unpublished[url] = True
+                raw[dk] = None
+                continue
+            value = None if got == NODATA else int(got)
+            with _cache_lock:
+                _points[(url, lat, lon)] = value
+            if _settled(url, today):
+                disk_memo.put(_MEMO, f"{url}|{lat!r}|{lon!r}", value)
+            raw[dk] = value
+    return {dk: (None if (value := raw[dk]) is None else value * scale + offset) for dk in dekads}
 
 
 def query_et(
