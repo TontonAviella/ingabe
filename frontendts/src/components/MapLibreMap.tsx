@@ -153,6 +153,7 @@ import VersionVisualization from '@/components/VersionVisualization';
 import { featureFieldRows } from '@/lib/featureFields';
 import { inspectionPhotoUrl } from '@/lib/inspectionPhoto';
 import { addScale } from '@/lib/mapScale';
+import { drawnAtZoom } from '@/lib/tappedFeature';
 import { useIsMobile } from '../hooks/use-mobile';
 import { createAnalyticsTurnId, track, trackDuration, trackError } from '../lib/analytics';
 import type { ErrorEntry, UploadingFile } from '../lib/frontend-types';
@@ -1253,7 +1254,7 @@ export default function MapLibreMap({
         [e.point.x - tolerance, e.point.y - tolerance],
         [e.point.x + tolerance, e.point.y + tolerance],
       ];
-      const features = map.queryRenderedFeatures(bbox);
+      const features = drawnAtZoom(map.queryRenderedFeatures(bbox), map.getZoom());
       // Find the first feature that belongs to one of our layers (L-prefixed IDs)
       const appFeature = features.find((f) => typeof f.source === 'string' && f.source.startsWith('L') && f.source.length === 12);
       if (appFeature) {

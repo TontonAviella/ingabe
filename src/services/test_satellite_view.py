@@ -17,6 +17,7 @@ import pytest
 import rasterio
 from rasterio.transform import from_origin
 from rasterio.warp import transform_bounds
+from shapely.geometry import Point, Polygon, box
 
 from src.services import satellite_view as sv
 from src.services import wapor_service
@@ -229,35 +230,86 @@ def _plants(ndvi: Any, days_ago: Any, change: Optional[sv.Change] = None, haze: 
     return sv.Plants(grid, ndvi, seen, np.zeros(ndvi.shape, bool) if haze is None else np.asarray(haze, bool), change, 3)
 
 
-def test_squares_sit_on_the_photo_and_say_their_reading_class_day_and_whether_they_are_faded():
-    plants = _plants([[0.62, 0.05], [0.31, 0.2]], [[4, 4], [4, 31]], haze=[[False, False], [False, True]])
-    drawn = sv.plants_squares(plants)
+def _by_size(features: list[dict[str, Any]], size: int, kind: str = "Polygon") -> list[dict[str, Any]]:
+    return [f for f in features if f["properties"]["h3_resolution"] == size and f["geometry"]["type"] == kind]
+
+
+def _area(features: list[dict[str, Any]]) -> float:
+    return sum(Polygon(f["geometry"]["coordinates"][0]).area for f in features)
+
+
+def test_hexagon_sizes_are_never_finer_than_the_data_and_widen_while_the_photo_holds_enough_of_them():
+    assert sv.hexagon_sizes(1_240_000, 10) == [10, 11, 12]  # Cyampirita, 124 ha, 10 m squares: 300 m2 at the smallest
+    assert sv.hexagon_sizes(1_240_000, 100) == [9, 10]  # its soil moisture: 1.5 ha at the smallest; 74 ha would be 2 hexagons
+    assert sv.hexagon_sizes(1_240_000, 20) == [9, 10, 11]  # wider squares, wider hexagons
+    assert sv.hexagon_sizes(3_000, 10) == [12]  # a small plot: one size
+    assert sv.hexagon_sizes(100_000_000, 100) == [8, 9, 10]
+
+
+def test_plants_hexagons_cover_the_whole_photo_at_every_size_and_stay_inside_its_frame():
+    ndvi = np.full((89, 156), 0.55)  # the Cyampirita photo's own grid
+    drawn = sv.plants_hexagons(_plants(ndvi, np.full(ndvi.shape, 4)), BOX)
     features = drawn["geojson"]["features"]
-    assert drawn["square_m"] == 10 and drawn["main_day"] == TODAY - timedelta(days=4) and len(features) == 4
-    first = features[0]
-    # the day carries its year and there is no "days old": the squares are saved on a map and read on later days
-    assert first["properties"] == {"plants": "Dense vegetation", "ndvi": 0.62, "seen_on": "19 Nov 2026", "faded": False}
-    ring = first["geometry"]["coordinates"][0]
-    assert ring[0] == ring[-1] and len(ring) == 5
-    # the box's own corner, within the 2 m by which a north-up box and the satellite's grid lines part at this longitude
-    assert ring[0][0] == pytest.approx(BOX[0], abs=5e-5) and ring[0][1] == pytest.approx(BOX[3], abs=5e-5)
-    assert abs(ring[1][0] - ring[0][0]) == pytest.approx(10 / 111_270, rel=0.02)  # 10 m of longitude at 1.7 degrees S
-    assert features[1]["properties"]["plants"] == "Bare soil"  # cloud is already left out: not "Bare soil or cloud"
-    last = features[3]["properties"]
-    assert last["faded"] is True and last["seen_on"] == "23 Oct 2026"
-    assert last["note"] == "An older look than most of the photo; Seen through haze: may read low"
+    assert drawn["sizes"] == [10, 11, 12] and drawn["square_m"] == 10 and drawn["main_day"] == TODAY - timedelta(days=4)
+    assert drawn["latitude"] == pytest.approx(-1.697, abs=0.001)
+    frame = box(*BOX)
+    counts = [len(_by_size(features, size)) for size in drawn["sizes"]]
+    assert counts[0] < counts[1] < counts[2] and 3_500 < counts[2] < 5_000
+    for size in drawn["sizes"]:
+        mine = _by_size(features, size)
+        # the hexagons of one size tile the frame: no hole and no overlap. The grid of squares leaves at most a few
+        # metres of the frame's edge unseen, where a north-up box and the satellite's grid lines part.
+        assert _area(mine) == pytest.approx(frame.area, rel=0.02)
+        assert all(frame.buffer(1e-9).contains(Polygon(f["geometry"]["coordinates"][0])) for f in mine)
+        assert all(f["geometry"]["coordinates"][0][0] == f["geometry"]["coordinates"][0][-1] for f in mine)
 
 
-def test_a_large_photo_gets_wider_squares_holding_their_mean_and_their_oldest_day(monkeypatch):
+def test_a_hexagon_says_its_mean_its_class_its_day_and_on_wider_sizes_its_weakest_square():
+    ndvi = np.full((89, 156), 0.62)
+    ndvi[40:45, 70:75] = 0.05  # a bare patch 50 m across in the middle of dense plants
+    features = sv.plants_hexagons(_plants(ndvi, np.full(ndvi.shape, 4)), BOX)["geojson"]["features"]
+    wide, small = _by_size(features, 10), _by_size(features, 12)
+    plain = next(f["properties"] for f in small if f["properties"]["ndvi"] == 0.62)
+    # the day carries its year and there is no "days old": the layer is saved on a map and read on later days
+    assert plain == {"plants": "Dense vegetation", "ndvi": 0.62, "seen_on": "19 Nov 2026", "older": False, "h3_resolution": 12}
+    # from afar a 2,500 m2 patch only lowers the mean of a 1.5 ha hexagon a little, so the hexagon also names its
+    # weakest square: the reason to zoom in
+    holding = [f["properties"] for f in wide if f["properties"]["weakest"] == 0.05]
+    assert 1 <= len(holding) <= 3 and all(0.5 < p["ndvi"] <= 0.62 and p["plants"] != "Bare soil" for p in holding)
+    assert all(f["properties"]["weakest"] == 0.62 for f in wide if f["properties"] not in holding)
+    # zoomed in, the patch is its own hexagons. A hexagon is 19 m across and holds about three squares, so a patch
+    # narrower than about 40 m is drawn weaker, not bare: the hexagons along its rim mix it with its neighbours.
+    bare = [f["properties"] for f in small if f["properties"]["plants"] == "Bare soil"]
+    assert 1 <= len(bare) <= 9 and all("weakest" not in p for p in bare)  # cloud is already left out: not "Bare soil or cloud"
+
+
+def test_an_older_look_and_haze_are_said_on_the_hexagon_and_a_tie_of_days_goes_to_the_older():
+    days = np.full((89, 156), 4)
+    days[:, 100:] = 31
+    haze = np.zeros(days.shape, bool)
+    haze[:, 150:] = True
+    features = sv.plants_hexagons(_plants(np.full(days.shape, 0.4), days, haze=haze), BOX)["geojson"]["features"]
+    small = [f["properties"] for f in _by_size(features, 12)]
+    assert {p["seen_on"] for p in small} == {"19 Nov 2026", "23 Oct 2026"}
+    assert all(p["older"] == (p["seen_on"] == "23 Oct 2026") for p in small)
+    notes = {p.get("note") for p in small}
+    assert {None, "An older look than most of the photo", "An older look than most of the photo; Seen through haze: may read low"} <= notes
+    # a hexagon lying across the line between the two looks says so
+    assert any("Parts of it were seen on other days" in (p.get("note") or "") for p in small)
+    assert 0.3 < sum(p["older"] for p in small) / len(small) < 0.42  # 36% of the photo's columns
+
+
+def test_a_large_photo_is_first_joined_into_wider_squares_holding_their_mean_and_their_oldest_day(monkeypatch):
     monkeypatch.setattr(sv, "MAX_SQUARES", 4)
     ndvi = np.full((4, 4), 0.4)
     ndvi[:2, :2] = [[0.2, 0.4], [0.6, 0.8]]
     days = np.full((4, 4), 4)
     days[0, 0] = 31
-    drawn = sv.plants_squares(_plants(ndvi, days))
-    assert drawn["square_m"] == 20 and len(drawn["geojson"]["features"]) == 4
-    first = drawn["geojson"]["features"][0]["properties"]
-    assert first["ndvi"] == 0.5 and first["seen_on"] == "23 Oct 2026" and first["faded"] is True
+    drawn = sv.plants_hexagons(_plants(ndvi, days), BOX)
+    assert drawn["square_m"] == 20 and drawn["sizes"] == [11]  # 20 m squares: 2,100 m2 hexagons, not 300 m2 ones
+    readings = [f["properties"]["ndvi"] for f in drawn["geojson"]["features"]]
+    # the first four squares became one of 0.5 (their mean), the rest stay 0.4; a hexagon holds a mix of the two
+    assert readings and all(0.4 <= value <= 0.5 for value in readings) and max(readings) > 0.4
 
 
 def test_the_plants_sentences_say_cover_days_classes_and_direction():
@@ -270,7 +322,7 @@ def test_the_plants_sentences_say_cover_days_classes_and_direction():
     assert facts["sentences"] == [
         "Every 10 m square of this photo has a clear satellite look (Sentinel-2).",
         "Seen: 70% on 19 Nov and 30% on 23 Oct.",
-        "30% of the photo is drawn faded: clouds hid it on 19 Nov, so its look is older and must not be read against "
+        "30% of the photo holds an older look, drawn in grey: clouds hid it on 19 Nov, so it must not be read against "
         "the fresh part.",
         "By greenness (NDVI): 70% cropland or moderate vegetation and 30% sparse vegetation. The middle square reads 0.55.",
         "On the squares seen 19 Nov, NDVI rose by 0.24 since 8 Oct.",
@@ -293,7 +345,8 @@ def test_ground_no_pass_saw_is_said_and_not_counted_in_the_shares():
     assert facts["sentences"][0] == ("80% of this photo has a clear satellite look (Sentinel-2); no pass saw the rest in "
                                      "the last 180 days.")
     assert facts["classes"][2]["share"] == 1.0  # of the squares that were seen
-    assert len(sv.plants_squares(plants)["geojson"]["features"]) == 80
+    drawn = sv.plants_hexagons(plants, BOX)["geojson"]["features"]
+    assert drawn and all(f["properties"]["ndvi"] == 0.5 for f in drawn)  # no hexagon is drawn from ground no pass saw
 
 
 # --- Soil moisture ---------------------------------------------------------------------------------------------
@@ -305,13 +358,54 @@ def _soil(percent: Any = ((62.0, 68.3), (76.0, np.nan)), *, first: bool = True, 
                    step=0.0009765625, first_estimate=first, centre=centre, year_low=low, year_high=high)
 
 
-def test_soil_squares_carry_their_reading_band_period_and_first_estimate_note():
-    features = sv.soil_squares(_soil())["geojson"]["features"]
-    assert len(features) == 3  # the square with no value is not drawn
-    assert features[1]["properties"] == {"moisture": 68.3, "band": "65-75%", "period": "1-10 Nov 2026", "note": "FAO's first estimate"}
-    ring = features[0]["geometry"]["coordinates"][0]
-    assert ring[0] == [30.4169922, -1.6923828] and ring[2] == [30.4179688, -1.6933594]
-    assert "note" not in sv.soil_squares(_soil(first=False))["geojson"]["features"][0]["properties"]
+def _soil_over_the_photo(first: bool = True) -> sv.Soil:
+    """FAO's own grid over the Cyampirita photo: 9 rows of 15 squares, wetter to the east."""
+    percent = np.tile(np.linspace(62.0, 76.0, 15, dtype=np.float32), (9, 1))
+    return sv.Soil(period="2026-11-D1", percent=percent, west=30.4169922, north=-1.6923828, step=0.0009765625,
+                   first_estimate=first, centre=69.0, year_low=40.0, year_high=75.0)
+
+
+def test_soil_hexagons_cover_the_photo_inside_its_frame_with_their_reading_band_and_ten_days():
+    drawn = sv.soil_hexagons(_soil_over_the_photo(), BOX)
+    features = drawn["geojson"]["features"]
+    assert drawn["sizes"] == [9, 10]
+    frame = box(*BOX)
+    for size in drawn["sizes"]:
+        mine = _by_size(features, size)
+        assert _area(mine) == pytest.approx(frame.area, rel=1e-6)  # the soil squares reach past the frame: all of it is covered
+        assert all(frame.buffer(1e-9).contains(Polygon(f["geometry"]["coordinates"][0])) for f in mine)
+    assert len(_by_size(features, 9)) < 25 < len(_by_size(features, 10))
+    one = _by_size(features, 10)[0]["properties"]
+    assert set(one) == {"moisture", "band", "period", "h3_resolution", "note"}
+    assert one["period"] == "1-10 Nov 2026" and one["note"] == "FAO's first estimate" and one["band"] == sv.soil_band(one["moisture"])[0]
+    west_most = min(_by_size(features, 10), key=lambda f: f["geometry"]["coordinates"][0][0][0])["properties"]["moisture"]
+    east_most = max(_by_size(features, 10), key=lambda f: f["geometry"]["coordinates"][0][0][0])["properties"]["moisture"]
+    assert west_most < 65 < 73 < east_most  # a hexagon holds the ground under it, not the photo's mean
+    assert "note" not in sv.soil_hexagons(_soil_over_the_photo(first=False), BOX)["geojson"]["features"][0]["properties"]
+
+
+def test_each_soil_hexagon_with_room_inside_the_frame_gets_one_point_that_writes_its_reading():
+    features = sv.soil_hexagons(_soil_over_the_photo(), BOX)["geojson"]["features"]
+    frame = box(*BOX)
+    for size in (9, 10):
+        outlines, points = _by_size(features, size), _by_size(features, size, "Point")
+        assert 0 < len(points) <= len(outlines)
+        assert all(frame.contains(Point(p["geometry"]["coordinates"])) for p in points)
+        assert all(p["properties"]["reading"] == f"{p['properties']['moisture']:.0f}%" for p in points)
+        # a sliver of a hexagon left inside the frame has no room for a number
+        slivers = [f for f in outlines if Polygon(f["geometry"]["coordinates"][0]).area < 0.1 * max(
+            Polygon(o["geometry"]["coordinates"][0]).area for o in outlines)]
+        assert len(points) <= len(outlines) - len(slivers) + 1
+    assert all("reading" not in f["properties"] for f in features if f["geometry"]["type"] == "Polygon")
+
+
+def test_a_soil_square_with_no_value_is_not_drawn_and_no_squares_give_no_hexagons():
+    none = sv.soil_hexagons(_soil(((np.nan, np.nan), (np.nan, np.nan))), BOX)
+    assert none["geojson"]["features"] == [] and none["sizes"] == []
+    # one square of FAO's file holds a value: only the hexagons over it are drawn, each with that value
+    one = sv.soil_hexagons(_soil(((62.0, np.nan), (np.nan, np.nan))), BOX)["geojson"]["features"]
+    assert one and {f["properties"]["moisture"] for f in one} == {62.0}
+    assert sum(Polygon(f["geometry"]["coordinates"][0]).area for f in one if f["geometry"]["type"] == "Polygon") < 0.1 * box(*BOX).area
 
 
 def test_passes_whose_bands_hold_no_value_give_no_picture_not_a_crash(tmp_path, in_process):

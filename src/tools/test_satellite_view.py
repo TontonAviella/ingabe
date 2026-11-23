@@ -35,9 +35,9 @@ def world(monkeypatch):
     state: dict[str, Any] = {
         "row": {"layer_id": "Lphoto", "name": "Cyampirita_Orthophoto", "type": "raster", "bounds": BOX, "owner_uuid": "user-1"},
         "view": _view(), "asked": [], "told": [],
-        "layers": [satellite_layers.OnMap("Lsoil", "Soil moisture - Cyampirita_Orthophoto", satellite_layers.SOIL_KIND, False, BOX),
-                   satellite_layers.OnMap("Lplants", "Plants (NDVI) - Cyampirita_Orthophoto",
-                                          satellite_layers.PLANTS_KIND, False, BOX)],
+        "layers": [satellite_layers.OnMap("Lplants", "Plants (NDVI) - Cyampirita_Orthophoto",
+                                          satellite_layers.PLANTS_KIND, False, BOX),
+                   satellite_layers.OnMap("Lsoil", "Soil moisture - Cyampirita_Orthophoto", satellite_layers.SOIL_KIND, False, BOX)],
     }
 
     class Conn:
@@ -80,16 +80,17 @@ async def test_both_layers_go_on_the_map_and_the_answer_says_plants_soil_and_the
     assert result["status"] == "success" and world["asked"] == [BOX]
     assert world["put"] == {"photo_layer_id": "Lphoto", "photo_name": "Cyampirita_Orthophoto", "user_uuid": "user-1",
                             "map_id": "M1", "project_id": "P1"}
-    assert world["told"] == [("Adding Soil moisture - Cyampirita_Orthophoto", "Lsoil", True),
-                             ("Adding Plants (NDVI) - Cyampirita_Orthophoto", "Lplants", True)]
+    assert world["told"] == [("Adding Plants (NDVI) - Cyampirita_Orthophoto", "Lplants", True),
+                             ("Adding Soil moisture - Cyampirita_Orthophoto", "Lsoil", True)]
     assert result["together"] == "Plants are filling in and the soil reads near the top of its year: the rains are carrying the crop."
-    assert [layer["kind"] for layer in result["layers"]] == [satellite_layers.SOIL_KIND, satellite_layers.PLANTS_KIND]
+    assert [layer["kind"] for layer in result["layers"]] == [satellite_layers.PLANTS_KIND, satellite_layers.SOIL_KIND]
     said = tool.reply(result)
     assert said.startswith("Here is what the satellites show over Cyampirita_Orthophoto.\n\n**Plants.** Every 10 m square")
     assert "**Soil moisture.** Soil moisture for 1-10 Nov (FAO WaPOR estimate, 100 m squares)" in said
     assert "**Together.** Plants are filling in" in said
     assert said.endswith('Two layers are on the map, each with its own switch: "Plants (NDVI) - Cyampirita_Orthophoto" '
-                         'and "Soil moisture - Cyampirita_Orthophoto". Tap any square for its reading and its date.')
+                         'and "Soil moisture - Cyampirita_Orthophoto". Zoom in and the hexagons get smaller, to show where a '
+                         'weak patch sits; tap a hexagon for its NDVI and its date and tap a soil moisture number for its reading.')
 
 
 @pytest.mark.anyio
@@ -102,17 +103,18 @@ async def test_layers_already_on_the_map_are_not_announced_again(world):
 @pytest.mark.anyio
 async def test_one_missing_part_is_said_in_plain_words_and_the_other_still_comes(world):
     world["view"] = _view(soil=False, soil_missing="FAO's soil moisture file could not be read just now.")
-    world["layers"] = world["layers"][1:]
+    world["layers"] = world["layers"][:1]
     result = await _ask()
     assert result["status"] == "success" and result["soil"] is None and result["together"] is None
     said = tool.reply(result)
     assert "FAO's soil moisture file could not be read just now." in said and "**Soil moisture.**" not in said
-    assert 'The layer "Plants (NDVI) - Cyampirita_Orthophoto" is on the map.' in said
+    assert said.endswith('The layer "Plants (NDVI) - Cyampirita_Orthophoto" is on the map. Zoom in and the hexagons get '
+                         'smaller; tap a hexagon for its NDVI and its date.')
 
 
 @pytest.mark.anyio
 async def test_a_layer_that_could_not_be_drawn_is_owned_up_to_and_the_numbers_still_told(world):
-    world["layers"] = world["layers"][1:]  # the soil layer could not be saved
+    world["layers"] = world["layers"][:1]  # the soil layer could not be saved
     result = await _ask()
     assert result["not_drawn"] == ["the soil moisture layer"]
     assert "I could not draw the soil moisture layer on the map just now; the numbers above still hold." in tool.reply(result)

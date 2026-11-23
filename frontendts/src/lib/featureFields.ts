@@ -1,8 +1,19 @@
 // Readable rows for the selected-feature panel: plain labels instead of raw
 // property names, and internal fields hidden.
 
-// 'faded' only tells the map to draw a satellite square lighter; the square's note says why in words.
-const HIDDEN_FIELDS = new Set(['h3_index', 'screening_model', 'analysis_goal', 'domain', 'has_exposure', 'color', 'photo_key', 'faded']);
+// 'older' only tells the map to draw a satellite hexagon in grey, and 'reading' is the number it writes on a soil
+// moisture hexagon; the hexagon's note and its moisture say both in words.
+const HIDDEN_FIELDS = new Set([
+  'h3_index',
+  'screening_model',
+  'analysis_goal',
+  'domain',
+  'has_exposure',
+  'color',
+  'photo_key',
+  'older',
+  'reading',
+]);
 
 // Auto-enriched metric columns added by the (now removed) enrichment API:
 // computed values, not original layer attributes.
@@ -36,8 +47,9 @@ const LABELS: Record<string, string> = {
   evidence_basis: 'Based on',
   confidence: 'Confidence',
   h3_resolution: 'Hexagon size',
-  // squares of the satellite view (src/services/satellite_view.py)
+  // hexagons of the satellite view (src/services/satellite_view.py)
   ndvi: 'NDVI (greenness, -1 to 1)',
+  weakest: 'Its weakest square (NDVI)',
   moisture: 'Soil moisture (%)',
   band: 'Range',
   period: 'Ten days',

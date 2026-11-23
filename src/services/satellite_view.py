@@ -15,16 +15,17 @@ project_satellite_ndvi_soil_check_2026_11_23):
   squares flagged under 0.1% of the squares on the 22 sharpest passes of the year, and 38% and 49% on the two
   passes seen hazy by eye. One place, judged by eye: a first rule, not a tested one.
 - A square seen a month before its neighbour is not the same crop moment: NDVI went 0.31 to 0.55 between
-  8 Oct and 19 Nov on the same squares. So every square carries the day it was seen, and old ones are drawn
-  faded.
+  8 Oct and 19 Nov on the same squares. So every square carries the day it was seen, and a hexagon whose
+  look is older than the photo's main one is drawn in grey: in the legend's colours a month-old look reads as a
+  sick crop beside a fresh one (seen on the Cyampirita photo: the third last seen 23 Oct drew orange).
 - FAO WaPOR soil moisture (L2-RSM-D, 100 m, every 10 days) has a value on every square of Rwanda. It follows
   the wet and dry seasons (12 of 12 places) but not whether rain was above or below usual (rank correlation
   0.14 against CHIRPS, bar 0.40), and FAO replaces each file about 67 days later with a steadier one. So it
   is shown as the season's level with its dates, marked a first estimate while it is one, and never as a
   precise weekly reading.
 
-Nothing here is drawn or worded for a screen: `view` returns measured values, `plants_squares` and
-`soil_squares` the squares to draw, and `words` the plain facts cards and Sage both read.
+Nothing here is drawn or worded for a screen: `view` returns measured values, `plants_hexagons` and
+`soil_hexagons` the hexagons to draw, and `words` the plain facts cards and Sage both read.
 """
 
 from __future__ import annotations
@@ -40,8 +41,10 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import date, timedelta
 from pathlib import Path
-from typing import Any, Optional, Sequence
+from typing import Any, Callable, Optional, Sequence
 
+import h3
+import h3.api.basic_int as h3_numbers  # hexagons as numbers: thousands of squares are placed and sorted without strings
 import numpy as np
 import rasterio
 import rasterio.transform
@@ -54,6 +57,7 @@ from rasterio.windows import Window, from_bounds
 from rasterio.windows import bounds as window_bounds
 from rasterio.windows import transform as window_transform
 from scipy.ndimage import median_filter
+from shapely.geometry import Polygon, box
 
 from src.services import ndvi_classes, raster_process, wapor_service
 from src.services.gdal_http import GDAL_HTTP_TIMEOUTS
@@ -66,12 +70,18 @@ SQUARE_M = 10  # Sentinel-2's red and near-infrared pixels
 LOOKBACKS = (45, 100, 180)
 HAZE_BLUE = 900.0  # blue reflectance x 10,000; sharp passes read 330-750 across the photo, hazy ground 1,080+
 HAZE_BLOCK = 7  # squares on a side (70 m): haze is wide, a bright roof or bare plot is not
-FADED_AFTER_DAYS = 14  # a square seen this long before the photo's main look is drawn faded
+OLDER_AFTER_DAYS = 14  # a square seen this long before the photo's main look is marked as an older look
 EARLIER_GAP_DAYS = 14  # a change is measured against a look at least this much older
 EARLIER_SHARE = 0.5  # of the main look's squares that the earlier look must cover before change is stated
 EARLIER_PASSES = 6  # older passes read at most, after the photo is covered, to find that earlier look
 STEADY = 0.05  # NDVI moved by less than this: "about the same"
-MAX_SQUARES = 20_000  # squares drawn; a larger photo gets wider squares
+MAX_SQUARES = 20_000  # squares the drawing starts from; a larger photo's squares are first joined into wider ones
+# The picture is drawn as hexagons (H3), like the app's other findings, in sizes that take over from one another
+# as the map is zoomed in: a wide hexagon says "somewhere in here", a small one says where.
+HEX_OVER_SQUARE = 1.5  # the smallest hexagon holds this many measured squares: none is drawn finer than the data
+HEX_FEWEST = 7  # a wider size is added while the photo still holds this many of its hexagons
+HEX_SIZES = 3  # sizes drawn at most
+READING_NEEDS = 0.15  # of a hexagon left inside the photo's frame before its reading is written on it
 MAX_AREA_KM2 = 100.0  # a wider box is not one farm's photo, and each pass would be a large read
 PASSES_AT_ONCE = raster_process.WORKERS
 THREADS_IN_WORKER = 6  # files read side by side inside one raster worker
@@ -625,7 +635,7 @@ def _view_once(key: tuple[float, ...], bbox: Sequence[float], today: date) -> Vi
     return made
 
 
-# --- Squares to draw ---------------------------------------------------------------------------------------------
+# --- Hexagons to draw -------------------------------------------------------------------------------------------
 
 
 def _blocks(values: np.ndarray, side: int, how: str) -> np.ndarray:
@@ -649,41 +659,141 @@ def _day_words(day: date, today: date) -> str:
     return f"{day.day} {day:%b}" if day.year == today.year else f"{day.day} {day:%b %Y}"
 
 
-def plants_squares(plants: Plants) -> dict[str, Any]:
-    """The plants picture as squares in latitude and longitude: {"geojson", "square_m", "main_day"}.
-    Each square says its NDVI, its class in ndvi_classes' words, the day it was seen (with its year: the squares
-    are saved on a map and read on later days) and whether it is drawn faded."""
+def hexagon_sizes(area_m2: float, square_m: float) -> list[int]:
+    """The hexagon sizes (H3 resolutions) a picture of area_m2 measured in squares of square_m is drawn in, widest
+    first. The smallest is the finest that still holds HEX_OVER_SQUARE squares; wider ones are added while the
+    picture holds HEX_FEWEST of them."""
+    def area(size: int) -> float:
+        return float(h3.average_hexagon_area(size, unit="m^2"))
+
+    finest = max((size for size in range(16) if area(size) >= HEX_OVER_SQUARE * square_m * square_m), default=0)
+    sizes = [finest]
+    while len(sizes) < HEX_SIZES and sizes[0] > 0 and area_m2 / area(sizes[0] - 1) >= HEX_FEWEST:
+        sizes.insert(0, sizes[0] - 1)
+    return sizes
+
+
+def _inside(cell: int, bbox: Sequence[float]) -> Optional[tuple[dict[str, Any], float, tuple[float, float]]]:
+    """A hexagon cut to the photo's frame: (its outline, the share of it left, a point inside what is left), or
+    None when nothing is left. A hexagon's value is the mean of the measured ground under it, so it is not drawn
+    over ground outside the photo that was not measured."""
+    west, south, east, north = bbox
+    corners = [(lng, lat) for lat, lng in h3_numbers.cell_to_boundary(cell)]
+    middle_lat, middle_lon = h3_numbers.cell_to_latlng(cell)
+    share, at = 1.0, (middle_lon, middle_lat)
+    if not all(west <= x <= east and south <= y <= north for x, y in corners):
+        whole = Polygon(corners)
+        left = whole.intersection(box(west, south, east, north))
+        if left.is_empty or not isinstance(left, Polygon):  # nothing, or only a point or a line of it
+            return None
+        share = float(left.area / whole.area)
+        corners = list(left.exterior.coords)[:-1]
+        if not (west <= middle_lon <= east and south <= middle_lat <= north):
+            point = left.representative_point()
+            at = (float(point.x), float(point.y))
+    ring = [[round(float(x), 7), round(float(y), 7)] for x, y in corners]
+    return {"type": "Polygon", "coordinates": [ring + [ring[0]]]}, share, (round(at[0], 7), round(at[1], 7))
+
+
+def _placed(bbox: Sequence[float], size: int, lon: np.ndarray, lat: np.ndarray, square_at: Callable[[np.ndarray, np.ndarray], np.ndarray]
+            ) -> tuple[list[tuple[dict[str, Any], float, tuple[float, float]]], np.ndarray, np.ndarray]:
+    """The hexagons of one size that touch the photo's frame, and the squares each holds: (each hexagon's cut to
+    the frame, then for every pairing of a square with a hexagon the hexagon's place in that list and the
+    square's place among the given middles).
+
+    A square belongs to the hexagon its middle (lon, lat) falls in. The hexagons come from the frame itself, not
+    from the squares, so none that touches the photo is missed; one that holds no square's middle (a sliver at the
+    frame's edge, or a hexagon between the middles of wide squares) borrows the square under it, which
+    square_at(lons, lats) names, -1 for none."""
+    west, south, east, north = bbox
+    pad = 2 * float(h3.average_hexagon_edge_length(size, unit="m")) / 111_000  # a hexagon's width, in degrees
+    around = np.array(sorted(h3_numbers.geo_to_cells(box(west - pad, south - pad, east + pad, north + pad), size)), dtype=np.uint64)
+    cuts_around = [_inside(int(cell), bbox) for cell in around]
+    touching = np.array([cut is not None for cut in cuts_around], dtype=bool)
+    cells, cuts = around[touching], [cut for cut in cuts_around if cut is not None]
+    nothing = np.zeros(0, dtype=np.int64)
+    if not cuts:
+        return [], nothing, nothing
+    place_of = h3_numbers.latlng_to_cell
+    of_square = np.fromiter((place_of(y, x, size) for x, y in zip(lon.tolist(), lat.tolist())), dtype=np.uint64, count=lon.size)
+    place = np.searchsorted(cells, of_square).clip(max=cells.size - 1)
+    squares = np.nonzero(cells[place] == of_square)[0]
+    place = place[squares]
+    empty = np.setdiff1d(np.arange(cells.size), place)
+    if empty.size:
+        borrowed = square_at(np.array([cuts[i][2][0] for i in empty]), np.array([cuts[i][2][1] for i in empty]))
+        place = np.concatenate([place, empty[borrowed >= 0]])
+        squares = np.concatenate([squares, borrowed[borrowed >= 0]])
+    return cuts, place, squares
+
+
+def plants_hexagons(plants: Plants, bbox: Sequence[float]) -> dict[str, Any]:
+    """The plants picture as hexagons inside the photo's frame: {"geojson", "sizes", "square_m", "main_day",
+    "latitude"}.
+
+    Every size covers the whole frame wherever a pass saw the ground. A hexagon says the mean NDVI of the squares
+    under it, its class in ndvi_classes' words, the day most of it was seen (with its year: the layer is saved on
+    a map and read on later days), whether that is an older look than the photo's main one, and, on the wider
+    sizes, its weakest square: the reason to zoom in."""
     count = int((plants.seen > 0).sum())
     side = max(1, int(np.ceil(np.sqrt(count / MAX_SQUARES))))
     ndvi = _blocks(plants.ndvi, side, "mean")
     seen = _blocks(np.where(plants.seen > 0, plants.seen, np.nan), side, "oldest")
     haze = _blocks(plants.hazy, side, "any")
-    a, b, c, d, e, f = plants.grid.transform
-    to_wgs84 = Transformer.from_crs(plants.grid.crs, "EPSG:4326", always_xy=True)
     rows, cols = np.nonzero(np.isfinite(ndvi) & np.isfinite(seen))
-    corners_col = np.stack([cols, cols + 1, cols + 1, cols], axis=1) * side
-    corners_row = np.stack([rows, rows, rows + 1, rows + 1], axis=1) * side
-    lon, lat = to_wgs84.transform(a * corners_col + b * corners_row + c, d * corners_col + e * corners_row + f)
     main = plants.main_day
-    features = []
-    for i, (row, col) in enumerate(zip(rows, cols)):
-        day = date.fromordinal(int(seen[row, col]))
-        ring = [[round(float(lon[i, k]), 7), round(float(lat[i, k]), 7)] for k in (0, 1, 2, 3, 0)]
-        value = round(float(ndvi[row, col]), 2)
-        cls = ndvi_classes.ndvi_class(value)
-        faded = (main - day).days >= FADED_AFTER_DAYS
-        properties: dict[str, Any] = {
-            "plants": ndvi_classes.ground_label(cls) if cls else "",
-            "ndvi": value,
-            "seen_on": f"{day.day} {day:%b %Y}",
-            "faded": bool(faded),
-        }
-        notes = (["An older look than most of the photo"] if faded else []) + (
-            ["Seen through haze: may read low"] if haze[row, col] else [])
-        if notes:
-            properties["note"] = "; ".join(notes)
-        features.append({"type": "Feature", "properties": properties, "geometry": {"type": "Polygon", "coordinates": [ring]}})
-    return {"geojson": {"type": "FeatureCollection", "features": features}, "square_m": SQUARE_M * side, "main_day": main}
+    square_m = SQUARE_M * side
+    drawn: dict[str, Any] = {"geojson": {"type": "FeatureCollection", "features": []}, "sizes": [], "square_m": square_m,
+                             "main_day": main, "latitude": (bbox[1] + bbox[3]) / 2}
+    if rows.size == 0:
+        return drawn
+    a, _, c, _, e, f = plants.grid.transform  # a north-up grid: the two turning terms are 0
+    lon, lat = Transformer.from_crs(plants.grid.crs, "EPSG:4326", always_xy=True).transform(
+        a * (cols + 0.5) * side + c, e * (rows + 0.5) * side + f)
+    from_wgs84 = Transformer.from_crs("EPSG:4326", plants.grid.crs, always_xy=True)
+    index_of = np.full(ndvi.shape, -1, dtype=np.int64)
+    index_of[rows, cols] = np.arange(rows.size)
+
+    def square_at(lons: np.ndarray, lats: np.ndarray) -> np.ndarray:
+        x, y = from_wgs84.transform(lons, lats)
+        col = np.floor((x - c) / (a * side)).astype(np.int64).clip(0, ndvi.shape[1] - 1)
+        row = np.floor((y - f) / (e * side)).astype(np.int64).clip(0, ndvi.shape[0] - 1)
+        return index_of[row, col]
+
+    values_of, days_of, hazes_of = ndvi[rows, cols].astype(np.float64), seen[rows, cols].astype(np.int64), haze[rows, cols].astype(np.float64)
+    distinct = np.unique(days_of)
+    drawn["sizes"] = sizes = hexagon_sizes(rows.size * square_m * square_m, square_m)
+    features = drawn["geojson"]["features"]
+    for size in sizes:
+        cuts, place, squares = _placed(bbox, size, lon, lat, square_at)
+        values, days, hazes = values_of[squares], days_of[squares], hazes_of[squares]
+        held = np.bincount(place, minlength=len(cuts))
+        with np.errstate(all="ignore"):
+            mean = np.bincount(place, weights=values, minlength=len(cuts)) / held
+        weakest = np.full(len(cuts), np.inf)
+        np.minimum.at(weakest, place, values)
+        votes = np.stack([np.bincount(place, weights=(days == day).astype(np.float64), minlength=len(cuts)) for day in distinct])
+        most = distinct[np.argmax(votes, axis=0)]  # a tie goes to the older day
+        mixed = votes.max(axis=0) < held
+        through_haze = np.bincount(place, weights=hazes, minlength=len(cuts)) > 0
+        for i, (outline, _, _) in enumerate(cuts):
+            if held[i] == 0:  # no pass saw the ground under it
+                continue
+            day = date.fromordinal(int(most[i]))
+            value = round(float(mean[i]), 2)
+            cls = ndvi_classes.ndvi_class(value)
+            older = (main - day).days >= OLDER_AFTER_DAYS
+            properties: dict[str, Any] = {"plants": ndvi_classes.ground_label(cls) if cls else "", "ndvi": value}
+            if size != sizes[-1]:
+                properties["weakest"] = round(float(weakest[i]), 2)
+            properties.update({"seen_on": f"{day.day} {day:%b %Y}", "older": bool(older), "h3_resolution": size})
+            notes = (["An older look than most of the photo"] if older else []) + (
+                ["Parts of it were seen on other days"] if mixed[i] else []) + (
+                ["Seen through haze: may read low"] if through_haze[i] else [])
+            if notes:
+                properties["note"] = "; ".join(notes)
+            features.append({"type": "Feature", "properties": properties, "geometry": outline})
+    return drawn
 
 
 def period_words(period: str, today: Optional[date] = None) -> str:
@@ -704,20 +814,45 @@ def soil_band(percent: float) -> tuple[str, str]:
     return f"{low:g}-{SOIL_BANDS[index + 1][0]:g}%", colour
 
 
-def soil_squares(soil: Soil) -> dict[str, Any]:
-    """The soil moisture squares in latitude and longitude, each with its reading and the ten days it is for."""
+def soil_hexagons(soil: Soil, bbox: Sequence[float]) -> dict[str, Any]:
+    """Soil moisture as hexagons inside the photo's frame: {"geojson", "sizes", "latitude"}. Each hexagon says the
+    mean reading of the squares under it and the ten days it is for. With each comes a point carrying the same
+    facts, which is where the map writes the reading (a hexagon cut by a tile's edge would otherwise be labelled
+    twice); a hexagon with less than READING_NEEDS of itself inside the frame gets none."""
+    rows, cols = np.nonzero(np.isfinite(soil.percent))
+    drawn: dict[str, Any] = {"geojson": {"type": "FeatureCollection", "features": []}, "sizes": [], "latitude": (bbox[1] + bbox[3]) / 2}
+    if rows.size == 0:
+        return drawn
+    lon, lat = soil.west + (cols + 0.5) * soil.step, soil.north - (rows + 0.5) * soil.step
+    index_of = np.full(soil.percent.shape, -1, dtype=np.int64)
+    index_of[rows, cols] = np.arange(rows.size)
+
+    def square_at(lons: np.ndarray, lats: np.ndarray) -> np.ndarray:
+        col = np.floor((lons - soil.west) / soil.step).astype(np.int64).clip(0, soil.percent.shape[1] - 1)
+        row = np.floor((soil.north - lats) / soil.step).astype(np.int64).clip(0, soil.percent.shape[0] - 1)
+        return index_of[row, col]
+
+    values_of = soil.percent[rows, cols].astype(np.float64)
     words = period_words(soil.period)
-    features = []
-    for row, col in zip(*np.nonzero(np.isfinite(soil.percent))):
-        left, top = soil.west + col * soil.step, soil.north - row * soil.step
-        ring = [[round(x, 7), round(y, 7)] for x, y in ((left, top), (left + soil.step, top), (left + soil.step, top - soil.step),
-                                                         (left, top - soil.step), (left, top))]
-        value = round(float(soil.percent[row, col]), 1)
-        properties: dict[str, Any] = {"moisture": value, "band": soil_band(value)[0], "period": words}
-        if soil.first_estimate:
-            properties["note"] = "FAO's first estimate"
-        features.append({"type": "Feature", "properties": properties, "geometry": {"type": "Polygon", "coordinates": [ring]}})
-    return {"geojson": {"type": "FeatureCollection", "features": features}}
+    drawn["sizes"] = sizes = hexagon_sizes(rows.size * SOIL_SQUARE_M * SOIL_SQUARE_M, SOIL_SQUARE_M)
+    features = drawn["geojson"]["features"]
+    for size in sizes:
+        cuts, place, squares = _placed(bbox, size, lon, lat, square_at)
+        held = np.bincount(place, minlength=len(cuts))
+        with np.errstate(all="ignore"):
+            mean = np.bincount(place, weights=values_of[squares], minlength=len(cuts)) / held
+        for i, (outline, share, at) in enumerate(cuts):
+            if held[i] == 0:  # FAO's file holds no value under it
+                continue
+            value = round(float(mean[i]), 1)
+            properties: dict[str, Any] = {"moisture": value, "band": soil_band(value)[0], "period": words, "h3_resolution": size}
+            if soil.first_estimate:
+                properties["note"] = "FAO's first estimate"
+            features.append({"type": "Feature", "properties": properties, "geometry": outline})
+            if share >= READING_NEEDS:
+                features.append({"type": "Feature", "properties": {**properties, "reading": f"{value:.0f}%"},
+                                 "geometry": {"type": "Point", "coordinates": list(at)}})
+    return drawn
 
 
 # --- What the two show, in plain facts ----------------------------------------------------------------------
@@ -747,10 +882,10 @@ def plants_facts(plants: Plants, today: date) -> dict[str, Any]:
     shown = [f"{_percent(share)} on {_day_words(day, today)}" for day, share in by_day[:4]]
     sentences.append(f"Seen: {_list(shown)}" + ("; the rest earlier." if len(by_day) > 4 else "."))
     main = plants.main_day
-    old = float(((plants.seen > 0) & (plants.seen <= main.toordinal() - FADED_AFTER_DAYS)).mean())
+    old = float(((plants.seen > 0) & (plants.seen <= main.toordinal() - OLDER_AFTER_DAYS)).mean())
     if old >= 0.05:
-        sentences.append(f"{_percent(old)} of the photo is drawn faded: clouds hid it on {_day_words(main, today)}, so its "
-                         "look is older and must not be read against the fresh part.")
+        sentences.append(f"{_percent(old)} of the photo holds an older look, drawn in grey: clouds hid it on "
+                         f"{_day_words(main, today)}, so it must not be read against the fresh part.")
     haze_share = float(plants.hazy.mean())
     if haze_share >= 0.01:
         sentences.append(f"{_percent(haze_share)} was only seen through haze and may read low.")

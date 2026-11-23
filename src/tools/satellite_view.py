@@ -39,8 +39,8 @@ async def show_plants_and_soil_from_satellite(
     """How the plants on a farm's drone photo are doing, seen from the satellite, with the soil's moisture: puts
     two layers on the map, each with its own switch, and returns what each shows and what they show together.
     Plants: NDVI on every 10 m square of the photo, each square's newest clear look with its date (clouds hide
-    many passes; older squares are drawn faded). Soil moisture: FAO's estimate in 100 m squares for the newest
-    ten days.
+    many passes; ground with an older look is marked). Soil moisture: FAO's estimate in 100 m squares for the
+    newest ten days. Both are drawn as hexagons that get smaller as the map is zoomed in.
 
     WHEN TO USE: crop health, plant condition, greenness, NDVI, stress or soil moisture on an uploaded drone
     photo ("are my plants healthy", "show NDVI on my photo", "is the soil wet enough here"), and as the satellite
@@ -115,12 +115,16 @@ def reply(result: dict[str, Any]) -> str:
     if result.get("together"):
         parts.append("**Together.** " + result["together"])
     parts.extend(result.get("missing") or [])
-    names = [f"\"{layer['name']}\"" for layer in result.get("layers") or []]
+    layers = result.get("layers") or []
+    names = [f"\"{layer['name']}\"" for layer in layers]
+    taps = {satellite_layers.PLANTS_KIND: "tap a hexagon for its NDVI and its date",
+            satellite_layers.SOIL_KIND: "tap a soil moisture number for its reading"}
+    how = " and ".join(taps[layer["kind"]] for layer in layers if layer.get("kind") in taps)
     if len(names) == 2:
-        parts.append(f"Two layers are on the map, each with its own switch: {names[1]} and {names[0]}. "
-                     "Tap any square for its reading and its date.")
+        parts.append(f"Two layers are on the map, each with its own switch: {names[0]} and {names[1]}. Zoom in and the "
+                     f"hexagons get smaller, to show where a weak patch sits; {how}.")
     elif names:
-        parts.append(f"The layer {names[0]} is on the map. Tap any square for its reading and its date.")
+        parts.append(f"The layer {names[0]} is on the map. Zoom in and the hexagons get smaller; {how}.")
     if result.get("not_drawn"):
         parts.append(f"I could not draw {' or '.join(result['not_drawn'])} on the map just now; the numbers above still hold.")
     return "\n\n".join(parts)
