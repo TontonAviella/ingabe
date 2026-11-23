@@ -11,6 +11,7 @@ import logging
 import os
 import shutil
 import tempfile
+import time
 from datetime import date, datetime, timedelta, timezone
 import re
 from typing import Any, Optional
@@ -95,20 +96,38 @@ async def _photo(layer: MapLayer, session: UserContext, audience: Optional[str],
     return context.analysis, context.here, context.reader
 
 
-def _warm_satellite_view(layer: MapLayer) -> None:
+SATELLITE_RETRY_MINUTES = 15  # a making that failed is not started again by the deck sooner than this
+_failure_told: set[str] = set()  # failed makings whose card has said so once; the next opening of the card tries again
+
+
+def _warm_satellite_view(layer: MapLayer, asked: bool = False) -> None:
     """The reader has this photo's questions open: start making its satellite view (plants and soil moisture) now,
-    so it is ready when they ask about their crops. The night's run makes these ahead (satellite_ahead); this is
-    for a photo it has not reached yet, such as one uploaded today. A first view took 30 seconds to 2 minutes of
-    remote reads in the local containers (2026-11-23) and takes nothing while fresh (satellite_view.FRESH_HOURS);
-    a failure is logged by the job and the view is made when asked for instead."""
+    so its card fills in and Sage has it when they ask about their crops. The night's run makes these ahead
+    (satellite_ahead); this is for a photo it has not reached yet, such as one uploaded today. A first view took 30
+    seconds to 2 minutes of remote reads in the local containers (2026-11-23) and takes nothing while fresh
+    (satellite_view.FRESH_HOURS). A view with a part missing is not kept, so the job fails and the card says so;
+    the deck (asked again every 15 seconds while any card works) then leaves it for SATELLITE_RETRY_MINUTES. The
+    satellite card itself (`asked`) also asks again by itself while it works, so the first ask after a failure only
+    lets the card say so (it then stops asking), and the opening after that tries again."""
     bounds = [float(v) for v in layer.bounds] if layer.bounds else None
-    if bounds is None or satellite_view.fresh(bounds):
+    if bounds is None or satellite_view.fresh(bounds) or satellite_view.too_wide(bounds):
         return
+    key = photo_context.satellite_job_key(layer.layer_id)
+    last = background_jobs.status(key)
+    if last is not None and last.state == "failed":
+        if asked and key not in _failure_told:
+            _failure_told.add(key)  # the open card asks again by itself while it works: it is told of the failure first
+            return
+        if not asked and time.time() - last.started < SATELLITE_RETRY_MINUTES * 60:
+            return
+    _failure_told.discard(key)
 
     async def work(progress: Any) -> None:
-        await asyncio.to_thread(satellite_view.view, bounds, date.today())
+        seen = await asyncio.to_thread(satellite_view.view, bounds, date.today())
+        if seen.plants is None or seen.soil is None:
+            raise RuntimeError(f"satellite view not whole: {seen.plants_missing or seen.soil_missing}")
 
-    background_jobs.start(f"satellite-view:{layer.layer_id}", work)
+    background_jobs.start(key, work)
 
 
 @router.get("/layer/{layer_id}/cards", operation_id="get_drone_cards")
@@ -160,6 +179,9 @@ async def get_drone_card_answer(
         if spots is None and (job is None or job.state == "failed"):
             job = drone_plots.start_spots(s3, bucket, key, await _cog_url(s3, metadata, _LONG_URL_SECONDS), spot_plots)
         here = dataclasses.replace(here, spots=spots, spots_job=None if spots is not None else job)
+    if card_id == "satellite" and here.satellite is None:  # opened before the view is made, or after it failed
+        _warm_satellite_view(layer, asked=True)
+        here = dataclasses.replace(here, satellite_job=background_jobs.status(photo_context.satellite_job_key(layer.layer_id)))
     try:
         answer = await asyncio.to_thread(drone_cards.answer_card, card_id, analysis, reader, here)
     except KeyError:

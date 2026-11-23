@@ -239,7 +239,12 @@ class STACService:
         start = end - timedelta(days=days)
         return f"{start.strftime('%Y-%m-%d')}/{end.strftime('%Y-%m-%d')}"
 
-    def __init__(self, catalog_name: str = "earth_search"):
+    def __init__(self, catalog_name: str = "earth_search", use_pystac: bool = True):
+        """use_pystac=False searches by one plain HTTP request and opens no catalogue client. For a caller that
+        only needs each pass's day and band addresses over one small box (satellite_view): on the Cyampirita box,
+        45 days, the client took 0.5 to 1.4 s to open and 2.5 to 3.6 s to search, the plain request 0.8 to 1.3 s,
+        with the same passes, days and addresses (measured three times, 2026-11-23, local container). The plain
+        request reads one page: keep `limit` above what the box and dates can hold."""
         self.catalog_name = catalog_name
         self.catalog_url = STAC_CATALOGS[catalog_name]
         self._pystac_client: Optional[Any] = None
@@ -247,7 +252,7 @@ class STACService:
         self._session = requests.Session()
         self._session.headers.update({"Accept": "application/geo+json"})
 
-        if _PYSTAC_CLIENT_AVAILABLE:
+        if _PYSTAC_CLIENT_AVAILABLE and use_pystac:
             try:
                 # pystac-client 0.7.7 drops a timeout given to Client.open alone (StacApiIO.__init__
                 # resets it to None); passed with our own StacApiIO it is applied to every request.
@@ -382,6 +387,9 @@ class STACService:
             data = resp.json()
 
             features = data.get("features", [])
+            if len(features) >= limit:  # one page is read: a full page may have left passes out
+                logger.warning("STAC HTTP search filled its page of %d for %s %s; later items were not read",
+                               limit, bbox, datetime_range)
             results = []
             for feature in features:
                 props = feature.get("properties", {})

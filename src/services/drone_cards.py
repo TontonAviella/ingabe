@@ -53,6 +53,7 @@ from src.services import (
     isdasoil_service,
     plant_finder,
     reader_roles,
+    satellite_view,
     wapor_service,
 )
 from src.services.card_status import (
@@ -106,26 +107,26 @@ STATUS_LABELS = {
 _BASE_SCORE = {READY: 100, PARTLY: 60, WORKING: 55, NEEDS_FLIGHT: 40, NEEDS_CAMERA: 40, CANT_TELL: 20, TO_BUILD: 10,
                LEARN: 0}
 _READER_BOOST = {
-    "farmer": {"plots_green": 20, "weeds": 18, "plot_problems": 16, "weak_spots": 15, "crop_types": 10,
-               "plant_count": 10, "bare_ground": 5},
+    "farmer": {"plots_green": 20, "weeds": 18, "plot_problems": 16, "weak_spots": 15, "satellite": 15,
+               "crop_types": 10, "plant_count": 10, "bare_ground": 5},
     "agronomist": {"plot_problems": 22, "plots_green": 20, "plot_stage": 18, "soil": 20, "weak_spots": 15,
-                   "fertilizer": 10, "water": 10},
+                   "satellite": 15, "fertilizer": 10, "water": 10},
     "insurance": {"crop_types": 28, "bare_ground": 25, "history": 20, "plot_problems": 15, "field_outlines": 15,
-                  "growth": 10},
+                  "satellite": 12, "growth": 10},
     "scientist": {"field_outlines": 20, "crop_types": 18, "plots_green": 15, "plot_stage": 12, "weak_spots": 10,
                   "soil": 10},
     "cooperative": {"weeds": 22, "plots_green": 20, "plot_stage": 18, "bare_ground": 15, "field_outlines": 12,
                     "plant_count": 12, "spray": 10},
     "government": {"bare_ground": 25, "crop_types": 22, "field_outlines": 18, "growth": 15, "plots_green": 12,
-                   "history": 10, "water": 10},
+                   "satellite": 12, "history": 10, "water": 10},
     "buyer": {"yield": 25, "crop_types": 22, "plot_stage": 18, "growth": 15, "field_outlines": 12, "history": 10},
 }
 # What matters at each moment of the season (crop_calendar.season_moment).
 _SEASON_BOOST = {
     "planting": {"bare_ground": 25, "plant_count": 20, "field_outlines": 15, "soil": 15, "fertilizer": 12,
                  "crop_types": 10},
-    "growing": {"weeds": 20, "plots_green": 18, "weak_spots": 15, "water": 15, "pests": 15, "plot_problems": 12,
-                "plot_stage": 12, "growth": 12, "spray": 10},
+    "growing": {"weeds": 20, "plots_green": 18, "weak_spots": 15, "satellite": 15, "water": 15, "pests": 15,
+                "plot_problems": 12, "plot_stage": 12, "growth": 12, "spray": 10},
     "harvest": {"yield": 25, "crop_types": 18, "history": 12, "plot_stage": 10, "growth": 10},
     "between": {"history": 20, "soil": 20, "field_outlines": 15, "fertilizer": 10, "bare_ground": 10},
 }
@@ -210,6 +211,10 @@ class Here:
     # zones inside the fields from a photo with a near-infrared band (photo_context): {"geojson", "zoned", "even",
     # "by", "bare_m2"}; None while not measured, on a colour photo, or on raw camera values
     zones: Optional[dict[str, Any]] = None
+    # The photo's satellite view (plants and soil moisture) when a fresh one is kept (satellite_view.ready), and the
+    # job making it while none is (running, or failed). The same view Sage puts on the map and the fields read.
+    satellite: Optional[satellite_view.View] = None
+    satellite_job: Optional[background_jobs.Job] = None
     seed: int = 0  # picks the wording of each question and shuffles the deck; 0 keeps both fixed
     role: Optional[str] = None  # the reader's role (reader_roles): the questions are worded for it
     moment: Optional[str] = None  # the moment of the season (crop_calendar.season_moment); None: not weighed
@@ -411,6 +416,27 @@ TERMS: dict[str, dict[str, Any]] = {
                       "Labels plots at scale; its accuracy here is unknown until compared with what is planted on a "
                       "sample of plots."),
     },
+    "ndvi": {
+        "word": "NDVI",
+        "plain": ("A number from the satellite for how much living green leaf covers the ground: near 0 on bare "
+                  "soil, 0.6 and more under a full crop.",
+                  "It rises as a crop fills in and falls when it thins, dries or is harvested, so two dates show which "
+                  "way your crop is going."),
+        "technical": ("NDVI = (near-infrared - red) / (near-infrared + red), from Sentinel-2 surface reflectance on "
+                      f"{satellite_view.SQUARE_M} m squares; each square keeps its newest clear look and its date.",
+                      "Tracks canopy cover and vigour; it saturates under a dense canopy and mixes whatever shares a "
+                      "square."),
+    },
+    "soil_moisture": {
+        "word": "Soil moisture",
+        "plain": ("How wet the soil around the roots is, as a share of the most it can hold, estimated from satellite "
+                  "for squares 100 metres wide.",
+                  "It shows the level of the season, wet or dry. It is not a reading of your own field this week."),
+        "technical": (f"Relative soil moisture in the root zone (FAO WaPOR v3, {satellite_view.SOIL_SQUARE_M} m, "
+                      "10-day steps), in percent between wilting point and saturation.",
+                      "Followed the seasons at 12 of 12 places but not rain week by week (rank correlation 0.14, "
+                      "tested 2026-11-23); the first file of each period is replaced about two months later."),
+    },
     "water_use": {
         "word": "Water use",
         "plain": ("How much water plants and soil give off to the air each day, measured from satellite.",
@@ -449,6 +475,9 @@ _CARDS = [
     _CardDef("plots_green", 1, ("Which plots are the least green?", "Which plots look paler than their neighbours?",
                                 "Where is the crop thinnest right now?")),
     _CardDef("weak_spots", 1, ("Which parts of my crop look weak?", "Is any part of this photo falling behind?")),
+    _CardDef("satellite", 1, ("How are my plants and the soil doing, seen from the satellite?",
+                              "Is the crop greener or thinner than a few weeks ago?",
+                              "What does the satellite see over this photo?")),
     _CardDef("plot_problems", 4, ("What problems show from the air?", "Where are gaps, yellow leaves or standing water?",
                                   "Which plots should someone walk to first?")),
     _CardDef("crop_types", 5, ("What is growing in each plot?", "Which crops are planted here, and how much of each?",
@@ -647,9 +676,38 @@ def _countable_plots(here: Here) -> list[dict[str, Any]]:
     return [p for p in here.plots.plots() if p["area_ha"] <= plant_finder.MAX_PLOT_HA] if here.plots is not None else []
 
 
+def _satellite_stopped(analysis: PhotoAnalysis, here: Here) -> Optional[str]:
+    """Why no satellite view is coming for this photo, in plain words; None while one is kept or being made."""
+    wide = satellite_view.too_wide(analysis.bounds)
+    if wide:
+        return wide
+    if here.satellite_job is not None and here.satellite_job.state == "failed":
+        return "The satellites could not be read for this photo just now."
+    return None
+
+
+def _satellite_preview(analysis: PhotoAnalysis, here: Here) -> str:
+    seen = here.satellite
+    if seen is None:
+        return _satellite_stopped(analysis, here) or "Reading the satellites over this photo: a few minutes the first time."
+    said = satellite_view.words(seen)
+    plants, soil = said["plants"], said["soil"]
+    parts = []
+    if plants:
+        parts.append(f"NDVI {plants['median']:.2f} in the middle square" + {
+            "rose": ", rising", "fell": ", falling", "steady": ", steady"}.get(plants["direction"] or "", ""))
+    if soil and seen.soil is not None:
+        parts.append(f"soil moisture {soil['median']:.0f}% for {satellite_view.period_words(seen.soil.period, seen.today)}")
+    return "From the satellite: " + "; ".join(parts) + "."
+
+
 def _status(card_id: str, analysis: PhotoAnalysis, here: Here) -> str:
     if card_id in ("weak_spots", "bare_ground"):
         return READY
+    if card_id == "satellite":
+        if here.satellite is not None:
+            return READY
+        return CANT_TELL if _satellite_stopped(analysis, here) else WORKING
     if card_id in _PLOT_CARDS:
         return _plot_status(here)
     if card_id in _LOOK_ONLY_CARDS and not here.vision_looks:
@@ -727,6 +785,8 @@ def _preview(card_id: str, analysis: PhotoAnalysis, here: Here) -> str:
             return f"The {' and '.join(z.name for z in hot)} look less green than the rest."
         greenest = look.green.greenest
         return "No part stands out." + (f" The {greenest.name} is greenest." if greenest else "")
+    if card_id == "satellite":
+        return _satellite_preview(analysis, here)
     if card_id == "bare_ground":
         if not bare.patches:
             return f"No bare patches larger than {MIN_PATCH_HA} ha."
@@ -1063,6 +1123,67 @@ def _water(analysis: PhotoAnalysis, audience: str, here: Here) -> dict[str, Any]
             "Dry patches on this photo are not measured yet",
         ], "A thermal drone flight, or irrigation records for the same weeks."),
         terms=["water_use"], audience=audience, facts=facts)
+
+
+SATELLITE_ON_MAP = "Show it on the map"  # the first question for Sage on the satellite card: it puts the two layers on
+
+
+def _satellite(analysis: PhotoAnalysis, audience: str, here: Here) -> dict[str, Any]:
+    """Plants (NDVI) and soil moisture over the photo from the satellite: the sentences are satellite_view's own, the
+    ones Sage says when it puts the two layers on the map; nothing is measured or worded again here."""
+    seen = here.satellite
+    if seen is None:
+        stopped = _satellite_stopped(analysis, here)
+        return _answer(
+            "satellite", analysis, here,
+            what=stopped or ("Ingabe is reading the satellites over this photo: it can take a few minutes the first "
+                             "time. This answer fills in by itself."),
+            why="The satellite passes every few days, so it shows which way the crop is going between your flights.",
+            todo=("Keep the photo open, or come back later: the view is kept once made." if not stopped
+                  else "Check where this photo sits on the map, or add it again with its position."
+                  if stopped == satellite_view.NOT_A_BOX
+                  else "Ask about a smaller photo: this one is wider than one farm." if satellite_view.too_wide(analysis.bounds)
+                  else "Open this question again to try once more."),
+            how_sure=_how_sure("low", ["Not answered yet"], None), terms=["ndvi", "soil_moisture"], audience=audience,
+            progress=None if stopped else {"done": 0, "parts": 1, "minutes_left": None})
+    said = satellite_view.words(seen)
+    plants, soil = said["plants"], said["soil"]
+    told = [plants["parts"].get(key) for key in ("greenness", "change")] if plants else []
+    what = " ".join(part for part in (*told, said["together"]) if part) or " ".join(said["missing"])
+    facts, because = [], []
+    if plants and seen.plants is not None:
+        facts.append({"label": f"Plants, satellite ({satellite_view.SQUARE_M} m squares)",
+                      "value": f"NDVI {plants['median']:.2f} in the middle square"})
+        facts.append({"label": "Seen", "value": ", ".join(plants["seen_said"][:2])
+                      + ("; the rest earlier" if len(plants["seen_said"]) > 2 else "")})
+        because.append(f"NDVI is measured by the Sentinel-2 satellite on {satellite_view.SQUARE_M} m squares: a square "
+                       "mixes whatever grows in it, and roofs and roads read low")
+        because.extend(plants["parts"][key].rstrip(".") for key in ("covered", "older", "newer", "haze")
+                       if key in plants["parts"] and not (key == "covered" and seen.plants.covered >= 0.999))
+    if soil and seen.soil is not None:
+        facts.append({"label": f"Soil moisture, FAO estimate ({satellite_view.SOIL_SQUARE_M} m squares)",
+                      "value": f"{soil['median']:.0f}% ({soil['low']:.0f}% to {soil['high']:.0f}%)"})
+        facts.append({"label": "For", "value": satellite_view.period_words(seen.soil.period, seen.today)
+                      + (", first estimate" if seen.soil.first_estimate else "")})
+        if "year" in soil["parts"] and not said["together"]:  # "together" already places the soil in its year
+            what += " " + soil["parts"]["year"]
+        limits = soil["parts"]["limits"].rstrip(".")
+        because.append(f"Soil moisture (FAO estimate): {limits[0].lower()}{limits[1:]}")
+    with_figure = sum(1 for f in here.fields if f.satellite_said)
+    if here.fields:
+        kind = "Fields" if field_facts.outlined(here.plots) else "Plots"  # a plot is too small for one more often than not
+        facts.append({"label": f"{kind} with a satellite NDVI of their own", "value": f"{with_figure} of {len(here.fields)}"})
+    because.append("Not checked on the ground")
+    technical = _tone(audience) == "technical"
+    why = ("NDVI tracks canopy cover and vigour between flights; soil moisture places a change in the season's water."
+           if technical else
+           "Greenness from the satellite rises as a crop fills in and falls when it thins, dries or is harvested. The "
+           "soil's moisture shows whether that comes in a wet or a dry part of the year.")
+    todo = (f"Tap \"{SATELLITE_ON_MAP}\" below: the plants and the soil moisture go on the map as two layers, each "
+            "with its own switch. Zoom in and the hexagons get smaller; walk to the lowest ones first.")
+    return _answer("satellite", analysis, here, what=what, why=why, todo=todo,
+                   how_sure=_how_sure("medium", because, "A walk to one low hexagon and one high one, and the next clear pass."),
+                   terms=["ndvi", "soil_moisture"], audience=audience, facts=facts)
 
 
 def _photo_outline(analysis: PhotoAnalysis) -> dict[str, Any]:
@@ -2102,6 +2223,7 @@ _ANSWERS: dict[str, Callable[[PhotoAnalysis, str, Here], dict[str, Any]]] = {
     "weeds": _weeds,
     "plot_stage": _plot_stage,
     "weak_spots": _weak_spots,
+    "satellite": _satellite,
     "bare_ground": _bare_ground,
     "soil": _soil_card,
     "water": _water,
@@ -2169,6 +2291,10 @@ def _asks(card_id: str, analysis: PhotoAnalysis, here: Here, items: list[dict[st
                        if names else []) + [rain],
         "weeds": [(f"When should {crop} be weeded?", f"{ctx}: when and how should {crop} be weeded at this stage, and "
                    "which herbicide, if any, is safe for it?")],
+        # worded so that Sage answers it from the satellite view with no model (sage_routing.build_project_fast_tool_call:
+        # crop health on a farm's drone photo; naming NDVI would send it to the model instead, tested): the same
+        # sentences, and the two layers on the map
+        "satellite": [(SATELLITE_ON_MAP, f"{ctx}: show crop health and soil moisture on this photo."), rain],
         "bare_ground": [("Was this land planted last season?", f"{ctx}: some land is bare now. Using satellite "
                          "greenness for the past seasons, was this land planted before, and when?")],
         "soil": [("What fertilizer does this soil need?", f"{ctx}: from the soil here, which fertilizer and how much "

@@ -736,6 +736,43 @@ describe('outlining a field by tapping it', () => {
     expect(byText('Green cover: Not measured for fields over 0.7 ha: it was tested on smaller fields.')).not.toBeNull();
   });
 
+  it("shows what the satellite says of a field, in the server's own words, and nothing until a view is kept", async () => {
+    const server = fakeServer(true);
+    const said =
+      'From the satellite (Sentinel-2): NDVI 0.59 on 19 Nov, the middle of the 128 whole 10 m squares inside this field. ' +
+      "Soil moisture 67% for 1-10 Nov in the 100 m square under its middle (FAO estimate): the season's level, not this field's own reading.";
+    server.kept.push(
+      {
+        id: 'a',
+        number: 5,
+        centre: [30.5, -1.5],
+        geometry: square(1),
+        area_ha: 1.6,
+        corrections: 0,
+        kept_at: 'then',
+        facts: { area_said: '1.6 ha', plants_said: null, checked_said: null, satellite_note: said },
+      },
+      {
+        id: 'b',
+        number: 6,
+        centre: [30.25, -1.75],
+        geometry: square(2),
+        area_ha: 0.2,
+        corrections: 0,
+        kept_at: 'then',
+        facts: { area_said: '0.20 ha', plants_said: null, checked_said: null, satellite_note: null },
+      },
+    );
+    const m = fakeMap();
+    mount(<FieldTaps map={m.map} layers={[{ ...photo, name: 'Cyampirita' } as MapLayer]} hiddenLayerIDs={[]} />);
+    await vi.waitFor(() => expect(byButton(/^2 fields outlined · show$/)).not.toBeNull());
+    m.clickOn('a');
+    await vi.waitFor(() => expect(byText(said)).not.toBeNull());
+    m.clickOn('b');
+    await vi.waitFor(() => expect(byText('Field 6 · 0.20 ha')).not.toBeNull());
+    expect(document.body.textContent).not.toContain('From the satellite');
+  });
+
   it('asks again while the server is still measuring green cover, and stops once it is done', async () => {
     const server = fakeServer(true);
     server.kept.push({ id: 'a', number: 3, centre: [30.5, -1.5], geometry: square(1), area_ha: 0.18, corrections: 0, kept_at: 'then' });
