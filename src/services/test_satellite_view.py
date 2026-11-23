@@ -271,7 +271,8 @@ def test_a_hexagon_says_its_mean_its_class_its_day_and_on_wider_sizes_its_weakes
     wide, small = _by_size(features, 10), _by_size(features, 12)
     plain = next(f["properties"] for f in small if f["properties"]["ndvi"] == 0.62)
     # the day carries its year and there is no "days old": the layer is saved on a map and read on later days
-    assert plain == {"plants": "Dense vegetation", "ndvi": 0.62, "seen_on": "19 Nov 2026", "older": False, "h3_resolution": 12}
+    assert plain == {"plants": "Dense vegetation", "ndvi": 0.62, "seen_on": "19 Nov 2026", "older": False, "newer": False,
+                     "h3_resolution": 12}
     # from afar a 2,500 m2 patch only lowers the mean of a 1.5 ha hexagon a little, so the hexagon also names its
     # weakest square: the reason to zoom in
     holding = [f["properties"] for f in wide if f["properties"]["weakest"] == 0.05]
@@ -997,18 +998,49 @@ def test_too_wide_says_why_without_reading_anything_and_never_raises():
         assert sv.too_wide(not_a_box) == sv.NOT_A_BOX
 
 
-def test_a_newer_look_beside_an_older_main_one_is_said_since_both_are_drawn_in_colour():
-    # the main look is the older one here: 100 columns seen 23 Oct, 56 seen 19 Nov
+def _newer_beside_older_main() -> sv.Plants:
+    """The main look is the older one: 100 columns seen 23 Oct, 56 seen 19 Nov and greener."""
     ndvi = np.full((89, 156), 0.35, dtype=np.float32)
     ndvi[:, 100:] = 0.60
     days = np.full((89, 156), 31)
     days[:, 100:] = 4
-    said = sv.plants_facts(_plants(ndvi, days), TODAY)
+    return _plants(ndvi, days)
+
+
+def test_a_newer_look_beside_an_older_main_one_is_drawn_in_grey_and_said():
+    """Roger, 2026-11-23: decide how to draw it. One moment is in colour, the day most of the photo was seen; a look
+    two weeks or more from it is grey, whichever side it lies on."""
+    plants = _newer_beside_older_main()
+    said = sv.plants_facts(plants, TODAY)
     assert "older" not in said["parts"]
-    assert said["parts"]["newer"] == ("36% of the photo holds a newer look (up to 19 Nov) than the main one of 23 Oct: a "
-                                      "difference between the two parts can be the weeks between them, not the crop.")
-    assert list(said["parts"]) == ["covered", "seen", "newer", "greenness"]
+    assert said["parts"]["newer"] == ("36% of the photo holds a newer look (up to 19 Nov), drawn in grey: the newest pass "
+                                      "saw only this part, so it must not be read against the rest, seen 23 Oct.")
+    assert list(said["parts"]) == ["covered", "seen", "newer", "greenness"] and said["care"] == [said["parts"]["newer"]]
     assert "newer" not in sv.plants_facts(_two_looks(), TODAY)["parts"]  # there the main look is the fresh one
+    # on the map: every hexagon of the newer part says so, and none is both
+    small = [f["properties"] for f in _by_size(sv.plants_hexagons(plants, BOX)["geojson"]["features"], 12)]
+    assert all(p["newer"] == (p["seen_on"] == "19 Nov 2026") and not p["older"] for p in small)
+    assert 0.3 < sum(p["newer"] for p in small) / len(small) < 0.42
+    assert all(p.get("note", "").startswith("A newer look than most of the photo") == p["newer"] for p in small)
+    # a look only days after the main one is the same moment: in colour, nothing said
+    days = np.full((89, 156), 17)
+    days[:, 100:] = 4
+    close = _plants(np.full((89, 156), 0.5, dtype=np.float32), days)
+    assert "newer" not in sv.plants_facts(close, TODAY)["parts"]
+    assert not any(f["properties"]["newer"] or f["properties"]["older"] for f in sv.plants_hexagons(close, BOX)["geojson"]["features"])
+
+
+def test_a_field_under_a_newer_look_than_the_photos_main_one_says_so():
+    seen = _view(_newer_beside_older_main(), _soil_over_the_photo())
+    fresh = sv.field_seen(seen, _field(1203, 103, 60, 60))
+    assert fresh is not None and fresh.ndvi == pytest.approx(0.60) and fresh.newer is True and fresh.older is False
+    short, sentences = sv.field_words(fresh, TODAY)
+    assert short == "satellite NDVI 0.60 on 19 Nov, a newer look"
+    assert "That is weeks newer than the look most of the photo has, so do not read it against fields seen earlier." in (sentences or "")
+    # a field under the main look says neither
+    main = sv.field_seen(seen, _field(203, 103, 60, 60))
+    assert main is not None and not main.newer and not main.older
+    assert sv.field_words(main, TODAY)[0] == "satellite NDVI 0.35 on 23 Oct"
 
 
 def test_whole_squares_are_found_by_exact_geometry_also_along_a_straight_edge_and_in_a_field_that_bends():

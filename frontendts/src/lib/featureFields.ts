@@ -1,7 +1,7 @@
 // Readable rows for the selected-feature panel: plain labels instead of raw
 // property names, and internal fields hidden.
 
-// 'older' only tells the map to draw a satellite hexagon in grey, and 'reading' is the number it writes on a soil
+// 'older' and 'newer' only tell the map to draw a satellite hexagon in grey, and 'reading' is the number it writes on a soil
 // moisture hexagon; the hexagon's note and its moisture say both in words. 'band' named the blue a soil moisture
 // hexagon was once drawn in; it is drawn in one ink now, and the figure says it.
 const HIDDEN_FIELDS = new Set([
@@ -14,6 +14,7 @@ const HIDDEN_FIELDS = new Set([
   'color',
   'photo_key',
   'older',
+  'newer',
   'reading',
 ]);
 

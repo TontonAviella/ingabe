@@ -64,6 +64,17 @@ describe('featureFieldRows', () => {
     });
   });
 
+  it('does not list the flags that only tell the map to draw a hexagon in grey', () => {
+    const rows = featureFieldRows({
+      ndvi: 0.6,
+      seen_on: '19 Nov 2026',
+      older: false,
+      newer: true,
+      note: 'A newer look than most of the photo',
+    });
+    expect(rows.map((r) => r.label)).toEqual(['NDVI (greenness, -1 to 1)', 'Seen on', 'Note']);
+  });
+
   it('reads anything else as rows: a district, a plot, a layer that only happens to hold a column called ndvi', () => {
     expect(featureReading({ name: 'Plot 3', risk_score: 70 })).toBeNull();
     expect(featureReading({ ndvi: 0.4, district: 'Kayonza' })).toBeNull();
