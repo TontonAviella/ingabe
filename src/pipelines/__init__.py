@@ -142,6 +142,13 @@ if HAS_DAGSTER:
         tags={"category": "rwanda", "precompute": "true"},
     )
 
+    nightly_satellite_views_job = define_asset_job(
+        name="nightly_satellite_views_job",
+        description="Nightly satellite view of each farm drone photo, made ahead → cache volume",
+        selection=AssetSelection.assets(rwanda_assets.nightly_satellite_views),
+        tags={"category": "rwanda", "precompute": "true"},
+    )
+
     daily_weather_ingest_job = define_asset_job(
         name="daily_weather_ingest_job",
         description="Daily AgERA5 weather data → district aggregation → DuckDB cache",
@@ -168,6 +175,7 @@ if HAS_DAGSTER:
         weekly_phenology_job,
         nightly_cache_cleanup_job,
         nightly_parcel_ndvi_job,
+        nightly_satellite_views_job,
         daily_weather_ingest_job,
     ]
 
@@ -182,6 +190,7 @@ if HAS_DAGSTER:
         schedules.weekly_phenology_schedule,
         schedules.nightly_cache_cleanup_schedule,
         schedules.nightly_parcel_ndvi_schedule,
+        schedules.nightly_satellite_views_schedule,
         schedules.daily_weather_ingest_schedule,
     ]
 

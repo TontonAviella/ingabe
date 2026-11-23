@@ -1836,3 +1836,39 @@ def rwanda_h3_admin_index(context: AssetExecutionContext) -> dict[str, Any]:
     summary = asyncio.run(build_from_env())
     context.log.info("H3 admin index: %s", summary)
     return summary
+
+
+@asset(
+    group_name="rwanda_precompute",
+    description="Nightly: the satellite view (plants and soil moisture) of each drone photo in farm projects, made ahead",
+)
+@observed_dagster_asset(
+    asset_name="nightly_satellite_views",
+    pipeline_family="satellite_photo_views",
+    source_category="satellite",
+    analysis_domain="agriculture",
+    evidence_kind="satellite_view_cache",
+)
+def nightly_satellite_views(
+    context: AssetExecutionContext,
+    postgres: PostgresResource,
+) -> dict[str, Any]:
+    """Keep a fresh satellite view of every drone photo in a farm project, so nobody waits for the first one.
+
+    Runs nightly at midnight UTC (02:00 in Kigali), before the 02:00 UTC jobs. What is read again, and why it is
+    one search a photo on most nights, is in src/services/satellite_ahead.py and satellite_view.refresh. The views
+    are files on the cache volume the app reads; no table is written and no map is touched.
+    """
+    from src.services import satellite_ahead
+
+    rows = postgres.execute_query(satellite_ahead.PHOTOS_SQL, (satellite_ahead.FARM_INDUSTRIES,))
+    photos = satellite_ahead.photo_boxes(rows)
+    context.log.info("Satellite views ahead: %d photos with a place on the map (%d layers found)", len(photos), len(rows))
+    night = satellite_ahead.make_ahead(photos, date.today())
+    context.log.info("Satellite views ahead: %s", night)
+    if photos and night["fresh"] == 0:
+        # not one photo was left with a fresh view: the cache volume, the search or the code, not one photo's files.
+        # Fail the run so the alarm says so.
+        raise RuntimeError(f"No photo's satellite view could be refreshed: {night['done']}, {len(night['failed'])} failed")
+    return {"status": "ok", **night}
+

@@ -97,9 +97,10 @@ async def _photo(layer: MapLayer, session: UserContext, audience: Optional[str],
 
 def _warm_satellite_view(layer: MapLayer) -> None:
     """The reader has this photo's questions open: start making its satellite view (plants and soil moisture) now,
-    so it is ready when they ask about their crops. It took 40 seconds to 2 minutes of remote reads in the local
-    containers the first time (2026-11-23) and takes nothing while fresh (satellite_view.FRESH_HOURS); a failure is logged by the job and the
-    view is made when asked for instead."""
+    so it is ready when they ask about their crops. The night's run makes these ahead (satellite_ahead); this is
+    for a photo it has not reached yet, such as one uploaded today. A first view took 30 seconds to 2 minutes of
+    remote reads in the local containers (2026-11-23) and takes nothing while fresh (satellite_view.FRESH_HOURS);
+    a failure is logged by the job and the view is made when asked for instead."""
     bounds = [float(v) for v in layer.bounds] if layer.bounds else None
     if bounds is None or satellite_view.fresh(bounds):
         return

@@ -44,6 +44,7 @@ class TestPipelineDefinitions:
             "weekly_phenology_job",
             "nightly_cache_cleanup_job",
             "nightly_parcel_ndvi_job",
+            "nightly_satellite_views_job",
             "daily_weather_ingest_job",
         }
 
@@ -61,6 +62,7 @@ class TestPipelineDefinitions:
             "weekly_phenology",
             "nightly_cache_cleanup",
             "nightly_parcel_ndvi",
+            "nightly_satellite_views",
             "daily_weather_ingest",
         }
 

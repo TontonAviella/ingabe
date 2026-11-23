@@ -141,6 +141,7 @@ class Plants:
     hazy: np.ndarray  # squares whose only clear looks were hazy: they may read low
     change: Optional[Change]
     passes_read: int
+    newest_pass: Optional[date] = None  # the newest pass the search held when this was made, clear or not
 
     @property
     def covered(self) -> float:
@@ -338,6 +339,13 @@ def _passes(items: Sequence[dict[str, Any]], skip_tiles: frozenset[str]) -> list
     return [(day, tile, by_tile[tile][day]) for day in sorted(by_tile[tile], reverse=True)]
 
 
+def _newest_day(items: Sequence[dict[str, Any]]) -> Optional[date]:
+    """The newest day among the search's passes, on any grid and whatever their files: what "a pass has come since"
+    is asked against. (_passes keeps one grid, and over a few days the grid it keeps can differ.)"""
+    days = [str(item.get("datetime") or "")[:10] for item in items]
+    return max((date.fromisoformat(day) for day in days if day), default=None)
+
+
 class NoPicture(Exception):
     """Why there is no picture, in plain words a reader can be shown."""
 
@@ -382,6 +390,7 @@ def plants_view(bbox: Sequence[float], today: date) -> Plants:
     grid: Optional[Grid] = None
     skip_tiles: frozenset[str] = frozenset()
     read = failed = extra = 0
+    newest_pass: Optional[date] = None
     start = today + timedelta(days=1)
     for days in LOOKBACKS:
         end, start = start - timedelta(days=1), today - timedelta(days=days)
@@ -390,6 +399,7 @@ def plants_view(bbox: Sequence[float], today: date) -> Plants:
         if "error" in found:
             logger.warning("satellite view: scene search failed: %s", found["error"])
             raise NoPicture("The satellite's pictures could not be searched just now.")
+        newest_pass = max(filter(None, (newest_pass, _newest_day(found.get("items") or []))), default=None)
         clear: list[tuple[date, dict[str, str], Grid, np.ndarray]] = []
         for _ in range(3):  # a tile whose scenes stop short of the box is left out and the step read again
             passes = _passes(found.get("items") or [], skip_tiles)
@@ -431,7 +441,7 @@ def plants_view(bbox: Sequence[float], today: date) -> Plants:
     if not (seen > 0).any():  # class maps showed clear ground, but the bands held no value there
         raise NoPicture(f"No satellite pass saw this ground clearly in the last {LOOKBACKS[-1]} days.")
     return Plants(grid=grid, ndvi=ndvi, seen=seen, hazy=from_haze, change=change_since(looks, ndvi, seen, from_haze),
-                  passes_read=read)
+                  passes_read=read, newest_pass=newest_pass)
 
 
 # --- Soil moisture ---------------------------------------------------------------------------------------------
@@ -453,22 +463,26 @@ def _read_soil(url: str, bbox: Sequence[float], env: dict[str, str]) -> tuple[st
         return ("unpublished", None) if "HTTP response code: 404" in str(why) else ("error", f"{type(why).__name__}: {why}")
 
 
-def soil_view(bbox: Sequence[float], today: date) -> Soil:
-    """The newest published ten days of FAO's soil moisture over bbox, and where the photo's centre sits in its
-    own last year. Raises NoPicture."""
-    scale, offset = wapor_service.LAYERS[SOIL_LAYER][:2]  # stored value to a share of 1
+def _newest_soil(bbox: Sequence[float], today: date) -> tuple[str, Any]:
+    """(the newest ten days FAO has published, that file's squares over bbox). Raises NoPicture."""
     period = wapor_service.dekad_of(today)
     for _ in range(SOIL_TRIES):
         kind, got = raster_process.run(_read_soil, wapor_service.raster_url(SOIL_LAYER, period), list(bbox),
                                        wapor_service.GDAL_COG_ENV)
         if kind == "grid":
-            break
+            return period, got
         if kind == "error":
             logger.warning("satellite view: soil moisture for %s could not be read: %s", period, got)
             raise NoPicture("FAO's soil moisture file could not be read just now.")
         period = wapor_service.dekad_before(period)
-    else:
-        raise NoPicture("FAO has not published soil moisture for the last weeks.")
+    raise NoPicture("FAO has not published soil moisture for the last weeks.")
+
+
+def soil_view(bbox: Sequence[float], today: date, newest: Optional[tuple[str, Any]] = None) -> Soil:
+    """The newest published ten days of FAO's soil moisture over bbox, and where the photo's centre sits in its
+    own last year. `newest` is _newest_soil's answer when the caller has already asked. Raises NoPicture."""
+    scale, offset = wapor_service.LAYERS[SOIL_LAYER][:2]  # stored value to a share of 1
+    period, got = newest or _newest_soil(bbox, today)
     values, west, north, step = got
     percent = np.where(values == wapor_service.NODATA, np.nan, (values.astype(np.float32) * scale + offset) * 100.0)
     if not np.isfinite(percent).any():
@@ -499,8 +513,11 @@ def _centre_in_its_year(bbox: Sequence[float], period: str) -> tuple[Optional[fl
 # changes more than once in a few days, so a view is used for FRESH_HOURS whatever the calendar says: a view
 # kept by its day was made again for everyone at midnight UTC. A restart (every deploy) empties memory, so it
 # is also kept on the cache volume, like the rain files.
-FRESH_HOURS = 12
-_views: TTLCache = TTLCache(maxsize=32, ttl=FRESH_HOURS * 3600)
+# Each night the views of the photos in farm projects are made ahead (refresh, run by the pipelines'
+# nightly_satellite_views), so a view lasts until the next night's run and a little over. A photo the night has not
+# reached yet gets its view on the first ask, and that one lasts as long.
+FRESH_HOURS = 26
+_views: TTLCache = TTLCache(maxsize=32, ttl=FRESH_HOURS * 3600)  # box -> (view, when its kept file was written)
 _views_lock = threading.Lock()
 _KEEP_DIR = Path(os.environ.get("SATELLITE_VIEW_CACHE_DIR", "/tmp/ingabe_cache/satellite_view"))
 KEEP_DAYS = 3  # files older than this are cleared when a new one is written
@@ -510,39 +527,53 @@ def _keep_path(key: tuple[float, ...]) -> Path:
     return _KEEP_DIR / (hashlib.sha256(repr(key).encode()).hexdigest()[:24] + ".npz")
 
 
-def _keep(key: tuple[float, ...], made: View) -> None:
-    """Write the view to the cache volume; a disk that cannot be written is logged and the view is made again."""
+def _keep(key: tuple[float, ...], made: View) -> bool:
+    """Write the view to the cache volume and say whether it was written; a disk that cannot be written is logged
+    and the view is made again. The app and the night's run (another process) both write here."""
     plants, soil = made.plants, made.soil
     assert plants is not None and soil is not None
     change = plants.change
     facts = {
         "bbox": list(made.bbox), "today": made.today.isoformat(), "crs": plants.grid.crs,
         "transform": list(plants.grid.transform), "passes_read": plants.passes_read,
+        "newest_pass": plants.newest_pass.isoformat() if plants.newest_pass else None,
         "change": None if change is None else [change.now.isoformat(), change.before.isoformat(), change.median, change.squares],
         "soil": [soil.period, soil.west, soil.north, soil.step, soil.first_estimate, soil.centre, soil.year_low, soil.year_high],
     }
     try:
         _KEEP_DIR.mkdir(parents=True, exist_ok=True)
         for old in (*_KEEP_DIR.glob("*.npz"), *_KEEP_DIR.glob("*.part")):  # a .part is a write that never finished
-            if time.time() - old.stat().st_mtime > KEEP_DAYS * 86400:
-                old.unlink(missing_ok=True)
+            try:
+                if time.time() - old.stat().st_mtime > KEEP_DAYS * 86400:
+                    old.unlink(missing_ok=True)
+            except OSError:  # the other process finished or cleared it meanwhile
+                continue
         path = _keep_path(key)
-        part = path.with_suffix(f".{threading.get_ident()}.part")
+        part = path.with_suffix(f".{os.getpid()}-{threading.get_ident()}.part")
         with open(part, "wb") as out:
             np.savez_compressed(out, ndvi=plants.ndvi, seen=plants.seen, hazy=plants.hazy, percent=soil.percent,
                                 facts=np.array(json.dumps(facts)))
         part.replace(path)
     except OSError:
         logger.warning("satellite view: could not keep the view on disk; it will be made again", exc_info=True)
+        return False
+    return True
 
 
-def _kept(key: tuple[float, ...]) -> Optional[View]:
-    """The view kept on the cache volume for this box while it is fresh, or None (also when it cannot be read)."""
-    path = _keep_path(key)
+def _written(key: tuple[float, ...]) -> Optional[float]:
+    """When the box's kept view was written, or None when there is none."""
     try:
-        if time.time() - path.stat().st_mtime > FRESH_HOURS * 3600:
-            return None
+        return _keep_path(key).stat().st_mtime
     except OSError:
+        return None
+
+
+def _kept(key: tuple[float, ...], however_old: bool = False) -> Optional[View]:
+    """The view kept on the cache volume for this box while it is fresh, or None (also when it cannot be read).
+    however_old gives it past its freshness too: the night's refresh starts from it."""
+    path = _keep_path(key)
+    written = _written(key)
+    if written is None or (not however_old and time.time() - written > FRESH_HOURS * 3600):
         return None
     try:
         with np.load(path) as kept:
@@ -555,6 +586,7 @@ def _kept(key: tuple[float, ...]) -> Optional[View]:
     plants = Plants(
         grid=Grid(facts["crs"], tuple(facts["transform"]), tuple(ndvi.shape)),  # type: ignore[arg-type]
         ndvi=ndvi, seen=seen, hazy=from_haze, passes_read=int(facts["passes_read"]),
+        newest_pass=date.fromisoformat(facts["newest_pass"]) if facts.get("newest_pass") else None,
         change=None if change is None else Change(date.fromisoformat(change[0]), date.fromisoformat(change[1]),
                                                   float(change[2]), int(change[3])))
     period, west, north, step, first, centre, low, high = facts["soil"]
@@ -571,16 +603,33 @@ def _key(bbox: Sequence[float]) -> tuple[float, ...]:
     return tuple(round(float(v), 5) for v in bbox)
 
 
+def _held(key: tuple[float, ...]) -> Optional[View]:
+    """The box's view in this process's memory, unless a newer one has been written to the cache volume since (the
+    night's refresh runs in another process). Call with _views_lock held."""
+    held = _views.get(key)
+    if held is None:
+        return None
+    written = _written(key)
+    if (written is not None and written > held[1]) or time.time() - held[1] > FRESH_HOURS * 3600:
+        del _views[key]
+        return None
+    return held[0]
+
+
+def _hold(key: tuple[float, ...], made: View, written: Optional[float]) -> None:
+    """Hold the view in memory as of when its kept file was written (now, when it could not be written)."""
+    with _views_lock:
+        _views[key] = (made, written or time.time())
+
+
 def fresh(bbox: Sequence[float]) -> bool:
     """Whether a whole view of bbox is already kept and fresh, so that asking for it costs nothing."""
     key = _key(bbox)
     with _views_lock:
-        if key in _views:
+        if _held(key) is not None:
             return True
-    try:
-        return time.time() - _keep_path(key).stat().st_mtime <= FRESH_HOURS * 3600
-    except OSError:
-        return False
+    written = _written(key)
+    return written is not None and time.time() - written <= FRESH_HOURS * 3600
 
 
 def view(bbox: Sequence[float], today: date) -> View:
@@ -589,7 +638,7 @@ def view(bbox: Sequence[float], today: date) -> View:
     Asked for twice at once (the photo's cards warm it while its reader asks Sage), it is made once."""
     key = _key(bbox)
     with _views_lock:
-        kept = _views.get(key)
+        kept = _held(key)
         making = _making.setdefault(key, threading.Lock())
     if kept is not None:
         return kept
@@ -597,23 +646,36 @@ def view(bbox: Sequence[float], today: date) -> View:
         return _view_once(key, bbox, today)
 
 
-def _view_once(key: tuple[float, ...], bbox: Sequence[float], today: date) -> View:
-    with _views_lock:
-        kept = _views.get(key)
-    if kept is not None:  # made by the caller we waited for
-        return kept
+def _too_wide(key: tuple[float, ...], bbox: Sequence[float]) -> Optional[str]:
+    """Why no square-by-square view is made of this box, or None. Raises ValueError when it is not a box."""
     west, south, east, north = key
     if not (-180 <= west < east <= 180 and -90 <= south < north <= 90):
         raise ValueError(f"not a box in latitude and longitude: {bbox}")
     km2 = (east - west) * 111.32 * float(np.cos(np.radians((south + north) / 2))) * (north - south) * 110.57
     if km2 > MAX_AREA_KM2:
-        wide = f"This picture covers about {km2:,.0f} km2, too wide for a square-by-square satellite view."
+        return f"This picture covers about {km2:,.0f} km2, too wide for a square-by-square satellite view."
+    return None
+
+
+def _view_once(key: tuple[float, ...], bbox: Sequence[float], today: date) -> View:
+    with _views_lock:
+        kept = _held(key)
+    if kept is not None:  # made by the caller we waited for
+        return kept
+    wide = _too_wide(key, bbox)
+    if wide:
         return View(bbox=key, today=today, plants=None, plants_missing=wide, soil=None, soil_missing=None)  # type: ignore[arg-type]
+    written = _written(key)  # before the read: a file the night writes meanwhile is newer than this stamp
     kept = _kept(key)
     if kept is not None:
-        with _views_lock:
-            _views[key] = kept
+        _hold(key, kept, written)
         return kept
+    return _make(key, bbox, today)[0]
+
+
+def _make(key: tuple[float, ...], bbox: Sequence[float], today: date) -> tuple[View, bool]:
+    """Read the satellites for both parts; a whole view is kept in memory and on the cache volume.
+    Returns (the view, whether it is now on the cache volume)."""
     plants = soil = None
     plants_missing = soil_missing = None
     with ThreadPoolExecutor(max_workers=2) as pool:
@@ -628,11 +690,92 @@ def _view_once(key: tuple[float, ...], bbox: Sequence[float], today: date) -> Vi
         except NoPicture as why:
             soil_missing = str(why)
     made = View(bbox=key, today=today, plants=plants, plants_missing=plants_missing, soil=soil, soil_missing=soil_missing)  # type: ignore[arg-type]
+    on_disk = False
     if plants is not None and soil is not None:  # a part that failed is asked for again next time
-        with _views_lock:
-            _views[key] = made
-        _keep(key, made)
-    return made
+        on_disk = _keep(key, made)
+        _hold(key, made, _written(key) if on_disk else None)
+    return made, on_disk
+
+
+# --- Made ahead, each night -----------------------------------------------------------------------------------
+
+
+def _newest_pass_since(bbox: Sequence[float], since: date, today: date) -> Optional[date]:
+    """The newest pass the search holds from `since` to today, clear or not; `since` itself when there is none
+    newer; None when the search could not be made."""
+    found = STACService("earth_search").search_imagery(
+        bbox=list(bbox), datetime_range=f"{since.isoformat()}/{today.isoformat()}", max_cloud_cover=101.0, limit=250)
+    if "error" in found:
+        logger.warning("satellite view: scene search failed: %s", found["error"])
+        return None
+    return max(_newest_day(found.get("items") or []) or since, since)
+
+
+def _soil_may_be_newer(soil: Soil, today: date) -> bool:
+    """Whether FAO can hold something this reading does not: the next ten days have ended (their file comes 2 to 6
+    days later), or this first estimate is old enough to have been replaced."""
+    ends = wapor_service.dekad_days(soil.period)[1]
+    next_ends = wapor_service.dekad_days(wapor_service.dekad_of(ends + timedelta(days=1)))[1]
+    return today > next_ends or (soil.first_estimate and (today - ends).days >= wapor_service.SETTLED_AFTER_DAYS)
+
+
+MADE, NOTHING_NEW, SOIL_AGAIN = "made", "nothing new", "soil moisture read again"
+KEPT_OLDER, NOT_WHOLE, NOT_CHECKED, NOT_KEPT, TOO_WIDE = (
+    "new pass not read, older view kept", "not whole", "not checked", "not kept", "too wide")
+LEFT_FRESH = frozenset({MADE, NOTHING_NEW, SOIL_AGAIN, KEPT_OLDER})  # a fresh view is on the cache volume
+
+
+def refresh(bbox: Sequence[float], today: date) -> str:
+    """Have a fresh view of bbox kept, for the night's run, reading the satellites again only for what is new.
+
+    One search says whether a pass has come since the kept view was made (4 seconds, against the 30 to 60 of reading
+    every pass again; measured 2026-11-23). With none, the kept view is stamped fresh as it is, and soil moisture is
+    read again only when FAO has published a newer period, or has replaced this one's first estimate.
+
+    Returns which happened. A fresh view is on the cache volume after MADE, NOTHING_NEW, SOIL_AGAIN and KEPT_OLDER
+    (a new pass has come but a part could not be read: the kept view stays, and the next night tries again). It is
+    not after NOT_WHOLE (no view was kept before and a part could not be had: the first ask tries again),
+    NOT_CHECKED (the search failed: the kept view is left as it is), NOT_KEPT (the volume could not be written)
+    and TOO_WIDE."""
+    key = _key(bbox)
+    if _too_wide(key, bbox):
+        return TOO_WIDE
+    with _views_lock:
+        making = _making.setdefault(key, threading.Lock())
+    with making:
+        old = _kept(key, however_old=True)
+        if old is None or old.plants is None or old.soil is None or old.plants.newest_pass is None:
+            made, on_disk = _make(key, bbox, today)
+            if made.plants is None or made.soil is None:
+                return NOT_WHOLE
+            return MADE if on_disk else NOT_KEPT
+        newest = _newest_pass_since(bbox, old.plants.newest_pass, today)
+        if newest is None:
+            return NOT_CHECKED
+        soil, did = old.soil, NOTHING_NEW
+        if newest > old.plants.newest_pass:
+            made, on_disk = _make(key, bbox, today)
+            if made.plants is not None and made.soil is not None:
+                return MADE if on_disk else NOT_KEPT
+            did = KEPT_OLDER
+        elif _soil_may_be_newer(old.soil, today):
+            # FAO's file comes 2 to 6 days after its ten days end. Until it is there, asking which period is the
+            # newest is two or three small reads; the centre's year of readings (20 s) is read only for a new period.
+            # A period older than the kept one is one file failing to open, not news: the kept reading stays.
+            try:
+                newest_soil = _newest_soil(bbox, today)
+                starts, ends = wapor_service.dekad_days(old.soil.period)
+                replaced = old.soil.first_estimate and (today - ends).days >= wapor_service.SETTLED_AFTER_DAYS
+                newer = wapor_service.dekad_days(newest_soil[0])[0] > starts
+                if newer or (replaced and newest_soil[0] == old.soil.period):
+                    soil, did = soil_view(bbox, today, newest_soil), SOIL_AGAIN
+            except NoPicture as why:
+                logger.warning("satellite view: soil moisture was not read again (%s); the kept reading stays", why)
+        again = View(bbox=old.bbox, today=today, plants=old.plants, plants_missing=None, soil=soil, soil_missing=None)
+        if not _keep(key, again):
+            return NOT_KEPT
+        _hold(key, again, _written(key))
+        return did
 
 
 # --- Hexagons to draw -------------------------------------------------------------------------------------------
