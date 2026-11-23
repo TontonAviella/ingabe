@@ -102,7 +102,8 @@ async def get_drone_photo_findings(args: DronePhotoArgs, meta: IngabeToolCallMet
     WHEN TO USE: any question about what is on the user's drone photo, its plots or a plot ("what grows here",
     "which plots have problems", "how big are my plots"), and as the drone half of "how is my crop doing".
     WHEN NOT TO USE: rain, weather, satellite greenness over time, or places outside the photo: use the
-    satellite and weather tools for those. To count plants in one plot, use count_plants_in_plot."""
+    satellite and weather tools for those (`satellite_half` names the one for this photo's own ground). To count
+    plants in one plot, use count_plants_in_plot."""
     row, why_not = await _photo(args.layer_id, meta)
     if row is None:
         return {"status": "error", "error": why_not}
@@ -162,6 +163,9 @@ async def get_drone_photo_findings(args: DronePhotoArgs, meta: IngabeToolCallMet
         # document is not the photo's field number
         "records_not_linked_to_a_field": record_links.not_linked(here.linked) if here.records else None,
         "findings": findings,
+        # the other half of "how is my crop doing": greenness and soil moisture over this same photo
+        "satellite_half": ("For NDVI over the whole photo and soil moisture under it, call "
+                           f"show_plants_and_soil_from_satellite with layer_id {row['layer_id']}."),
         "source": "Ingabe drone photo analysis (the question cards)",
     }
 

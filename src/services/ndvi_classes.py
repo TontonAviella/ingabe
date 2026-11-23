@@ -42,6 +42,14 @@ NDVI_CLASSES: tuple[NdviClass, ...] = (
 )
 
 
+# Finer steps inside the classes, for a picture that must show where inside a field the plants are weaker. Each
+# class keeps its family of colour: reds and oranges bare and sparse, light greens moderate, dark greens dense.
+NDVI_SHADES: tuple[tuple[float, str], ...] = (
+    (-1.0, "#d73027"), (0.1, "#f46d43"), (0.2, "#fdae61"), (0.3, "#d9ef8b"), (0.4, "#a6d96a"), (0.5, "#66bd63"),
+    (0.6, "#1a9850"), (0.7, "#006837"),
+)
+
+
 def ndvi_class(value: Optional[float]) -> Optional[NdviClass]:
     """The class for an NDVI value, or None when there is no value."""
     if value is None:
@@ -51,6 +59,41 @@ def ndvi_class(value: Optional[float]) -> Optional[NdviClass]:
         if value >= cls.min_ndvi:
             found = cls
     return found
+
+
+def ground_label(cls: NdviClass) -> str:
+    """The class's label where cloud has already been left out (a square's own clear look): "Bare soil", not
+    "Bare soil or cloud"."""
+    return "Bare soil" if cls.key == "bare" else cls.label
+
+
+def ground_legend(title: str) -> dict[str, Any]:
+    """The legend for a picture with cloud left out, under the given title."""
+    return {
+        "title": title,
+        "items": [{"key": c.key, "label": ground_label(c), "range": _range(i), "color": c.color}
+                  for i, c in enumerate(NDVI_CLASSES)],
+    }
+
+
+def shade_legend(title: str) -> dict[str, Any]:
+    """The legend of NDVI_SHADES, cloud left out: each step by its numbers, with the class's words where a class
+    begins."""
+    items = []
+    said = ""
+    for i, (low, colour) in enumerate(NDVI_SHADES):
+        if i == 0:
+            label = f"Below {NDVI_SHADES[1][0]:g}"
+        elif i == len(NDVI_SHADES) - 1:
+            label = f"{low:g} and above"
+        else:
+            label = f"{low:g}-{NDVI_SHADES[i + 1][0]:g}"
+        cls = ndvi_class(low)
+        if cls is not None and cls.key != said:
+            said = cls.key
+            label += f": {ground_label(cls).lower()}"
+        items.append({"label": label, "color": colour})
+    return {"title": title, "items": items}
 
 
 def _range(i: int) -> str:

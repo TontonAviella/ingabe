@@ -54,6 +54,7 @@
     "search_location",
     "search_satellite_imagery",
     "set_layer_style",
+    "show_plants_and_soil_from_satellite",
     "tower_photos_needing_review",
     "zoom_to_bounds"
   ],
@@ -61,7 +62,8 @@
     "analyze_raster_object_candidates",
     "create_raster_h3_context_layer",
     "describe_user_raster",
-    "show_admin_boundary"
+    "show_admin_boundary",
+    "show_plants_and_soil_from_satellite"
   ],
   "bbox_or_point_tools": [
     "compute_spectral_index",

@@ -19,6 +19,7 @@ def _patch_handlers(monkeypatch, calls: list[str], answers: dict[str, bool]) -> 
 
     monkeypatch.setattr(message_routes, "_maybe_run_fast_admin_boundary_turn", handler("admin"))
     monkeypatch.setattr(message_routes, "_maybe_run_fast_raster_object_turn", handler("objects"))
+    monkeypatch.setattr(message_routes, "_maybe_run_fast_satellite_view_turn", handler("satellite"))
     monkeypatch.setattr(message_routes, "_maybe_run_fast_raster_context_turn", handler("context"))
     monkeypatch.setattr(message_routes, "_maybe_run_fast_raster_fact_turn", handler("facts"))
 
@@ -37,15 +38,15 @@ def _run() -> str | None:
 
 def test_first_fast_path_stops_after_first_match(monkeypatch) -> None:
     calls: list[str] = []
-    _patch_handlers(monkeypatch, calls, {"admin": False, "objects": True, "context": True, "facts": True})
+    _patch_handlers(monkeypatch, calls, {"admin": False, "objects": True, "satellite": True, "context": True, "facts": True})
 
     assert _run() == "raster_object"
     assert calls == ["admin", "objects"]
 
 
-def test_no_fast_path_tries_all_four_in_order_and_leaves_the_turn_to_the_model(monkeypatch) -> None:
+def test_no_fast_path_tries_all_five_in_order_and_leaves_the_turn_to_the_model(monkeypatch) -> None:
     calls: list[str] = []
-    _patch_handlers(monkeypatch, calls, {"admin": False, "objects": False, "context": False, "facts": False})
+    _patch_handlers(monkeypatch, calls, {"admin": False, "objects": False, "satellite": False, "context": False, "facts": False})
 
     assert _run() is None
-    assert calls == ["admin", "objects", "context", "facts"]
+    assert calls == ["admin", "objects", "satellite", "context", "facts"]

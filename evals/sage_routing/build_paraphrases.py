@@ -136,6 +136,16 @@ _WATER = {"expect": {"no_tool": True, "lookup_ok": ["query_worldcover_stats", "s
           "notes": "followed to Sage's final words 2026-11-19: it gives land-cover water hectares as such, or says "
                    "it has no water-body data (reports/sage_routing/prereg-no-tool-requests-2026-11-19.md)"}
 OVERRIDES: dict[str, dict] = {
+    # Roger, 2026-11-23: the greenness of a farm's drone photo, asked with no index named, may also be answered
+    # from the satellite (NDVI over the whole photo). "use GRVI" (p-grvi-1) still means the photo's own colours.
+    "p-grvi-2": {
+        "expect": {"any_of": ["analyze_rgb_field", "show_plants_and_soil_from_satellite"]},
+        "notes": "greenness with no index named: the photo's colours or the satellite view",
+    },
+    "p-grvi-3": {
+        "expect": {"any_of": ["analyze_rgb_field", "show_plants_and_soil_from_satellite"]},
+        "notes": "greenness with no index named: the photo's colours or the satellite view",
+    },
     **{f"p-food-security-{i}": _FOOD for i in (1, 2, 3)},
     **{f"p-water-bodies-{i}": _WATER for i in (1, 2, 3)},
     "p-style-1": {

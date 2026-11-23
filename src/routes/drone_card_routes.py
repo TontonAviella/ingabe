@@ -11,7 +11,7 @@ import logging
 import os
 import shutil
 import tempfile
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 import re
 from typing import Any, Optional
 
@@ -40,6 +40,7 @@ from src.services import (
     photo_plots,
     reader_roles,
     record_links,
+    satellite_view,
 )
 from src.services.insurance_engine import resolve_audience
 from src.structures import async_read_conn, get_async_db_connection
@@ -94,6 +95,21 @@ async def _photo(layer: MapLayer, session: UserContext, audience: Optional[str],
     return context.analysis, context.here, context.reader
 
 
+def _warm_satellite_view(layer: MapLayer) -> None:
+    """The reader has this photo's questions open: start making its satellite view (plants and soil moisture) now,
+    so it is ready when they ask about their crops. It took 40 seconds to 2 minutes of remote reads in the local
+    containers the first time (2026-11-23) and takes nothing while fresh (satellite_view.FRESH_HOURS); a failure is logged by the job and the
+    view is made when asked for instead."""
+    bounds = [float(v) for v in layer.bounds] if layer.bounds else None
+    if bounds is None or satellite_view.fresh(bounds):
+        return
+
+    async def work(progress: Any) -> None:
+        await asyncio.to_thread(satellite_view.view, bounds, date.today())
+
+    background_jobs.start(f"satellite-view:{layer.layer_id}", work)
+
+
 @router.get("/layer/{layer_id}/cards", operation_id="get_drone_cards")
 async def get_drone_cards(
     audience: Optional[str] = None,
@@ -115,6 +131,7 @@ async def get_drone_cards(
                                changed=card_memory.changed(before, now))
     deck = await asyncio.to_thread(drone_cards.build_deck, analysis, reader, here)
     await card_memory.remember_deck(redis, reader_id, layer.layer_id, now)
+    _warm_satellite_view(layer)
     return deck
 
 

@@ -943,12 +943,14 @@ def test_raster_fast_paths_skip_other_tools_requests(msg: str) -> None:
 
 def test_fast_paths_never_misfire_on_routing_eval_cases() -> None:
     """Every case in evals/sage_routing: a fast path may stay silent, but when
-    it fires it must pick a tool the case accepts."""
+    it fires it must pick a tool the case accepts. Asked as the chat loop asks: for the case's own industry
+    (a farm project unless the case names another), since a farm project's crop question on a drone photo
+    takes the satellite view and another industry's does not."""
     import json
     from pathlib import Path
 
     from evals.sage_routing import scoring
-    from src.dependencies.sage_routing import FAST_PATH_TOOLS
+    from src.dependencies.sage_routing import FAST_PATH_TOOLS, build_project_fast_tool_call
 
     eval_dir = Path(__file__).resolve().parents[2] / "evals" / "sage_routing"
     catalog = json.loads((eval_dir / "tool_catalog.json").read_text())
@@ -957,8 +959,9 @@ def test_fast_paths_never_misfire_on_routing_eval_cases() -> None:
         for line in path.read_text().splitlines():
             if not line.strip():
                 continue
-            case = scoring.effective_case(json.loads(line), catalog)
-            fast = build_fast_tool_call(case["text"])
+            raw = json.loads(line)
+            case = scoring.effective_case(raw, catalog)
+            fast = build_project_fast_tool_call(case["text"], raw.get("industry") or "agriculture")
             accepted = set(case["expect"].get("any_of") or [])
             if fast and fast.tool_name in FAST_PATH_TOOLS and fast.tool_name not in accepted:
                 misfires.append(f"{case['id']}: {fast.tool_name} for {case['text']!r}")
@@ -1378,3 +1381,31 @@ def test_categories_with_tools_follow_the_projects_industry(monkeypatch):
     assert TOWERS in categories_with_tools("telecom")
     assert TOWERS not in categories_with_tools("agriculture")
     assert TOWERS not in categories_with_tools(None)  # industry not found: shared tools only
+
+
+def test_in_a_farm_project_a_crop_question_about_a_drone_photo_goes_to_the_satellite_view():
+    """Roger, 2026-11-22: crops on a drone photo are answered with satellite NDVI and soil moisture, not the
+    photo's colours. Outside farm projects the same words still screen the surface as environment."""
+    from src.dependencies.sage_routing import SATELLITE_VIEW_TOOL, build_project_fast_tool_call
+
+    text = "analyze crop stress in this uploaded raster"
+    farm = build_project_fast_tool_call(text, "agriculture")
+    assert farm is not None and farm.tool_name == SATELLITE_VIEW_TOOL == "show_plants_and_soil_from_satellite"
+    assert farm.arguments == {} and farm.reason == "fast:plants_and_soil_from_satellite"
+    masts = build_project_fast_tool_call(text, "telecom")
+    assert masts is not None and masts.tool_name == "create_raster_h3_context_layer"
+    wet = build_project_fast_tool_call("Is the soil wet enough under this orthophoto?", "agriculture")
+    assert wet is not None and wet.tool_name == SATELLITE_VIEW_TOOL  # filed under water by the screening; still ours
+    # a question that is not about crops keeps the surface screening, in a farm project too
+    mixed = build_project_fast_tool_call("what is happening on this orthophoto?", "agriculture")
+    assert mixed is not None and mixed.tool_name == "create_raster_h3_context_layer"
+    houses = build_project_fast_tool_call("where are most houses in Farm_A_Orthophoto?", "agriculture")
+    assert houses is not None and houses.tool_name == RASTER_OBJECT_CANDIDATES_TOOL
+
+
+def test_the_satellite_view_is_a_farm_tool_only():
+    from src.services import industry
+
+    assert industry.available("show_plants_and_soil_from_satellite", "agriculture")
+    assert not industry.available("show_plants_and_soil_from_satellite", "telecom")
+    assert not industry.available("show_plants_and_soil_from_satellite", None)
