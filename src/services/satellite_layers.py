@@ -7,12 +7,14 @@ smaller ones as it is zoomed in, so a weak patch can be followed down to where i
 - Plants: filled hexagons in ndvi_classes' shades, nearly solid so a colour on the map is the colour in the
   legend. A hexagon whose look is older than the photo's main one is drawn in grey, darker where it was
   greener: in colour it read as a sick patch beside the fresh part.
-- Soil moisture: a rim in its band's blue and the reading written at the middle, with no fill. It is always
-  drawn wider than the plants under it, so both can be read at once and either can be hidden. The map shows
-  the facts of the topmost thing tapped: with nothing filled, a tap inside a soil hexagon reaches the plants
-  hexagon under it, and a tap on the number or the rim gives the soil's facts.
+- Soil moisture: a fine outline in one ink and the reading in small figures at the middle, with no fill. It is always drawn wider than the plants under it, so both can be read at once and either can be
+  hidden. The map shows the facts of the topmost thing tapped: with nothing filled, a tap inside a soil hexagon
+  reaches the plants hexagon under it, and a tap on the number or the outline gives the soil's facts.
 
-Each legend carries its dates: a reader must not have to open anything to learn how old the picture is.
+Each legend carries its dates: a reader must not have to open anything to learn how old the picture is. A legend
+is more than a list of colours (the map's key, MapLegends.tsx): the plants' is one strip of the shades with the
+photo's own middle square marked on it; soil moisture's is one figure and a gauge of where the photo's readings
+sit in the range of the year before.
 
 A photo keeps one layer of each kind on a map. Asked again while the satellites have nothing newer, the layers
 already there are used; when there is something newer, the new layer takes the old one's place.
@@ -20,6 +22,12 @@ already there are used; when there is something newer, the new layer takes the o
 Roger, 2026-11-23, on the first drawing (10 m squares at 0.72 and 0.3 opacity under navy-outlined 100 m squares
 with a number on each): the colours were ugly and could not be traced. Fading had made colours the legend did
 not hold, and 135 outlined squares hid the plants.
+
+Roger, the same evening, on the hexagons: the legend (two lists of thirteen swatches) and soil moisture (rims 4.5
+pixels wide in five blues, bold black figures on white) looked immature; everything must be professional and
+minimal, with few things asking for the eye, and say what it has to say in a creative way. Soil moisture across
+one photo spans a point or two of its bands, so the five blues told the reader nothing the figure did not: it
+is now one ink, and the legend says where the figure sits in its year.
 """
 
 from __future__ import annotations
@@ -41,7 +49,7 @@ logger = logging.getLogger(__name__)
 
 PLANTS_KIND = "satellite_plants"
 SOIL_KIND = "satellite_soil_moisture"
-DRAWING = "hexagons"  # part of each layer's stamp: a layer drawn another way is made again, not reused
+DRAWING = "hexagons-2"  # part of each layer's stamp: a layer drawn another way is made again, not reused
 # Tiles are cut to this zoom and stretched beyond it. A tile's grid is 4,096 steps wide: 0.3 m at zoom 15, against
 # a smallest plants hexagon 9 m on a side; 1.2 m at zoom 13, against a smallest soil hexagon 66 m on a side.
 PLANTS_MAXZOOM = 15
@@ -55,7 +63,8 @@ SOIL_PIXELS_ACROSS = 160
 ZOOM_0_METRES_A_PIXEL = 78271.517  # at the equator, on the 512-pixel tiles the map counts its zoom in
 OLDER_LIGHT, OLDER_DARK = "#f3f4f6", "#4b5563"  # an older look: grey, from NDVI 0 to 0.8
 OLDER_IN_LEGEND = "#9ca3af"
-SOIL_INK = "#0b1f3a"
+SOIL_INK = "#0b1f3a"  # the outline, and around the figures
+SOIL_LINE = "#a9d6ff"  # soil moisture's pale blue: the glow under the outline, and its band in the legend
 LABEL_FONT = ["Open Sans Semibold"]  # the font the app's own map labels use
 
 
@@ -103,11 +112,31 @@ def _in_band(layer_id: str, band: dict[str, Any], also: Optional[list[Any]] = No
     return base
 
 
+def _day(day: date) -> str:
+    return f"{day.day} {day:%b %Y}"
+
+
 def plants_legend(plants: satellite_view.Plants) -> dict[str, Any]:
+    """The plants' key. "title" and "items" list every shade in words (what a screen reader and a plain list read);
+    "scale" is the same shades as one strip from bare to dense, with the photo's middle square marked on it."""
     main = plants.main_day
-    legend = ndvi_classes.shade_legend(f"Plants from the satellite (NDVI), seen {main.day} {main:%b %Y}")
+    legend = ndvi_classes.shade_legend(f"Plants from the satellite (NDVI), seen {_day(main)}")
+    shades = ndvi_classes.NDVI_SHADES
+    step = shades[2][0] - shades[1][0]
+    middle = round(satellite_view.middle_ndvi(plants), 2)
+    legend.update({
+        "name": "Plants · NDVI", "when": _day(main),
+        "scale": {
+            "colors": [shade for _, shade in shades], "low": round(shades[1][0] - step, 2), "high": round(shades[-1][0] + step, 2),
+            "low_word": "bare", "high_word": "dense",
+            # where the classes' words change (ndvi_classes.NDVI_CLASSES): cropland from 0.3, dense from 0.6
+            "ticks": [{"at": cls.min_ndvi, "label": f"{cls.min_ndvi:g}"} for cls in ndvi_classes.NDVI_CLASSES[2:]],
+            "mark": {"at": middle, "label": f"{middle:.2f}", "says": f"The middle square of this photo reads {middle:.2f}."},
+        },
+    })
     if ((plants.seen > 0) & (plants.seen <= main.toordinal() - satellite_view.OLDER_AFTER_DAYS)).any():
         legend["items"].append({"label": "Grey: an older look, darker where greener (tap it for its day)", "color": OLDER_IN_LEGEND})
+        legend["notes"] = [{"label": "Grey: an older look", "color": OLDER_IN_LEGEND}]
     return legend
 
 
@@ -132,20 +161,35 @@ def plants_style(layer_id: str, legend: dict[str, Any], bands: Sequence[dict[str
 
 
 def soil_legend(soil: satellite_view.Soil) -> dict[str, Any]:
-    title = f"Soil moisture, {satellite_view.period_words(soil.period)} (FAO estimate from {satellite_view.SOIL_SQUARE_M} m readings)"
+    """Soil moisture's key: one figure (the photo's middle square), the spread across the photo, and, when the year
+    before is known, a gauge of where that spread sits in the year's range. The same numbers the sentences say
+    (satellite_view.soil_facts)."""
+    when = satellite_view.period_words(soil.period)
+    title = f"Soil moisture, {when} (FAO estimate from {satellite_view.SOIL_SQUARE_M} m readings)"
+    source = f"FAO estimate, {satellite_view.SOIL_SQUARE_M} m squares"
     if soil.first_estimate:
         title += ", first estimate"
-    items = []
-    for low, _ in satellite_view.SOIL_BANDS:
-        label, colour = satellite_view.soil_band(low)
-        items.append({"label": label, "color": colour})
-    return {"title": title, "items": items}
+        source = f"FAO's first estimate, {satellite_view.SOIL_SQUARE_M} m squares"
+    middle, low, high = satellite_view.soil_spread(soil)
+    spread = f"{low:.0f}-{high:.0f}% across the photo" if round(low) != round(high) else "the same across the photo"
+    legend: dict[str, Any] = {
+        "title": title, "items": [{"label": f"{middle:.0f}%, {spread}", "color": SOIL_LINE}],
+        "name": "Soil moisture", "when": when, "value": f"{middle:.0f}%", "value_note": spread,
+        "notes": [{"label": source}],
+    }
+    place = satellite_view.soil_year_place(soil)
+    if place is not None and soil.year_low is not None and soil.year_high is not None:
+        legend["gauge"] = {
+            # to a tenth, not to the figure shown: a year that ran over less than a point would otherwise have no width
+            "low": round(float(soil.year_low), 1), "high": round(float(soil.year_high), 1),
+            "from": round(low, 1), "to": round(high, 1),
+            "low_label": f"{soil.year_low:.0f}%", "high_label": f"{soil.year_high:.0f}%", "caption": "over the year before",
+            "says": f"{satellite_view.YEAR_PLACE_WORDS[place].capitalize()} of its own year.",
+        }
+    return legend
 
 
 def soil_style(layer_id: str, legend: dict[str, Any], bands: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
-    colour: list[Any] = ["step", ["coalesce", ["get", "moisture"], 0], satellite_view.SOIL_BANDS[0][1]]
-    for low, band_colour in satellite_view.SOIL_BANDS[1:]:
-        colour += [low, band_colour]
     # The map gives any layer that has lines and no fill an unseen fill of its own, so that an outline can be tapped
     # anywhere inside it (MapLibreMap.tsx). Here that would put soil moisture in the way of every tap on the plants.
     # A fill that matches no hexagon keeps the map from adding one.
@@ -155,16 +199,18 @@ def soil_style(layer_id: str, legend: dict[str, Any], bands: Sequence[dict[str, 
     for band in bands:
         size = band["h3_resolution"]
         layers += [
-            # the rim: the band's blue between two dark lines, so the palest band reads on any ground
+            # the outline: one dark hairline with a pale glow under it, so it reads on bright ground and on dark
+            # without boxing the plants in. Solid and see-through: neighbours share an edge that is drawn twice, a
+            # pixel apart at most, and a dashed or a doubled line made that show (tried 2026-11-23)
             {**_in_band(layer_id, band), "id": f"satellite-soil-rim-under-{layer_id}-r{size}", "type": "line",
-             "layout": {"line-join": "round"}, "paint": {"line-color": SOIL_INK, "line-width": 4.5}},
+             "layout": {"line-join": "round"}, "paint": {"line-color": SOIL_LINE, "line-width": 2.6, "line-opacity": 0.3}},
             {**_in_band(layer_id, band), "id": f"satellite-soil-rim-{layer_id}-r{size}", "type": "line",
              "metadata": {"mundi:legend": legend},
-             "layout": {"line-join": "round"}, "paint": {"line-color": colour, "line-width": 2.5}},
+             "layout": {"line-join": "round"}, "paint": {"line-color": SOIL_INK, "line-width": 1, "line-opacity": 0.7}},
             {**_in_band(layer_id, band, ["has", "reading"]), "id": f"satellite-soil-reading-{layer_id}-r{size}", "type": "symbol",
-             "layout": {"text-field": ["get", "reading"], "text-font": LABEL_FONT, "text-size": 15,
-                        "text-allow-overlap": True, "text-ignore-placement": True},
-             "paint": {"text-color": SOIL_INK, "text-halo-color": "#ffffff", "text-halo-width": 2}},
+             "layout": {"text-field": ["get", "reading"], "text-font": LABEL_FONT, "text-size": 12,
+                        "text-letter-spacing": 0.02, "text-allow-overlap": True, "text-ignore-placement": True},
+             "paint": {"text-color": "#ffffff", "text-halo-color": SOIL_INK, "text-halo-width": 1.4}},
         ]
     return layers
 
@@ -190,7 +236,7 @@ async def _already_on_map(map_id: str, photo_layer_id: str) -> dict[str, tuple[s
 
 async def put_on_map(seen: satellite_view.View, *, photo_layer_id: str, photo_name: str, user_uuid: str, map_id: str,
                      project_id: str) -> list[OnMap]:
-    """The view's layers on the map: plants first, soil moisture after, so that soil moisture's rims and numbers
+    """The view's layers on the map: plants first, soil moisture after, so that soil moisture's outlines and figures
     are drawn over the plants. A part the view does not hold gets no layer. A layer that cannot be saved is logged
     and left out: the facts are still told."""
     there = await _already_on_map(map_id, photo_layer_id)

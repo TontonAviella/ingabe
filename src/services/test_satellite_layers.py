@@ -3,6 +3,7 @@ layer of each kind a photo."""
 
 from __future__ import annotations
 
+import json
 from datetime import date, timedelta
 from typing import Any
 
@@ -63,6 +64,16 @@ def test_the_plants_layer_is_solid_hexagons_in_the_shared_shades_with_older_look
         "Grey: an older look, darker where greener (tap it for its day)"]
     assert [item["color"] for item in legend["items"][:8]] == [shade for _, shade in ndvi_classes.NDVI_SHADES]
     assert len(sl.plants_legend(_plants(old_part=False))["items"]) == 8  # no older look: no such line
+    # the same shades as one strip from bare to dense, with the photo's own middle square marked on it
+    assert (legend["name"], legend["when"]) == ("Plants · NDVI", "19 Nov 2026")
+    scale = legend["scale"]
+    assert scale["colors"] == [item["color"] for item in legend["items"][:8]]
+    assert (scale["low"], scale["high"], scale["low_word"], scale["high_word"]) == (0.0, 0.8, "bare", "dense")
+    assert scale["ticks"] == [{"at": 0.3, "label": "0.3"}, {"at": 0.6, "label": "0.6"}]  # where the classes' words change
+    assert scale["mark"] == {"at": 0.55, "label": "0.55", "says": "The middle square of this photo reads 0.55."}
+    assert scale["mark"]["at"] == sv.plants_facts(_plants(), TODAY)["median"]  # the number the sentences say
+    assert legend["notes"] == [{"label": "Grey: an older look", "color": sl.OLDER_IN_LEGEND}]
+    assert "notes" not in sl.plants_legend(_plants(old_part=False))
     layers = sl.plants_style("L1", legend, PLANTS_BANDS)
     assert [layer["id"] for layer in layers] == [
         "satellite-plants-L1-r10", "satellite-plants-edge-L1-r10", "satellite-plants-L1-r11", "satellite-plants-edge-L1-r11",
@@ -90,10 +101,9 @@ def test_every_shade_sits_inside_one_class_so_the_finer_colours_never_contradict
         assert dict(ndvi_classes.NDVI_SHADES)[cls.min_ndvi]  # a class begins on a shade
 
 
-def test_the_soil_layer_is_a_rim_and_a_number_with_no_fill_so_a_tap_inside_reaches_the_plants():
+def test_the_soil_layer_is_a_fine_outline_and_a_small_figure_with_no_fill_so_a_tap_inside_reaches_the_plants():
     legend = sl.soil_legend(_soil())
     assert legend["title"] == "Soil moisture, 1-10 Nov 2026 (FAO estimate from 100 m readings), first estimate"
-    assert [item["label"] for item in legend["items"]] == ["Below 45%", "45-55%", "55-65%", "65-75%", "75% and above"]
     assert sl.soil_legend(_soil(first=False))["title"] == "Soil moisture, 1-10 Nov 2026 (FAO estimate from 100 m readings)"
     layers = sl.soil_style("L2", legend, SOIL_BANDS)
     # nothing is filled. The one fill matches no hexagon: it is there so the map does not add an unseen fill of its
@@ -102,19 +112,47 @@ def test_the_soil_layer_is_a_rim_and_a_number_with_no_fill_so_a_tap_inside_reach
     assert layers[0]["filter"] == ["==", ["get", "h3_resolution"], -1] and layers[0]["paint"] == {"fill-opacity": 0}
     layers = layers[1:]
     under, rim, reading = layers[:3]
-    assert under["paint"]["line-width"] > rim["paint"]["line-width"]
-    assert rim["paint"]["line-color"][:3] == ["step", ["coalesce", ["get", "moisture"], 0], "#eff3ff"]
+    # one ink, drawn fine: a dark hairline with a pale glow under it, and small white figures
+    assert rim["paint"] == {"line-color": sl.SOIL_INK, "line-width": 1, "line-opacity": 0.7}
+    assert under["paint"] == {"line-color": sl.SOIL_LINE, "line-width": 2.6, "line-opacity": 0.3}
+    # solid and not moved off the edge: neighbours share an edge, and a dashed or an inset line showed it twice
+    assert not {"line-dasharray", "line-offset"} & (set(rim["paint"]) | set(under["paint"]))
+    assert rim["paint"]["line-width"] < 2 and under["paint"]["line-width"] < 3  # the first rims were 2.5 over 4.5
     assert rim["metadata"]["mundi:legend"] == legend
-    assert reading["layout"]["text-field"] == ["get", "reading"]
+    assert reading["layout"]["text-field"] == ["get", "reading"] and reading["layout"]["text-size"] == 12
+    assert reading["paint"]["text-color"] == "#ffffff" and reading["paint"]["text-halo-color"] == sl.SOIL_INK
     assert reading["filter"] == ["all", sl.h3_resolution_filter(9), ["has", "reading"]]  # the points, not the outlines
     assert rim["maxzoom"] == 16.5 and layers[4]["minzoom"] == 16.5
     assert {layer["source"] for layer in layers} == {"L2"}
 
 
+def test_the_soil_legend_is_one_figure_and_where_it_sits_in_its_year_in_the_sentences_own_numbers():
+    legend = sl.soil_legend(_soil())
+    facts = sv.soil_facts(_soil(), TODAY)
+    assert (legend["name"], legend["when"]) == ("Soil moisture", "1-10 Nov 2026")
+    assert legend["value"] == f"{facts['median']:.0f}%" == "65%"
+    assert legend["value_note"] == "62-68% across the photo"
+    assert f"from {facts['low']:.0f}% to {facts['high']:.0f}% across the photo" in facts["parts"]["reading"]
+    # the gauge: the photo's readings now, on the range the centre ran over in the year before
+    assert legend["gauge"] == {"low": 40.0, "high": 75.0, "from": 62.0, "to": 68.3, "low_label": "40%", "high_label": "75%",
+                               "caption": "over the year before", "says": "Near the top of its own year."}
+    assert "near the top of its own year" in facts["parts"]["year"] and "from 40% to 75%" in facts["parts"]["year"]
+    assert legend["notes"] == [{"label": "FAO's first estimate, 100 m squares"}]
+    assert sl.soil_legend(_soil(first=False))["notes"] == [{"label": "FAO estimate, 100 m squares"}]
+    # one line in the ink the map draws it in, for a key that only lists colours
+    assert legend["items"] == [{"label": "65%, 62-68% across the photo", "color": sl.SOIL_LINE}]
+    # the year before not known: the figure alone, no gauge
+    unknown = sv.Soil(period="2026-11-D1", percent=np.array([[66.0, 66.2]], dtype=np.float32), west=30.4169922,
+                      north=-1.6923828, step=0.0009765625, first_estimate=False, centre=None, year_low=None, year_high=None)
+    plain = sl.soil_legend(unknown)
+    assert "gauge" not in plain and (plain["value"], plain["value_note"]) == ("66%", "the same across the photo")
+    json.dumps([legend, plain, sl.plants_legend(_plants())])  # saved in the layer's style: plain numbers only
+
+
 def test_the_stamps_change_when_the_satellites_have_something_newer_or_the_drawing_changes():
-    assert sl.plants_stamp(_plants()) == "hexagons:2026-10-23,2026-11-19"
-    assert sl.plants_stamp(_plants(old_part=False)) == "hexagons:2026-11-19"
-    assert sl.soil_stamp(_soil()) == "hexagons:2026-11-D1:first" and sl.soil_stamp(_soil(first=False)) == "hexagons:2026-11-D1:final"
+    assert sl.plants_stamp(_plants()) == "hexagons-2:2026-10-23,2026-11-19"
+    assert sl.plants_stamp(_plants(old_part=False)) == "hexagons-2:2026-11-19"
+    assert sl.soil_stamp(_soil()) == "hexagons-2:2026-11-D1:first" and sl.soil_stamp(_soil(first=False)) == "hexagons-2:2026-11-D1:final"
 
 
 @pytest.fixture
@@ -149,10 +187,10 @@ async def test_two_layers_are_saved_plants_first_so_soil_moisture_is_drawn_over_
     plants, soil = saved
     assert soil["metadata"] == {
         "source": "satellite_view", "analysis_kind": sl.SOIL_KIND, "source_layer_id": "Lphoto",
-        "data_stamp": "hexagons:2026-11-D1:first", "h3_resolutions": [10],
+        "data_stamp": "hexagons-2:2026-11-D1:first", "h3_resolutions": [10],
         "zoom_resolution_map": [{"h3_resolution": 10, "minzoom": 0.0, "maxzoom": 24.0}], "square_m": 100, "period": "2026-11-D1"}
     assert plants["metadata"]["analysis_kind"] == sl.PLANTS_KIND
-    assert plants["metadata"]["data_stamp"] == "hexagons:2026-10-23,2026-11-19" and plants["metadata"]["h3_resolutions"] == [12]
+    assert plants["metadata"]["data_stamp"] == "hexagons-2:2026-10-23,2026-11-19" and plants["metadata"]["h3_resolutions"] == [12]
     assert plants["maxzoom"] == sl.PLANTS_MAXZOOM and soil["maxzoom"] == sl.SOIL_MAXZOOM
     assert {f["geometry"]["type"] for f in plants["feature_collection"]["features"]} == {"Polygon"}
     assert {f["geometry"]["type"] for f in soil["feature_collection"]["features"]} == {"Polygon", "Point"}
@@ -163,8 +201,8 @@ async def test_two_layers_are_saved_plants_first_so_soil_moisture_is_drawn_over_
 @pytest.mark.anyio
 async def test_asked_again_with_nothing_newer_the_layers_already_there_are_used(saving):
     there, saved = saving
-    there[sl.PLANTS_KIND] = ("Lold1", "Plants (NDVI) - Cyampirita", "hexagons:2026-10-23,2026-11-19", list(BOX))
-    there[sl.SOIL_KIND] = ("Lold2", "Soil moisture - Cyampirita", "hexagons:2026-11-D1:first", list(BOX))
+    there[sl.PLANTS_KIND] = ("Lold1", "Plants (NDVI) - Cyampirita", "hexagons-2:2026-10-23,2026-11-19", list(BOX))
+    there[sl.SOIL_KIND] = ("Lold2", "Soil moisture - Cyampirita", "hexagons-2:2026-11-D1:first", list(BOX))
     layers = await _put(_view())
     assert saved == [] and [(layer.layer_id, layer.reused) for layer in layers] == [("Lold1", True), ("Lold2", True)]
 
@@ -172,7 +210,7 @@ async def test_asked_again_with_nothing_newer_the_layers_already_there_are_used(
 @pytest.mark.anyio
 async def test_a_newer_picture_or_one_drawn_the_old_way_gives_its_place_on_the_map(saving):
     there, saved = saving
-    there[sl.PLANTS_KIND] = ("Lold1", "Plants (NDVI) - Cyampirita", "hexagons:2026-10-23", list(BOX))
+    there[sl.PLANTS_KIND] = ("Lold1", "Plants (NDVI) - Cyampirita", "hexagons-2:2026-10-23", list(BOX))
     there[sl.SOIL_KIND] = ("Lold2", "Soil moisture - Cyampirita", "2026-11-D1:first", list(BOX))  # squares, before hexagons
     layers = await _put(_view())
     assert [layer["replaces"] for layer in saved] == [("Lold1",), ("Lold2",)]
