@@ -24,8 +24,17 @@ project_satellite_ndvi_soil_check_2026_11_23):
   is shown as the season's level with its dates, marked a first estimate while it is one, and never as a
   precise weekly reading.
 
+- The band files' numbers are reflectance x 10,000 as they stand. Each pass's own record says both that its
+  offset is already taken off (`earthsearch:boa_offset_applied`) and, band by band, that one of -0.1 is still
+  to be applied; the first is true. Over open water of Lake Kivu near-infrared read 44 to 209 (2026-11-23);
+  with the offset still in the file it could not read under 1,000. Applying it again would pull every NDVI.
+- At 11 other farming places (2026-11-23, boxes of 108 ha in both of Rwanda's satellite zones) the kept NDVI
+  equalled a separate read of the same files on every square, and every square had a clear look. At 5 of them
+  the main look was the older one, with a newer look on 6% to 40% of the box: the sentences say so.
+
 Nothing here is drawn or worded for a screen: `view` returns measured values, `plants_hexagons` and
-`soil_hexagons` the hexagons to draw, and `words` the plain facts cards and Sage both read.
+`soil_hexagons` the hexagons to draw, `words` the plain facts cards and Sage both read, and `of_fields` what
+is said of one field's outline. `ready` gives the kept view to a surface that must never wait on a satellite.
 """
 
 from __future__ import annotations
@@ -48,6 +57,7 @@ import h3.api.basic_int as h3_numbers  # hexagons as numbers: thousands of squar
 import numpy as np
 import rasterio
 import rasterio.transform
+import shapely
 from cachetools import TTLCache
 from pyproj import Transformer
 from rasterio.enums import Resampling
@@ -57,7 +67,9 @@ from rasterio.windows import Window, from_bounds
 from rasterio.windows import bounds as window_bounds
 from rasterio.windows import transform as window_transform
 from scipy.ndimage import median_filter
-from shapely.geometry import Polygon, box
+from shapely.geometry import Polygon, box, shape
+from shapely.ops import transform as shapely_transform
+from shapely.validation import make_valid
 
 from src.services import ndvi_classes, raster_process, wapor_service
 from src.services.gdal_http import GDAL_HTTP_TIMEOUTS
@@ -385,7 +397,7 @@ def plants_view(bbox: Sequence[float], today: date) -> Plants:
     passes with clear ground, newest first and PASSES_AT_ONCE at a time, stopping as soon as the picture is
     whole and has an earlier look to be compared with.
     """
-    stac = STACService("earth_search")
+    stac = STACService("earth_search", use_pystac=False)
     looks: list[Look] = []
     grid: Optional[Grid] = None
     skip_tiles: frozenset[str] = frozenset()
@@ -632,6 +644,29 @@ def fresh(bbox: Sequence[float]) -> bool:
     return written is not None and time.time() - written <= FRESH_HOURS * 3600
 
 
+def ready(bbox: Sequence[float]) -> Optional[View]:
+    """The fresh, whole view of bbox that is already kept (memory, else the cache volume), or None. No satellite is
+    read, so a card or a field panel may ask every time it opens; None means "not made yet", never "nothing there"."""
+    return _ready(_key(bbox))[0]
+
+
+def _ready(key: tuple[float, ...]) -> tuple[Optional[View], float]:
+    """(the fresh kept view, the stamp it is held under) read in one go, so that what is worked out from the view
+    is filed under that view's own stamp and never under a newer one the night wrote meanwhile."""
+    with _views_lock:
+        held = _held(key)
+        if held is not None:
+            return held, _views[key][1]
+    written = _written(key)  # before the read, as in _view_once
+    made = _kept(key)
+    if made is None:
+        return None, 0.0
+    stamp = written or time.time()
+    with _views_lock:
+        _views[key] = (made, stamp)
+    return made, stamp
+
+
 def view(bbox: Sequence[float], today: date) -> View:
     """Plants and soil over bbox. Each part that cannot be had says why; the other still comes.
     A whole view is used for FRESH_HOURS (memory and the cache volume); its `today` is the day it was made.
@@ -644,6 +679,19 @@ def view(bbox: Sequence[float], today: date) -> View:
         return kept
     with making:
         return _view_once(key, bbox, today)
+
+
+NOT_A_BOX = "This picture's place on the map could not be read, so the satellite cannot be matched to it."
+
+
+def too_wide(bbox: Sequence[float]) -> Optional[str]:
+    """Why no square-by-square view is made of this box, in plain words, or None when one is. Reads nothing and
+    never raises: a box that is not one (a side of no length, a latitude off the globe) is said as such, since a
+    photo's cards ask this while they are being listed."""
+    try:
+        return _too_wide(_key(bbox), bbox)
+    except (ValueError, TypeError):
+        return NOT_A_BOX
 
 
 def _too_wide(key: tuple[float, ...], bbox: Sequence[float]) -> Optional[str]:
@@ -703,7 +751,7 @@ def _make(key: tuple[float, ...], bbox: Sequence[float], today: date) -> tuple[V
 def _newest_pass_since(bbox: Sequence[float], since: date, today: date) -> Optional[date]:
     """The newest pass the search holds from `since` to today, clear or not; `since` itself when there is none
     newer; None when the search could not be made."""
-    found = STACService("earth_search").search_imagery(
+    found = STACService("earth_search", use_pystac=False).search_imagery(
         bbox=list(bbox), datetime_range=f"{since.isoformat()}/{today.isoformat()}", max_cloud_cover=101.0, limit=250)
     if "error" in found:
         logger.warning("satellite view: scene search failed: %s", found["error"])
@@ -998,6 +1046,154 @@ def soil_hexagons(soil: Soil, bbox: Sequence[float]) -> dict[str, Any]:
     return drawn
 
 
+# --- One field of the photo -----------------------------------------------------------------------------------
+
+# Whole squares a field must hold before its NDVI is said. A square on the field's edge takes in the neighbour's crop,
+# the path or the hedge, so only squares lying wholly inside the outline count; and Sentinel-2 places a square within
+# a few metres, not to the metre, so one or two squares can sit half on the neighbour without our knowing. With four
+# the middle value holds.
+FIELD_SQUARES = 4
+
+
+@dataclass(frozen=True)
+class FieldSeen:
+    """What the kept view holds for one field's outline."""
+
+    whole: int  # 10 m squares lying wholly inside the field
+    squares: int  # of those, the ones seen sharp on the field's main day: what the figure is made of
+    ndvi: Optional[float]  # the middle of those squares; None when there are fewer than FIELD_SQUARES
+    day: Optional[date]  # the day most of the field's whole squares were seen
+    older: bool  # that day is an older look than the photo's main one
+    soil: Optional[float]  # soil moisture of the 100 m square under the field's middle
+    period: Optional[str]  # the ten days that reading is for
+
+
+def _whole_squares(outline: Any, grid: Grid) -> np.ndarray:
+    """The grid's squares that lie wholly inside an outline given in the grid's own coordinates: exact geometry on the
+    squares around the outline, not a rule of thumb (a square's middle well inside the line misses squares that lie
+    wholly inside along a straight edge: 35 of 69 Cyampirita plots lost squares that way, measured 2026-11-23)."""
+    inside = np.zeros(grid.shape, dtype=bool)
+    a, _, c, _, e, f = grid.transform  # a square is a wide and -e tall; (c, f) is the grid's top-left corner
+    minx, miny, maxx, maxy = outline.bounds
+    left, right = max(0, int((minx - c) // a)), min(grid.shape[1], int((maxx - c) // a) + 1)
+    top, bottom = max(0, int((f - maxy) // -e)), min(grid.shape[0], int((f - miny) // -e) + 1)
+    if left >= right or top >= bottom:
+        return inside
+    cols, rows = np.meshgrid(np.arange(left, right), np.arange(top, bottom))
+    squares = shapely.box(c + cols * a, f + (rows + 1) * e, c + (cols + 1) * a, f + rows * e)
+    shapely.prepare(outline)
+    inside[top:bottom, left:right] = shapely.contains(outline, squares)
+    return inside
+
+
+def field_seen(seen: View, geometry: dict[str, Any], to_grid: Optional[Callable[..., Any]] = None) -> Optional[FieldSeen]:
+    """The view's values for one field (a GeoJSON outline in latitude and longitude), or None when the outline
+    cannot be read or the view holds nothing for it. No satellite is read: the squares come from the kept view.
+    to_grid: longitude and latitude to the plants grid's coordinates, when the caller has it (of_fields, for
+    hundreds of plots)."""
+    try:
+        outline = make_valid(shape(geometry))
+    except Exception:  # noqa: BLE001 - a broken outline has no satellite figure; the field is still shown
+        logger.warning("satellite view: a field's outline could not be read", exc_info=True)
+        return None
+    if outline.is_empty:
+        return None
+    whole_squares, squares, ndvi, day, older = 0, 0, None, None, False
+    plants = seen.plants
+    if plants is not None:
+        to_grid = to_grid or Transformer.from_crs("EPSG:4326", plants.grid.crs, always_xy=True).transform
+        inside = _whole_squares(shapely_transform(to_grid, outline), plants.grid)
+        whole_squares = int(inside.sum())
+        sharp = inside & (plants.seen > 0) & ~plants.hazy & np.isfinite(plants.ndvi)
+        if sharp.any():
+            days, counts = np.unique(plants.seen[sharp], return_counts=True)
+            main = int(days[int(np.argmax(counts))])
+            on_day = sharp & (plants.seen == main)
+            squares, day = int(on_day.sum()), date.fromordinal(main)
+            older = main <= plants.main_day.toordinal() - OLDER_AFTER_DAYS
+            if squares >= FIELD_SQUARES:
+                ndvi = float(np.median(plants.ndvi[on_day]))
+    soil, period = None, None
+    if seen.soil is not None:
+        middle = outline.representative_point()
+        col = int((middle.x - seen.soil.west) // seen.soil.step)
+        row = int((seen.soil.north - middle.y) // seen.soil.step)
+        rows, cols = seen.soil.percent.shape
+        if 0 <= row < rows and 0 <= col < cols and np.isfinite(seen.soil.percent[row, col]):
+            soil, period = float(seen.soil.percent[row, col]), seen.soil.period
+    if plants is None and soil is None:
+        return None
+    return FieldSeen(whole=whole_squares, squares=squares, ndvi=ndvi, day=day, older=older, soil=soil, period=period)
+
+
+def field_words(field: FieldSeen, today: date, plants_held: bool = True) -> tuple[Optional[str], Optional[str]]:
+    """(the field's short part, its sentences) as every surface says them: "satellite NDVI 0.52 on 19 Nov" for the
+    one line a field has, and the sentences for where there is room. The short part is None when the field has no
+    figure of its own; the sentences then say why. plants_held: whether the view holds a plants picture at all."""
+    short, sentences = None, []
+    if field.ndvi is not None and field.day is not None:
+        when = _day_words(field.day, today)
+        short = f"satellite NDVI {field.ndvi:.2f} on {when}" + (", an older look" if field.older else "")
+        made_of = (f"the {field.squares} whole {SQUARE_M} m squares inside this field" if field.squares == field.whole
+                   else f"{field.squares} of the {field.whole} whole {SQUARE_M} m squares inside this field (the others "
+                        "had no clear look that day)")
+        sentences.append(
+            f"From the satellite (Sentinel-2): NDVI {field.ndvi:.2f} on {when}, the middle of {made_of}."
+            + (" That is weeks older than the look most of the photo has, so do not read it against fields seen later."
+               if field.older else ""))
+    elif plants_held and field.whole < FIELD_SQUARES:
+        holds = "none" if field.whole == 0 else str(field.whole)
+        sentences.append(f"From the satellite: this field holds {holds} of the satellite's {SQUARE_M} m squares whole, "
+                         f"too few for an NDVI of its own (it takes {FIELD_SQUARES}); a square on its edge takes in "
+                         "the neighbours.")
+    elif plants_held:
+        sentences.append(f"From the satellite: no NDVI for this field yet; too few of its {SQUARE_M} m squares had a "
+                         "clear look on one day.")
+    if field.soil is not None and field.period is not None:
+        sentences.append(f"Soil moisture {field.soil:.0f}% for {period_words(field.period, today)} in the "
+                         f"{SOIL_SQUARE_M} m square under its middle (FAO estimate): the season's level, not this "
+                         "field's own reading.")
+    return short, " ".join(sentences) or None
+
+
+_fields_said: dict[tuple[float, ...], tuple[float, dict[str, Optional[tuple[Optional[str], Optional[str]]]]]] = {}
+
+
+def of_fields(bbox: Sequence[float], outlines: dict[str, dict[str, Any]]) -> dict[str, tuple[Optional[str], Optional[str]]]:
+    """key -> (short part, sentences) for each field outline of the photo at bbox, from the view already kept.
+    {} when no fresh view is kept: nothing is read from a satellite here, and nothing waits. What was said of an
+    outline is remembered for as long as the same view is held (445 plots took 0.56 s in the local container,
+    2026-11-23, and a photo's cards ask on every open); keys must name the outline (field_health.key_of)."""
+    key = _key(bbox)
+    seen, stamp = _ready(key)
+    if seen is None:
+        return {}
+    with _views_lock:
+        remembered = _fields_said.get(key)
+        if remembered is None or remembered[0] != stamp:
+            remembered = (stamp, {})
+            _fields_said[key] = remembered
+            for gone in [k for k in _fields_said if k not in _views and k != key]:
+                del _fields_said[gone]
+    said = remembered[1]
+    to_grid = (Transformer.from_crs("EPSG:4326", seen.plants.grid.crs, always_xy=True).transform
+               if seen.plants is not None else None)
+    out: dict[str, tuple[Optional[str], Optional[str]]] = {}
+    for name, geometry in outlines.items():
+        if name not in said:
+            try:
+                field = field_seen(seen, geometry, to_grid)
+                said[name] = (field_words(field, seen.today, plants_held=seen.plants is not None)
+                              if field is not None else None)
+            except Exception:  # noqa: BLE001 - one outline that cannot be worked out loses its own words, not every field's
+                logger.warning("satellite view: a field's figure could not be worked out", exc_info=True)
+                said[name] = None
+        words_of = said[name]
+        if words_of is not None:
+            out[name] = words_of
+    return out
+
+
 # --- What the two show, in plain facts ----------------------------------------------------------------------
 
 
@@ -1010,28 +1206,40 @@ def _list(parts: Sequence[str]) -> str:
 
 
 def plants_facts(plants: Plants, today: date) -> dict[str, Any]:
-    """The plants picture in numbers and sentences: {"sentences", "direction", "median", "classes", "days"}."""
+    """The plants picture in numbers and sentences: {"sentences", "parts", "direction", "median", "classes", "seen_said",
+    "days"}. "seen_said" is each day's share in words, largest first ("66% on 19 Nov"), as the "seen" sentence lists them.
+    "parts" names each sentence ("covered", "seen", "older", "newer", "haze", "greenness", "change"; only those said), so a
+    surface with little room can say some of them in the same words."""
     known = plants.seen > 0
     total = int(known.sum())
     days, counts = np.unique(plants.seen[known], return_counts=True)
     by_day = sorted(((date.fromordinal(int(d)), int(n) / plants.seen.size) for d, n in zip(days, counts)),
                     key=lambda pair: pair[1], reverse=True)
-    sentences = []
+    parts: dict[str, str] = {}
     if plants.covered >= 0.999:
-        sentences.append(f"Every {SQUARE_M} m square of this photo has a clear satellite look (Sentinel-2).")
+        parts["covered"] = f"Every {SQUARE_M} m square of this photo has a clear satellite look (Sentinel-2)."
     else:
-        sentences.append(f"{_percent(plants.covered)} of this photo has a clear satellite look (Sentinel-2); no pass saw "
-                         f"the rest in the last {LOOKBACKS[-1]} days.")
+        parts["covered"] = (f"{_percent(plants.covered)} of this photo has a clear satellite look (Sentinel-2); no pass "
+                            f"saw the rest in the last {LOOKBACKS[-1]} days.")
     shown = [f"{_percent(share)} on {_day_words(day, today)}" for day, share in by_day[:4]]
-    sentences.append(f"Seen: {_list(shown)}" + ("; the rest earlier." if len(by_day) > 4 else "."))
+    parts["seen"] = f"Seen: {_list(shown)}" + ("; the rest earlier." if len(by_day) > 4 else ".")
     main = plants.main_day
     old = float(((plants.seen > 0) & (plants.seen <= main.toordinal() - OLDER_AFTER_DAYS)).mean())
     if old >= 0.05:
-        sentences.append(f"{_percent(old)} of the photo holds an older look, drawn in grey: clouds hid it on "
-                         f"{_day_words(main, today)}, so it must not be read against the fresh part.")
+        parts["older"] = (f"{_percent(old)} of the photo holds an older look, drawn in grey: clouds hid it on "
+                          f"{_day_words(main, today)}, so it must not be read against the fresh part.")
+    # The main look can itself be the older one: at 5 of 11 other farming places (2026-11-23) a newer look, two weeks
+    # or more after the main one, covered 6% to 40% of the box. It is drawn in the legend's colours beside the main
+    # look, so the words must say that the two parts are weeks apart.
+    later = plants.seen >= main.toordinal() + OLDER_AFTER_DAYS
+    if float(later.mean()) >= 0.05:
+        newest = date.fromordinal(int(plants.seen[later].max()))
+        parts["newer"] = (f"{_percent(float(later.mean()))} of the photo holds a newer look (up to {_day_words(newest, today)}) "
+                          f"than the main one of {_day_words(main, today)}: a difference between the two parts can be "
+                          "the weeks between them, not the crop.")
     haze_share = float(plants.hazy.mean())
     if haze_share >= 0.01:
-        sentences.append(f"{_percent(haze_share)} was only seen through haze and may read low.")
+        parts["haze"] = f"{_percent(haze_share)} was only seen through haze and may read low."
     values = plants.ndvi[known]
     classes = []
     for i, cls in enumerate(ndvi_classes.NDVI_CLASSES):
@@ -1040,38 +1248,41 @@ def plants_facts(plants: Plants, today: date) -> dict[str, Any]:
         classes.append({"key": cls.key, "label": ndvi_classes.ground_label(cls), "share": share})
     said = [f"{_percent(c['share'])} {c['label'].lower()}" for c in reversed(classes) if c["share"] > 0]
     median = float(np.median(values))
-    sentences.append(f"By greenness (NDVI): {_list(said)}. The middle square reads {median:.2f}.")
+    parts["greenness"] = f"By greenness (NDVI): {_list(said)}. The middle square reads {median:.2f}."
     direction = None
     if plants.change is not None:
         moved = plants.change.median
         direction = "steady" if abs(moved) < STEADY else ("rose" if moved > 0 else "fell")
         how = {"steady": f"stayed about the same ({moved:+.2f})", "rose": f"rose by {moved:.2f}",
                "fell": f"fell by {abs(moved):.2f}"}[direction]
-        sentences.append(f"On the squares seen {_day_words(plants.change.now, today)}, NDVI {how} since "
-                         f"{_day_words(plants.change.before, today)}.")
-    return {"sentences": sentences, "direction": direction, "median": round(median, 2), "classes": classes,
+        parts["change"] = (f"On the squares seen {_day_words(plants.change.now, today)}, NDVI {how} since "
+                           f"{_day_words(plants.change.before, today)}.")
+    return {"sentences": list(parts.values()), "parts": parts, "direction": direction, "median": round(median, 2),
+            "classes": classes, "seen_said": shown,
             "days": [{"day": day.isoformat(), "share": round(share, 3)} for day, share in by_day]}
 
 
 def soil_facts(soil: Soil, today: date) -> dict[str, Any]:
-    """The soil moisture reading in numbers and sentences: {"sentences", "position", "median", "low", "high"}."""
+    """The soil moisture reading in numbers and sentences: {"sentences", "parts", "position", "median", "low",
+    "high"}. "parts" names each sentence ("reading", "year", "first", "limits"; only those said)."""
     values = soil.percent[np.isfinite(soil.percent)]
     median, low, high = float(np.median(values)), float(values.min()), float(values.max())
     words = period_words(soil.period, today)
-    sentences = [f"Soil moisture for {words} (FAO WaPOR estimate, {SOIL_SQUARE_M} m squares): the middle square reads "
-                 f"{median:.0f}%, from {low:.0f}% to {high:.0f}% across the photo."]
+    parts = {"reading": f"Soil moisture for {words} (FAO WaPOR estimate, {SOIL_SQUARE_M} m squares): the middle square "
+                        f"reads {median:.0f}%, from {low:.0f}% to {high:.0f}% across the photo."}
     position = None
     if soil.centre is not None and soil.year_low is not None and soil.year_high is not None and soil.year_high > soil.year_low:
         place = (soil.centre - soil.year_low) / (soil.year_high - soil.year_low)
         position = "low" if place < 1 / 3 else ("high" if place > 2 / 3 else "middle")
         where = {"low": "near the bottom", "middle": "in the middle", "high": "near the top"}[position]
-        sentences.append(f"At the photo's centre it reads {soil.centre:.0f}%; over the year before it ran from "
+        parts["year"] = (f"At the photo's centre it reads {soil.centre:.0f}%; over the year before it ran from "
                          f"{soil.year_low:.0f}% to {soil.year_high:.0f}%, so it is {where} of its own year.")
     if soil.first_estimate:
-        sentences.append("This is FAO's first estimate; FAO replaces it with a steadier one about two months later.")
-    sentences.append("It follows Rwanda's wet and dry seasons but was not confirmed against rain week by week "
-                     "(tested 2026-11-23): read it as the season's level, not a precise reading.")
-    return {"sentences": sentences, "position": position, "median": round(median, 1), "low": round(low, 1), "high": round(high, 1)}
+        parts["first"] = "This is FAO's first estimate; FAO replaces it with a steadier one about two months later."
+    parts["limits"] = ("It follows Rwanda's wet and dry seasons but was not confirmed against rain week by week "
+                       "(tested 2026-11-23): read it as the season's level, not a precise reading.")
+    return {"sentences": list(parts.values()), "parts": parts, "position": position, "median": round(median, 1),
+            "low": round(low, 1), "high": round(high, 1)}
 
 
 _TOGETHER = {

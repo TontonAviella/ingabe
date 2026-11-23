@@ -1094,3 +1094,136 @@ def test_sage_is_not_told_of_a_crop_nobody_named(photo):
     named = drone_cards.answer_card("crop_types", _analysis(photo), "insurance",
                                     drone_cards.Here(plots=plots, survey=_survey(plots, ["maize"] * 10, {})))
     assert "most plots the model could name grow maize" in named["ask_sage"][0]["prompt"]
+
+
+# --- The satellite card: the same view Sage puts on the map, said in the same sentences -----------------------------
+
+
+def _satellite_view_over(analysis, moved=0.24, centre=69.0):
+    """A kept view over the test photo: 30 x 30 squares at NDVI 0.55 seen four days before, up from 0.31 six weeks
+    earlier, and soil moisture in 100 m squares."""
+    from datetime import date, timedelta
+
+    from src.services import satellite_view as sv
+
+    today = date(2026, 11, 23)
+    west, south, east, north = rasterio.warp.transform_bounds("EPSG:4326", "EPSG:32735", *analysis.bounds)
+    ndvi = np.full((30, 30), 0.55, dtype=np.float32)
+    seen = np.full((30, 30), (today - timedelta(days=4)).toordinal(), dtype=np.int32)
+    change = None if moved is None else sv.Change(today - timedelta(days=4), today - timedelta(days=46), moved, 900)
+    plants = sv.Plants(sv.Grid("EPSG:32735", (10.0, 0.0, west, 0.0, -10.0, north), (30, 30)), ndvi, seen,
+                       np.zeros((30, 30), bool), change, 3)
+    soil = sv.Soil(period="2026-11-D1", percent=np.array([[62.0, 68.0], [70.0, 76.0]], dtype=np.float32),
+                   west=analysis.bounds[0] - 0.0005, north=analysis.bounds[3] + 0.0005, step=0.002, first_estimate=True,
+                   centre=centre, year_low=40.0, year_high=75.0)
+    return sv.View(bbox=tuple(analysis.bounds), today=today, plants=plants, plants_missing=None, soil=soil,
+                   soil_missing=None)
+
+
+def test_the_satellite_card_says_it_is_being_read_until_a_view_is_kept(photo):
+    analysis = _analysis(photo)
+    here = drone_cards.Here(photos=1)
+    assert drone_cards.statuses(analysis, here)["satellite"] == drone_cards.WORKING
+    answer = drone_cards.answer_card("satellite", analysis, "farmer", here)
+    assert answer["status"] == drone_cards.WORKING and answer["progress"] is not None
+    assert "reading the satellites over this photo" in answer["what"] and "fills in by itself" in answer["what"]
+    assert "a few minutes" in answer["what"]  # 85 s to 4 min at 11 other places in the local container, 2026-11-23
+    assert answer["preview"].startswith("Reading the satellites over this photo")
+    assert answer["facts"] == [] and answer["how_sure"]["because"] == ["Not answered yet"]
+
+
+def test_the_satellite_card_owns_up_when_the_satellites_could_not_be_read(photo):
+    analysis = _analysis(photo)
+    failed = background_jobs.Job(state="failed", parts_done=0, parts=1, started=time.time(), error="timed out")
+    here = drone_cards.Here(photos=1, satellite_job=failed)
+    answer = drone_cards.answer_card("satellite", analysis, "farmer", here)
+    assert answer["status"] == drone_cards.CANT_TELL and answer["progress"] is None  # nothing is polled for
+    assert answer["what"] == "The satellites could not be read for this photo just now."
+    assert answer["todo"] == "Open this question again to try once more."
+    assert "timed out" not in json.dumps(answer)  # the cause stays in the log
+
+
+def test_a_photo_wider_than_one_farm_gets_no_satellite_view_and_is_told_so(photo):
+    analysis = dataclasses.replace(_analysis(photo), bounds=[29.0, -3.0, 31.0, -1.0])
+    answer = drone_cards.answer_card("satellite", analysis, "farmer", drone_cards.Here(photos=1))
+    assert answer["status"] == drone_cards.CANT_TELL and answer["progress"] is None
+    assert "too wide for a square-by-square satellite view" in answer["what"] and "smaller photo" in answer["todo"]
+    # a photo whose place is no box at all (a side of no length) still gets its other cards: this one says why not
+    nowhere = dataclasses.replace(_analysis(photo), bounds=[30.0, -2.0, 30.0, -2.0])
+    assert drone_cards.statuses(nowhere, drone_cards.Here(photos=1))["satellite"] == drone_cards.CANT_TELL
+    answer = drone_cards.answer_card("satellite", nowhere, "farmer", drone_cards.Here(photos=1))
+    assert answer["what"].startswith("This picture's place on the map could not be read") and "Check where this photo sits" in answer["todo"]
+
+
+def test_the_satellite_card_says_the_views_own_sentences_and_links_to_the_layers(photo):
+    from src.dependencies import sage_routing
+    from src.services import satellite_view as sv
+
+    analysis = _analysis(photo)
+    seen = _satellite_view_over(analysis)
+    here = drone_cards.Here(photos=1, satellite=seen)
+    said = sv.words(seen)
+    answer = drone_cards.answer_card("satellite", analysis, "farmer", here)
+    assert answer["status"] == drone_cards.READY and answer["progress"] is None
+    # what is happening: greenness, its direction, and what the two show together, word for word as Sage says them
+    assert answer["what"] == " ".join([said["plants"]["parts"]["greenness"], said["plants"]["parts"]["change"], said["together"]])
+    assert said["together"].startswith("Plants are filling in and the soil reads near the top of its year")
+    assert answer["preview"] == "From the satellite: NDVI 0.55 in the middle square, rising; soil moisture 69% for 1-10 Nov."
+    facts = {fact["label"]: fact["value"] for fact in answer["facts"]}
+    assert facts == {"Plants, satellite (10 m squares)": "NDVI 0.55 in the middle square", "Seen": "100% on 19 Nov",
+                     "Soil moisture, FAO estimate (100 m squares)": "69% (62% to 76%)", "For": "1-10 Nov, first estimate"}
+    # how sure: what it is measured on, how far soil moisture can be trusted, and that nobody walked there
+    assert answer["how_sure"]["level"] == "medium"
+    because = " | ".join(answer["how_sure"]["because"])
+    assert "Sentinel-2 satellite on 10 m squares" in because
+    assert "Soil moisture (FAO estimate): it follows Rwanda's wet and dry seasons but was not confirmed against rain week by week" in because
+    assert answer["how_sure"]["because"][-1] == "Not checked on the ground"
+    assert [term["id"] for term in answer["terms"]] == ["ndvi", "soil_moisture"]
+    assert "money" not in json.dumps(answer).lower() and "RWF" not in json.dumps(answer)
+    # where: the card's first question for Sage puts the two layers on the map, and Sage answers it with no model
+    first = answer["ask_sage"][0]
+    assert first["label"] == drone_cards.SATELLITE_ON_MAP and drone_cards.SATELLITE_ON_MAP in answer["todo"]
+    fast = sage_routing.build_project_fast_tool_call(first["prompt"], "agriculture")
+    assert fast is not None and fast.tool_name == sage_routing.SATELLITE_VIEW_TOOL
+    assert sage_routing.build_project_fast_tool_call(first["prompt"], "telecom") is None or (
+        sage_routing.build_project_fast_tool_call(first["prompt"], "telecom").tool_name != sage_routing.SATELLITE_VIEW_TOOL)
+
+
+def test_the_satellite_card_says_an_older_look_and_no_direction_plainly(photo):
+    from datetime import date, timedelta
+
+    from src.services import satellite_view as sv
+
+    analysis = _analysis(photo)
+    seen = _satellite_view_over(analysis, moved=None)
+    assert seen.plants is not None
+    old = seen.plants.seen.copy()
+    old[:, 20:] = (date(2026, 11, 23) - timedelta(days=31)).toordinal()
+    plants = sv.Plants(seen.plants.grid, seen.plants.ndvi, old, seen.plants.hazy, None, 3)
+    here = drone_cards.Here(photos=1, satellite=dataclasses.replace(seen, plants=plants))
+    answer = drone_cards.answer_card("satellite", analysis, "agronomist", here)
+    said = sv.words(here.satellite)
+    assert said["together"] is None  # no direction: nothing is said of the two together
+    assert answer["what"] == " ".join([said["plants"]["parts"]["greenness"], said["soil"]["parts"]["year"]])
+    assert any("holds an older look, drawn in grey" in reason for reason in answer["how_sure"]["because"])
+    assert answer["preview"] == "From the satellite: NDVI 0.55 in the middle square; soil moisture 69% for 1-10 Nov."
+    assert {f["label"]: f["value"] for f in answer["facts"]}["Seen"] == "67% on 19 Nov, 33% on 23 Oct"
+
+
+def test_the_satellite_card_counts_the_fields_with_a_figure_of_their_own_and_is_in_the_deck(photo):
+    from src.services import field_facts
+
+    analysis = _analysis(photo)
+    fields = (field_facts.FieldFacts(1, "Field 1", 0.4, "0.40 ha", satellite_said="satellite NDVI 0.55 on 19 Nov"),
+              field_facts.FieldFacts(2, "Field 2", 0.02, "200 m²"))
+    here = drone_cards.Here(photos=1, satellite=_satellite_view_over(analysis), fields=fields)
+    answer = drone_cards.answer_card("satellite", analysis, "farmer", here)
+    assert {f["label"]: f["value"] for f in answer["facts"]}["Plots with a satellite NDVI of their own"] == "1 of 2"
+    outlined = types.SimpleNamespace(source=drone_plots.OUTLINED_FIELDS_NAME)
+    by_reader = drone_cards._satellite(analysis, "farmer", dataclasses.replace(here, plots=outlined))
+    assert {f["label"]: f["value"] for f in by_reader["facts"]}["Fields with a satellite NDVI of their own"] == "1 of 2"
+    assert field_facts.said(fields[0]) == "Field 1 · 0.40 ha · satellite NDVI 0.55 on 19 Nov"
+    deck = drone_cards.build_deck(analysis, "farmer", here)
+    health = next(s for s in deck["services"] if s["service"] == 1)
+    card = next(c for c in health["cards"] if c["id"] == "satellite")
+    assert card["status"] == drone_cards.READY and card["question"] == "How are my plants and the soil doing, seen from the satellite?"

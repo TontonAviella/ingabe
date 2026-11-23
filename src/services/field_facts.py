@@ -115,15 +115,20 @@ class FieldFacts:
     # the field's same outline on the project's other flights of this place, oldest first, this photo's line among
     # them (field_flights); () when this photo is the only one of the place
     flights: tuple[dict[str, Any], ...] = ()
+    # from the satellite view kept for the photo (satellite_view.of_fields): the field's own NDVI where it holds enough
+    # whole 10 m squares ("satellite NDVI 0.52 on 19 Nov"), and the sentences that say it with the soil moisture of
+    # the 100 m square it sits in, or why the field has no figure of its own. None while no view is kept
+    satellite_said: Optional[str] = None
+    satellite_note: Optional[str] = None
 
     def shown(self) -> dict[str, Any]:
         return asdict(self)
 
 
 def said(facts: FieldFacts) -> str:
-    """One line for a field, the same on every surface: "Field 7 · 0.18 ha · green cover 62% · about 700 plants"."""
+    """One line for a field, the same on every surface: "Field 7 · 0.18 ha · green cover 62% · about 700 plants · satellite NDVI 0.52 on 19 Nov"."""
     parts = [facts.name, facts.area_said, facts.cover_said, facts.plants_said, facts.health_said,
-             facts.temperature_said]
+             facts.temperature_said, facts.satellite_said]
     return " · ".join(part for part in parts if part)
 
 
@@ -136,7 +141,8 @@ def _facts(number: int, label: str, area_ha: float, row: Optional[dict[str, Any]
            count: Optional[dict[str, Any]], check: Optional[dict[str, Any]],
            records: Optional[dict[int, list[str]]] = None,
            health: Optional[field_health.FieldHealth] = None,
-           flights: Optional[list[dict[str, Any]]] = None, this_photo: Optional[dict[str, Any]] = None) -> FieldFacts:
+           flights: Optional[list[dict[str, Any]]] = None, this_photo: Optional[dict[str, Any]] = None,
+           satellite: Optional[tuple[Optional[str], Optional[str]]] = None) -> FieldFacts:
     cover_said = f"green cover {round(cover * 100)}%" if cover is not None else None
     counted = plants_said(count["plants"], count.get("counted_share")) if count else None
     own = (field_flights.line(this_photo.get("name"), this_photo.get("metadata") or {}, this_photo.get("uploaded"),
@@ -146,6 +152,7 @@ def _facts(number: int, label: str, area_ha: float, row: Optional[dict[str, Any]
                               this=True, nothing="nothing measured on this photo yet")
            if flights and this_photo else None)
     return FieldFacts(
+        satellite_said=satellite[0] if satellite else None, satellite_note=satellite[1] if satellite else None,
         flights=field_flights.with_this(own, flights or []),
         health_said=health.said if health else None, ndvi=health.ndvi if health else None,
         ndre=health.ndre if health else None, temperature_said=health.temperature_said if health else None,
@@ -189,10 +196,12 @@ async def of_plots(s3: Any, bucket: str, photo_key: str, layer_id: str, plots: A
                    records: Optional[dict[int, list[str]]] = None,
                    health: Optional[dict[str, field_health.FieldHealth]] = None,
                    flights: Optional[dict[str, list[dict[str, Any]]]] = None,
-                   this_photo: Optional[dict[str, Any]] = None) -> list[FieldFacts]:
+                   this_photo: Optional[dict[str, Any]] = None,
+                   satellite: Optional[dict[str, tuple[Optional[str], Optional[str]]]] = None) -> list[FieldFacts]:
     """The facts of every plot in a plot set, in the set's order. The reader's kept fields bring green cover and
     checks; a plot bears them only when it is that field (same number, same outline). `records`: what the farm's
-    documents say per plot number, already linked by place (record_links.by_field)."""
+    documents say per plot number, already linked by place (record_links.by_field). `satellite`: what the photo's
+    kept satellite view says of each outline (satellite_view.of_fields), by field_health.key_of."""
     rows, covered, counts = await _kept_and_counts(s3, bucket, photo_key, layer_id)
     of_outlined = outlined(plots)
     by_number = {row["number"]: row for row in rows}
@@ -207,7 +216,8 @@ async def of_plots(s3: Any, bucket: str, photo_key: str, layer_id: str, plots: A
                           field_taps.cover_share(row) if row is not None and covered else None, count,
                           await _check(s3, bucket, photo_key, layer_id, row, count), records,
                           (health or {}).get(field_health.key_of(feature["geometry"])),
-                          (flights or {}).get(field_health.key_of(feature["geometry"])), this_photo))
+                          (flights or {}).get(field_health.key_of(feature["geometry"])), this_photo,
+                          (satellite or {}).get(field_health.key_of(feature["geometry"]))))
     return out
 
 
@@ -215,7 +225,8 @@ async def of_kept(s3: Any, bucket: str, photo_key: str, layer_id: str,
                   records: Optional[dict[int, list[str]]] = None,
                   health: Optional[dict[str, field_health.FieldHealth]] = None,
                   flights: Optional[dict[str, list[dict[str, Any]]]] = None,
-                  this_photo: Optional[dict[str, Any]] = None) -> dict[str, FieldFacts]:
+                  this_photo: Optional[dict[str, Any]] = None,
+                  satellite: Optional[dict[str, tuple[Optional[str], Optional[str]]]] = None) -> dict[str, FieldFacts]:
     """The facts of the reader's kept fields, by field id, for the field panel: read from the fields themselves and
     the photo's record of counts, so nothing is measured and no plot set is built. A count is the field's when it
     was made on the field's own outline (same number, same outline)."""
@@ -229,5 +240,6 @@ async def of_kept(s3: Any, bucket: str, photo_key: str, layer_id: str,
                                 field_taps.cover_share(row) if covered else None, count,
                                 await _check(s3, bucket, photo_key, layer_id, row, count), records,
                                 (health or {}).get(field_health.key_of(row["geometry"])),
-                                (flights or {}).get(field_health.key_of(row["geometry"])), this_photo)
+                                (flights or {}).get(field_health.key_of(row["geometry"])), this_photo,
+                                (satellite or {}).get(field_health.key_of(row["geometry"])))
     return out

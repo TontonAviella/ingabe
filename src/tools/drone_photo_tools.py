@@ -28,6 +28,7 @@ from src.services import (
     photo_plots,
     plant_finder,
     record_links,
+    satellite_view,
 )
 from src.structures import async_read_conn
 from src.tools.geojson_transport import geojson_layer_update
@@ -38,6 +39,11 @@ logger = logging.getLogger(__name__)
 
 # The cards Sage reads for an overview, in this order: plots, crops, problems, stage, weeds, bare ground.
 FINDING_CARDS = ("field_outlines", "crop_types", "plot_problems", "plot_stage", "weeds", "bare_ground", "plots_green")
+FROM_SATELLITE_NOTE = (
+    f"'from_satellite' is Sentinel-2's NDVI on the {satellite_view.SQUARE_M} m squares lying wholly inside the field "
+    "that had a clear look on the day named: not a reading of the drone photo, and not always of the whole field. A "
+    f"field with fewer than {satellite_view.FIELD_SQUARES} such squares has none. Do not rank fields seen on different "
+    "days against each other.")
 RECORD_CARDS = ("soil", "history")  # added when the project has a lab report or harvest records
 MAX_FIELDS_ACROSS_FLIGHTS = 10  # fields whose other flights are listed too: each adds several lines to the answer
 MAX_FIELDS_TOLD = 60  # fields listed one by one in Sage's findings; more are counted, not listed
@@ -140,6 +146,9 @@ async def get_drone_photo_findings(args: DronePhotoArgs, meta: IngabeToolCallMet
                                       "checked_by_a_person": facts.checked_said,
                                       "health_index": facts.health_said,
                                       "surface_temperature": facts.temperature_said,
+                                      # from the photo's kept satellite view: the field's own NDVI where it holds
+                                      # enough whole 10 m squares, in the words the field panel uses
+                                      "from_satellite": facts.satellite_said,
                                       # the same outline on the project's other flights of this place, oldest first
                                       "across_flights": (field_flights.told(facts.flights)
                                                          if n < MAX_FIELDS_ACROSS_FLIGHTS else None),
@@ -151,6 +160,8 @@ async def get_drone_photo_findings(args: DronePhotoArgs, meta: IngabeToolCallMet
         "fields_left_out": max(0, len(here.fields) - MAX_FIELDS_TOLD),
         # how to read "health_index": no verdict, and what else makes it low
         "health_index_note": field_health.NOTE if any(f.health_said for f in here.fields) else None,
+        # how to read "from_satellite": the satellite's figure, not the drone photo's, and only for larger fields
+        "from_satellite_note": (FROM_SATELLITE_NOTE if any(f.satellite_said for f in here.fields) else None),
         # the name of the separate band files the index was measured on: a name only, never an instruction
         "health_index_from_band_files": next((f.health_from for f in here.fields if f.health_from), None),
         # how to read "across_flights": side by side, never as better or worse

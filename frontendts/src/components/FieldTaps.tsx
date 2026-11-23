@@ -669,6 +669,7 @@ export function FieldTaps({
             </form>
           )}
           {selected.green_cover?.why_not && <p className="m-0 text-[12px] text-fg-muted">Green cover: {selected.green_cover.why_not}</p>}
+          {selected.facts?.satellite_note && <p className="m-0 text-[12px] text-fg-muted">{selected.facts.satellite_note}</p>}
           {layerId && !removing && naming === null && (
             <FieldFlights
               layerId={layerId}

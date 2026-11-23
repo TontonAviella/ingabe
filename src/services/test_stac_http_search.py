@@ -159,3 +159,36 @@ def test_an_unreadable_range_is_an_error_and_no_request(service, earth_search):
     result = service.search_imagery(datetime_range="last month")
     assert "invalid STAC datetime" in result["error"]
     assert received == []
+
+
+def test_a_caller_can_ask_for_the_plain_request_and_open_no_catalogue_client(monkeypatch):
+    """satellite_view needs each pass's day and band addresses over one small box: one plain request, and no client
+    opened (measured 2026-11-23: about 1 s against about 4.5 s, with the same passes and addresses)."""
+    opened: list[str] = []
+    monkeypatch.setattr(stac_service, "_PYSTAC_CLIENT_AVAILABLE", True)
+    monkeypatch.setattr(stac_service.PystacClient, "open", lambda *a, **k: opened.append("opened") or pytest.fail("opened a client"))
+    service = STACService("earth_search", use_pystac=False)
+    assert service._pystac_client is None and opened == []
+
+    class Answer:
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> Dict[str, Any]:
+            return {"features": [{"id": f"S2A_36MTD_2026111{n}_0_L2A", "bbox": [30, -2, 31, -1],
+                                  "properties": {"datetime": f"2026-11-1{n}T08:21:00Z", "eo:cloud_cover": 12.0},
+                                  "assets": {"red": {"href": "red.tif", "type": "image/tiff"}, "thumbnail": {"href": "t.jpg"}}}
+                                 for n in range(2)]}
+
+    posted: List[Dict[str, Any]] = []
+    monkeypatch.setattr(service._session, "post", lambda url, json, timeout: posted.append(json) or Answer())
+    found = service.search_imagery(bbox=[30.41, -1.70, 30.43, -1.69], datetime_range="2026-10-09/2026-11-23",
+                                   max_cloud_cover=101.0, limit=250)
+    assert [item["id"] for item in found["items"]] == ["S2A_36MTD_20261110_0_L2A", "S2A_36MTD_20261111_0_L2A"]
+    assert found["items"][0]["assets"]["red"]["href"] == "red.tif" and found["items"][0]["datetime"].startswith("2026-11-10")
+    assert posted[0]["limit"] == 250 and posted[0]["datetime"] == "2026-10-09T00:00:00Z/2026-11-23T23:59:59Z"
+    # one page is read: a page that came back full is said in the log, since later passes were not read
+    warned: List[str] = []
+    monkeypatch.setattr(stac_service.logger, "warning", lambda message, *args: warned.append(message % args))
+    service.search_imagery(bbox=[30.41, -1.70, 30.43, -1.69], datetime_range="2026-10-09/2026-11-23", limit=2)
+    assert len(warned) == 1 and "filled its page of 2" in warned[0]

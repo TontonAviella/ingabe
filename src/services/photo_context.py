@@ -8,6 +8,7 @@ DRONE_VISION_SURVEY is on (drone_vision.survey_enabled).
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from dataclasses import dataclass
@@ -27,6 +28,7 @@ from src.services import (
     field_health,
     photo_plots,
     reader_roles,
+    satellite_view,
 )
 from src.services.remote_cog_layer import validate_remote_cog_bounds
 from src.services.shown_maps import SHOWN_MAPS_SQL
@@ -185,6 +187,25 @@ async def flights_here(conn: Any, layer_id: str, bounds: Any,
         out.append({"name": row["name"], "metadata": metadata, "bounds": list(row["bounds"] or []),
                     "uploaded": row["created_on"], "bands": int(metadata.get("band_count") or 0)})
     return own, out
+
+
+def satellite_job_key(layer_id: str) -> str:
+    """The background job that makes a photo's satellite view when its cards are opened before the night's run."""
+    return f"satellite-view:{layer_id}"
+
+
+async def satellite_of_fields(bounds: Any, features: list[dict[str, Any]]
+                              ) -> dict[str, tuple[Optional[str], Optional[str]]]:
+    """What the photo's kept satellite view says of each field outline, by field_health.key_of; {} when no view is
+    kept yet or it cannot be read (the fields are then said without it). Reads no satellite and starts no work."""
+    if not bounds or not features:
+        return {}
+    try:
+        outlines = {field_health.key_of(f["geometry"]): f["geometry"] for f in features}
+        return await asyncio.to_thread(satellite_view.of_fields, [float(v) for v in bounds], outlines)
+    except Exception:
+        logger.exception("photo context: the satellite figures of the fields could not be read")
+        return {}
 
 
 async def long_cog_url(s3: Any, bucket: str, metadata: dict[str, Any]) -> str:
@@ -375,7 +396,8 @@ async def load(s3: Any, bucket: str, *, layer_id: str, name: str, bounds: Any, m
                 except Exception:
                     logger.exception("photo context: the other flights could not be read for layer %s", layer_id)
             fields = await field_facts.of_plots(s3, bucket, photo_plots.photo_key(metadata), layer_id, plots,
-                                                record_links.by_field(linked), health, flights, this_photo)
+                                                record_links.by_field(linked), health, flights, this_photo,
+                                                await satellite_of_fields(bounds, plots.geojson["features"]))
             of_outlined = field_facts.outlined(plots)
             zoned = [(f["properties"]["number"],
                       field_facts.name(f["properties"]["number"], of_outlined, field_facts.own_name(f["properties"])),
@@ -389,7 +411,14 @@ async def load(s3: Any, bucket: str, *, layer_id: str, name: str, bounds: Any, m
                          "by": next((h.zone_index for _, _, h in zoned if h.zone_index), None)}
         except Exception:  # the cards still answer, without the per-field facts gathered from the other surfaces
             logger.exception("photo context: the fields' facts could not be read for layer %s", layer_id)
-    here = drone_cards.Here(zones=zones, fields=tuple(fields), photos=max(1, int(photos_here or 0)), plots=plots, plot_job=plot_job,
+    satellite = None
+    if bounds:
+        try:  # the view already kept for this photo: a small file read, no satellite
+            satellite = await asyncio.to_thread(satellite_view.ready, [float(v) for v in bounds])
+        except Exception:  # the other cards still answer; this one says it is not ready
+            logger.exception("photo context: the kept satellite view of layer %s could not be read", layer_id)
+    here = drone_cards.Here(satellite=satellite, satellite_job=background_jobs.status(satellite_job_key(layer_id)),
+                            zones=zones, fields=tuple(fields), photos=max(1, int(photos_here or 0)), plots=plots, plot_job=plot_job,
                             plot_maps=tuple(m for m, _ in maps), plot_map=plot_map, plot_map_error=map_error,
                             survey=looks.survey, survey_job=looks.survey_job,
                             vision_looks=drone_vision.survey_enabled(), seed=seed,
