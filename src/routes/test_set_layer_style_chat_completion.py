@@ -245,7 +245,7 @@ async def test_set_layer_style_via_chat_completion(
             assert "apply a custom style" in msg4["content"]
             assert msg4["has_tool_calls"] is True
             assert len(msg4["tool_calls"]) == 1
-            assert msg4["tool_calls"][0]["tagline"] == "Setting layer style..."
+            assert msg4["tool_calls"][0]["tagline"] == "Changed how a layer looks"
             assert msg4["tool_calls"][0]["icon"] == "brush"
 
             msg5 = next_state_msg(websocket)

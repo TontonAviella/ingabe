@@ -65,6 +65,37 @@ test.describe('One drawer for the map tools', () => {
     await expect(onMap).toHaveClass(/contents/);
   });
 
+  // Roger, 2026-11-23: people could not work out how to use Sage. Its side reads like the chats people know: what
+  // can be asked is on the screen, and the question box is the last thing in the column.
+  test("Sage's side offers questions to start from, with the question box under them", async ({ page }, testInfo) => {
+    await page.goto(`/project/${PROJECT}?drawer=1`);
+    const drawer = page.getByTestId('map-drawer');
+    await drawer.getByRole('navigation', { name: 'Map tools' }).getByRole('button', { name: 'Sage' }).click({ timeout: 30_000 });
+    const sage = drawer.locator('[data-tool="sage"]');
+    await expect(sage.getByRole('heading', { name: 'What do you want to know?' })).toBeVisible();
+    const first = sage.getByRole('button', { name: 'How healthy are the crops on this photo?' });
+    await expect(first).toBeVisible();
+    await expect(sage.getByRole('button', { name: 'Has it rained enough around this farm this season?' })).toBeVisible();
+
+    // one box, at the foot of the column, with a button that sends: nothing to send yet, so it waits
+    const box = sage.getByRole('textbox', { name: 'Ask Sage' });
+    const send = sage.getByRole('button', { name: 'Send to Sage' });
+    await expect(send).toBeDisabled();
+    const [questionAt, boxAt, drawerAt] = [await first.boundingBox(), await box.boundingBox(), await drawer.boundingBox()];
+    expect(questionAt && boxAt && boxAt.y > questionAt.y + questionAt.height).toBe(true);
+    expect(boxAt && drawerAt && drawerAt.y + drawerAt.height - (boxAt.y + boxAt.height) < 40).toBe(true);
+    await box.fill('How big is this photo?');
+    await expect(send).toBeEnabled();
+
+    // nothing here repeats what the drawer already does
+    await expect(sage.getByRole('button', { name: 'Hide chats' })).toHaveCount(0);
+    await expect(sage.getByRole('region', { name: "Sage's answer" })).toHaveCount(0);
+
+    const picture = testInfo.outputPath('sage-start.png');
+    await page.screenshot({ path: picture });
+    await testInfo.attach('sage-start', { path: picture, contentType: 'image/png' });
+  });
+
   test('a closed drawer stays closed after a reload', async ({ page }) => {
     await page.goto(`/project/${PROJECT}?drawer=1`);
     const drawer = page.getByTestId('map-drawer');

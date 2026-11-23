@@ -106,14 +106,72 @@ TC_ICON_MAP = {
     "compute_spectral_index": "satellite",
 }
 
+# One plain line for each step Sage takes, read in the conversation under the question (the chats panel). A step is
+# never shown by its tool's name: a name such as "reverse_geocode_coordinates" tells a reader nothing (Roger,
+# 2026-11-23). Every tool Sage can be offered has a line (src/models/test_tool_step_lines.py); a tool with none
+# reads STEP_LINE_OTHER.
+STEP_LINE_OTHER = "Took a step"
+
 TC_TAGLINE_MAP = {
-    "new_layer_from_postgis": "Creating layer from PostGIS...",
-    "set_layer_style": "Setting layer style...",
-    "add_layer_to_map": "Adding layer to map...",
-    "zoom_to_bounds": "Zooming to bounds...",
-    "search_location": "Searching for location...",
-    "display_satellite_layer": "Loading satellite imagery...",
-    "compute_spectral_index": "Computing spectral index...",
+    "add_land_cover_layer": "Added the land cover map",
+    "add_layer_to_map": "Added a layer to the map",
+    "add_observation": "Saved a note",
+    "analyze_raster_object_candidates": "Looked for objects in the photo",
+    "analyze_rgb_field": "Read the photo's colours",
+    "brain_graph_query": "Searched the notes",
+    "brain_trajectory": "Read the notes over time",
+    "compare_rasters": "Compared two pictures",
+    "compute_spectral_index": "Worked out a satellite index",
+    "compute_zonal_stats": "Measured the picture inside an area",
+    "count_plants_in_plot": "Counted the plants",
+    "create_point_layer": "Added a point to the map",
+    "create_raster_h3_context_layer": "Screened the photo in hexagons",
+    "describe_user_raster": "Read what the picture holds",
+    "detect_dry_spells": "Looked for dry spells",
+    "detect_flood_extent": "Looked for flooding",
+    "display_geojson_layer": "Drew a shape on the map",
+    "display_layer": "Showed a layer on the map",
+    "display_satellite_layer": "Loaded satellite imagery",
+    "evaluate_insurance_trigger": "Checked the insurance trigger",
+    "find_stress_zones": "Looked for stressed patches",
+    "get_agri_indices": "Read the crop indices",
+    "get_anomaly_alerts": "Checked for unusual readings",
+    "get_cell_ndvi_stats": "Read greenness (NDVI) by cell",
+    "get_crop_growth_stage": "Read the crop's growth stage",
+    "get_drone_photo_findings": "Read what was found on the photo",
+    "get_drought_status": "Checked for drought",
+    "get_entity": "Read a note",
+    "get_evapotranspiration": "Read the water plants used",
+    "get_farm_emissions": "Read the farm emission estimates",
+    "get_field_health": "Read the field's health from the satellite",
+    "get_forecast": "Read the weather forecast",
+    "get_forecast_accuracy": "Checked how good forecasts have been",
+    "get_insurance_accuracy": "Checked how accurate the insurance figures are",
+    "get_insurance_intelligence": "Read the season's insurance report",
+    "get_ndvi_stats": "Read greenness (NDVI) by district",
+    "get_parcel_ndvi_stats": "Read greenness (NDVI) by parcel",
+    "get_soil_moisture": "Read soil moisture",
+    "get_soil_properties": "Read the soil's properties",
+    "get_tower_inspection_findings": "Read the tower inspection",
+    "get_value_distribution": "Read how the picture's values spread",
+    "get_weather_stats": "Read the rain and weather record",
+    "get_yield_risk": "Read the yield risk",
+    "interpret_raster_health": "Judged crop health from the picture",
+    "keep_answer_in_words": "Answered in words",
+    "list_admin_units": "Listed the places",
+    "new_layer_from_postgis": "Made a layer from the database",
+    "predict_ndvi_from_sar": "Estimated greenness from radar",
+    "query_worldcover_stats": "Read the land cover",
+    "read_pixel_at": "Read the value at a point",
+    "reverse_geocode_coordinates": "Found which place this is",
+    "search_brain": "Searched the notes",
+    "search_location": "Looked up the place",
+    "search_satellite_imagery": "Searched for satellite images",
+    "set_layer_style": "Changed how a layer looks",
+    "show_admin_boundary": "Showed the place's outline",
+    "show_plants_and_soil_from_satellite": "Read plants and soil from the satellite",
+    "tower_photos_needing_review": "Listed the tower photos still to check",
+    "zoom_to_bounds": "Moved the map",
 }
 
 
@@ -139,7 +197,7 @@ def convert_openai_tool_call_to_sanitized_tool_call(
         code_block = CodeBlock(language="sql", code=args.get("query", ""))
 
     table: dict | None = sanitized_fc_table_from_args(args) if is_catalog_tool else None
-    tagline = TC_TAGLINE_MAP.get(function_name, function_name)
+    tagline = TC_TAGLINE_MAP.get(function_name, STEP_LINE_OTHER)
     icon = TC_ICON_MAP.get(function_name, "wrench")
 
     return SanitizedToolCall(

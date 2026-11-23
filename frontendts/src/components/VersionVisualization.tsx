@@ -12,6 +12,7 @@ import {
   CloudDownload,
   Edit3,
   MapPlus,
+  MessageCircle,
   Minus,
   PanelRightClose,
   Plus,
@@ -23,14 +24,16 @@ import {
   Wrench,
   ZoomIn,
 } from 'lucide-react';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import SyntaxHighlighter from 'react-syntax-highlighter';
 import { dark } from 'react-syntax-highlighter/dist/esm/styles/hljs';
 import remarkGfm from 'remark-gfm';
 import { PANEL_FONT } from '@/components/CardAnswer';
+import { useInDrawer } from '@/components/MapDrawer';
 import { ReportAudienceSelect } from '@/components/ReportAudienceSelect';
-import { Answer } from '@/components/SageReply';
+import { Answer, AnswerRating, Sources } from '@/components/SageReply';
+import { splitSources } from '@/lib/sageReplyText';
 import {
   Conversation,
   EphemeralAction,
@@ -71,13 +74,17 @@ function MessageItem({
   expandedToolCalls,
   setExpandedToolCalls,
   toolResponses,
+  rateOnMap,
 }: {
   message: SanitizedMessage;
   msgIndex: number;
   expandedToolCalls: string[];
   setExpandedToolCalls: (toolCalls: string[]) => void;
   toolResponses: SanitizedToolResponse[];
+  /** The map whose chat this is, when this answer is the one to ask "Was this answer right?" about. */
+  rateOnMap?: string | null;
 }) {
+  const answer = message.role === 'assistant' && message.content ? splitSources(message.content) : null;
   // Create lookup table from toolCall.id to toolStatus
   const toolStatusLookup =
     message.tool_calls?.reduce(
@@ -105,15 +112,20 @@ function MessageItem({
     <>
       <div
         key={msgIndex}
+        data-asked={message.role === 'user' ? '' : undefined}
         className={`text-halfway-sm-xs ${message.role === 'user' ? 'rounded-[14px] bg-raised py-1.5 px-3 max-w-[85%] ml-auto' : 'px-0.5'}`}
       >
         <div className="flex-1 min-w-0 text-[14px] text-fg [&_pre]:max-w-80 [&_pre]:overflow-x-scroll [&_pre]:my-4 [&_pre]:bg-gray-900 [&_pre]:border-gray-500 [&_pre]:border [&_pre]:rounded">
-          {message.role === 'assistant' && message.content ? (
-            <Answer text={message.content} />
+          {answer ? (
+            <>
+              <Answer text={answer.body} />
+              <Sources sources={answer.sources} inChat />
+            </>
           ) : (
             <ReactMarkdown remarkPlugins={[remarkGfm]}>{message.content}</ReactMarkdown>
           )}
         </div>
+        {answer && rateOnMap && message.id != null && <AnswerRating mapId={rateOnMap} messageId={message.id} inChat />}
       </div>
       {message.tool_calls && message.tool_calls.length > 0 && (
         <div>
@@ -122,7 +134,7 @@ function MessageItem({
             return (
               <div key={toolCall.id} className="space-y-1">
                 <div
-                  className={`flex justify-start gap-2 ${toolColorLookup[status]} ${
+                  className={`flex justify-start gap-2 text-[13px] ${toolColorLookup[status]} ${
                     status === 'pending' ? 'animate-pulse' : ''
                   } ${isExpandable(toolCall) ? `cursor-pointer ${toolHoverColorLookup[status]}` : ''}`}
                   onClick={() => {
@@ -192,14 +204,32 @@ interface VersionVisualizationProps {
   farmControls?: boolean; // the report-view selector; agriculture projects only
   /** Hide the panel so the map has the whole width (wide screens; the map shows a "Chats" button to bring it back). */
   onClose?: () => void;
+  /** The one drawer, where this panel is Sage's whole side: what Sage is doing now (SageLive), shown at the end of
+   * the conversation, so a finished answer is on the screen once, in the conversation. */
+  live?: ReactNode;
+  /** Sage is at work on the last question: no answer is asked about until it is done. */
+  busy?: boolean;
+  /** A question just sent that the conversation does not hold yet: shown at once, as the reader's own line. */
+  pendingQuestion?: string | null;
+  /** Questions to start from, offered with no chat open (the one drawer). */
+  starters?: string[];
+  onAsk?: (question: string) => void;
 }
 
+// In the one drawer this panel is Sage's whole side and reads as one conversation, the way chat apps do (Roger,
+// 2026-11-23: people could not work out how to use Sage, and too much asked for the eye at once): with no chat
+// open, questions to start from and the recent chats; with a chat open, its messages with the newest at the end,
+// kept in view, the answer once, with its sources and "Was this answer right?" under it. The question box is the
+// last thing in the column (MapLibreMap).
+//
 // The chats panel: like a chat app's sidebar. With no chat open, "New chat", a search and the recent chats, newest
 // first, one line each, with the map's changes folded away below. With a chat open, its messages as a plain
 // conversation; the map edits made along the way are one quiet line each (Roger, 2026-10-26: the old timeline of
 // avatars and the "Type message and hit enter to chat" button looked unprofessional).
 
 const PENDING_TITLE = 'title pending';
+/** More chats than this and the start screen shows a search (the drawer). */
+const SEARCH_FROM = 6;
 const chatName = (c: Conversation | undefined) => (c?.title && c.title !== PENDING_TITLE ? c.title : 'New chat');
 const PANEL = 'bg-panel text-fg';
 const ROW =
@@ -215,7 +245,13 @@ export default function VersionVisualization({
   conversationsEnabled = true,
   farmControls = true,
   onClose,
+  live,
+  busy = false,
+  pendingQuestion,
+  starters = [],
+  onAsk,
 }: VersionVisualizationProps) {
+  const inDrawer = useInDrawer();
   const queryClient = useQueryClient();
   const [confirmDelete, setConfirmDelete] = useState<number | null>(null);
   const deleteChat = useMutation({
@@ -326,6 +362,64 @@ export default function VersionVisualization({
     );
   };
 
+  // The conversation's last message, in the drawer: when it is Sage's finished answer, "Was this answer right?" is
+  // asked under it (the answer card asks it where the old placing is used).
+  const shown = (mapTree?.tree ?? []).flatMap((n) => getMessagesForMap(n.map_id));
+  const last = shown[shown.length - 1];
+  // not while Sage is at work, and not under words said on the way to a step ("Let me check…")
+  const rated = inDrawer && !busy && last?.role === 'assistant' && last.content && !last.tool_calls?.length ? last : undefined;
+  // The question just sent, until the conversation holds it (the map screen says when that is).
+  const pending = inDrawer ? (pendingQuestion ?? null) : null;
+
+  // What is in view as the conversation grows. 'turn', after a question or on opening a chat: the end, while the
+  // last question and what follows it fit; once they are taller than the column, the question stays at the top
+  // and its answer is read from its first line (an answer that arrives whole would otherwise open at its last
+  // line). 'end': the reader went to the end by hand and stays there as the answer is written. 'off': the reader
+  // scrolled somewhere else and is left there, until they come back to the end or ask again.
+  const scroller = useRef<HTMLDivElement | null>(null);
+  const follow = useRef<'turn' | 'end' | 'off'>('turn');
+  const placed = useRef(0);
+  const grown = useRef<MutationObserver | null>(null);
+  const place = useCallback(() => {
+    const box = scroller.current;
+    if (!box || follow.current === 'off') return;
+    const questions = box.querySelectorAll<HTMLElement>('[data-asked]');
+    const question = questions[questions.length - 1];
+    const end = box.scrollHeight - box.clientHeight;
+    const to = follow.current === 'turn' && question ? Math.min(end, question.offsetTop - 8) : end;
+    box.scrollTop = Math.max(0, to);
+    placed.current = box.scrollTop;
+  }, []);
+  // The conversation's box, each time one is put on the screen (another chat is another box): it starts at its
+  // last turn and is watched for what is added.
+  const watch = useCallback(
+    (box: HTMLDivElement | null) => {
+      grown.current?.disconnect();
+      grown.current = null;
+      scroller.current = box;
+      if (!box) return;
+      follow.current = 'turn';
+      place();
+      if (typeof MutationObserver === 'undefined') return;
+      grown.current = new MutationObserver(place);
+      grown.current.observe(box, { childList: true, subtree: true, characterData: true });
+    },
+    [place],
+  );
+  // A new question is followed again, wherever the reader was.
+  useEffect(() => {
+    if (!pendingQuestion) return;
+    follow.current = 'turn';
+    place();
+  }, [pendingQuestion, place]);
+  // Any move that is not ours is the reader's (wheel, touch, keys, the scroll bar).
+  const movedByReader = () => {
+    const box = scroller.current;
+    if (!box || Math.abs(box.scrollTop - placed.current) <= 2) return;
+    placed.current = box.scrollTop;
+    follow.current = box.scrollHeight - box.scrollTop - box.clientHeight < 40 ? 'end' : 'off';
+  };
+
   const nodeWithMessages = (node: MapNode) => {
     const messages = getMessagesForMap(node.map_id);
     const toolResponses = messages.filter((msg) => msg.role === 'tool' && msg.tool_response).map((msg) => msg.tool_response!);
@@ -340,6 +434,7 @@ export default function VersionVisualization({
             expandedToolCalls={expandedToolCalls}
             setExpandedToolCalls={setExpandedToolCalls}
             toolResponses={toolResponses}
+            rateOnMap={rated && msg === rated ? currentMapId : null}
           />
         ))}
       </div>
@@ -359,12 +454,215 @@ export default function VersionVisualization({
     );
   };
 
-  if (!conversationsEnabled) return null;
+  if (!conversationsEnabled) {
+    if (!inDrawer) return null;
+    // The drawer has no answer card: without this, a question asked while the chats cannot be read would get no
+    // word back, not even what went wrong.
+    return (
+      <div className="flex h-full min-h-0 w-full flex-col gap-3 px-1 pt-1 text-fg" style={{ fontFamily: PANEL_FONT }}>
+        <p className="m-0 px-1.5 text-[14px] text-fg-muted">Your chats could not be loaded. Try again in a moment.</p>
+        {live}
+      </div>
+    );
+  }
 
   const current = conversations.find((c) => c.id === conversationId);
   const query = search.trim().toLowerCase();
   const recent = conversations.filter((c) => chatName(c).toLowerCase().includes(query));
   const working = activeActions.length > 0;
+
+  const recentChats = (
+    <div className={inDrawer ? 'flex flex-col' : 'min-h-0 flex-1 overflow-y-auto px-2.5'} role="list" aria-label="Recent chats">
+      {recent.length === 0 && !inDrawer && (
+        <p className="m-0 px-2.5 py-2 text-[13px] text-fg-subtle">
+          {conversations.length === 0 ? 'No chats yet. Ask Sage below to start one.' : 'No chat matches.'}
+        </p>
+      )}
+      {recent.length === 0 && inDrawer && conversations.length > 0 && (
+        <p className="m-0 px-2.5 py-2 text-[13px] text-fg-subtle">No chat matches.</p>
+      )}
+      {recent.map((c) =>
+        confirmDelete === c.id ? (
+          <div key={c.id} role="listitem" className="flex flex-col gap-2 rounded-[9px] bg-white/[0.06] px-2.5 py-2 text-[13.5px]">
+            <span className="truncate">Delete “{chatName(c)}”?</span>
+            <span className="flex gap-2">
+              <button
+                type="button"
+                disabled={deleteChat.isPending}
+                onClick={() => deleteChat.mutate(c.id)}
+                className="rounded-full bg-[#B23A2E] px-3 py-1 text-[12.5px] font-semibold text-white hover:bg-[#C9473A] disabled:opacity-60 cursor-pointer"
+              >
+                {deleteChat.isPending ? 'Deleting…' : 'Delete'}
+              </button>
+              <button
+                type="button"
+                onClick={() => setConfirmDelete(null)}
+                className="rounded-full px-3 py-1 text-[12.5px] font-semibold text-fg-muted hover:bg-white/[0.06] cursor-pointer"
+              >
+                Cancel
+              </button>
+            </span>
+            {deleteChat.isError && <span className="text-[12.5px] text-[#F08A7E]">{(deleteChat.error as Error).message}</span>}
+          </div>
+        ) : (
+          <div key={c.id} role="listitem" className="group relative">
+            <button
+              type="button"
+              className={`${ROW} justify-between pr-9`}
+              onClick={() => setConversationId(c.id)}
+              title={`${c.message_count} messages`}
+            >
+              <span className="min-w-0 truncate">{chatName(c)}</span>
+              <span className="shrink-0 text-[12px] text-fg-subtle group-hover:hidden">{formatShortRelativeTime(c.updated_at)}</span>
+            </button>
+            <button
+              type="button"
+              aria-label={`Delete “${chatName(c)}”`}
+              title="Delete chat"
+              onClick={() => setConfirmDelete(c.id)}
+              className="absolute right-1.5 top-1/2 hidden size-7 -translate-y-1/2 items-center justify-center rounded-[7px] text-fg-muted hover:bg-white/[0.08] hover:text-[#F08A7E] group-hover:flex focus-visible:flex cursor-pointer"
+            >
+              <Trash2 className="size-4" />
+            </button>
+          </div>
+        ),
+      )}
+    </div>
+  );
+  const searchChats = (
+    <label className="flex items-center gap-2.5 rounded-[9px] bg-raised px-2.5 py-1.5">
+      <Search className="size-4 text-fg-muted" />
+      <input
+        id="chat-search"
+        type="search"
+        value={search}
+        onChange={(e) => setSearch(e.target.value)}
+        placeholder="Search chats"
+        aria-label="Search chats"
+        className="min-w-0 flex-1 bg-transparent text-[14px] text-fg placeholder:text-fg-subtle outline-none"
+      />
+    </label>
+  );
+  const mapChanges = mapTree && mapTree.tree.length > 0 && (
+    <div className={inDrawer ? '' : 'border-t border-white/[0.07] px-2.5 pt-1.5 pb-3'}>
+      <button
+        type="button"
+        className={`${ROW} text-[13px] text-fg-muted`}
+        onClick={() => setChangesOpen((v) => !v)}
+        aria-expanded={changesOpen}
+      >
+        <ChevronRight className={`size-3.5 transition-transform ${changesOpen ? 'rotate-90' : ''}`} />
+        Map changes
+        <span className="ml-auto text-[12px] text-fg-subtle">{mapTree.tree.length}</span>
+      </button>
+      {changesOpen && <div className="max-h-56 overflow-y-auto pl-3">{[...mapTree.tree].reverse().map((n) => editLine(n))}</div>}
+    </div>
+  );
+  const conversation = (
+    <div
+      key={conversationId ?? 'new'}
+      ref={watch}
+      onScroll={movedByReader}
+      className={`relative flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto py-3 ${inDrawer ? 'px-1' : 'px-3'}`}
+    >
+      {displayItems.map((item) =>
+        item.type === 'group'
+          ? changesFolded(item.id, item.nodes)
+          : getMessagesForMap(item.node.map_id).length > 0
+            ? nodeWithMessages(item.node)
+            : // the map as it was made is where every chat starts, not something that happened in this one
+              item.node.diff_from_previous && editLine(item.node),
+      )}
+      {pending && (
+        <div data-asked className="ml-auto max-w-[85%] rounded-[14px] bg-raised px-3 py-1.5 text-[14px] text-fg">
+          {pending}
+        </div>
+      )}
+      {inDrawer
+        ? live
+        : working && (
+            <div className="flex items-center gap-2 px-2.5 py-1.5 text-[13px] text-fg-muted">
+              <Brain className="size-4 animate-pulse text-caramel" /> Sage is working…
+            </div>
+          )}
+    </div>
+  );
+
+  // The one drawer: Sage's whole side, with nothing around it but the drawer's own title and close button.
+  if (inDrawer) {
+    return (
+      <div className="flex h-full min-h-0 w-full flex-col text-fg" style={{ fontFamily: PANEL_FONT }}>
+        {conversationId === null && pending ? (
+          // asked from the start screen: the question is on the screen while its chat is being made
+          <div className="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto px-1 py-3">
+            <div data-asked className="ml-auto max-w-[85%] rounded-[14px] bg-raised px-3 py-1.5 text-[14px] text-fg">
+              {pending}
+            </div>
+            {live}
+          </div>
+        ) : conversationId === null ? (
+          <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto px-1 pt-1 pb-3">
+            {live}
+            {starters.length > 0 && onAsk && (
+              <div className="flex flex-col gap-1.5">
+                <h3 className="m-0 px-1.5 pb-1 text-[16.5px] font-semibold leading-snug">What do you want to know?</h3>
+                {starters.map((question) => (
+                  <button
+                    key={question}
+                    type="button"
+                    disabled={busy}
+                    onClick={() => onAsk(question)}
+                    className="flex min-h-11 items-center gap-2.5 rounded-[12px] border border-white/[0.08] bg-white/[0.03] px-3 py-2 text-left text-[14px] text-fg hover:border-caramel/40 hover:bg-white/[0.06] disabled:opacity-50 cursor-pointer disabled:cursor-default focus-visible:outline-2 focus-visible:outline-caramel"
+                  >
+                    <MessageCircle className="size-4 shrink-0 text-caramel" aria-hidden="true" />
+                    <span className="leading-snug">{question}</span>
+                  </button>
+                ))}
+              </div>
+            )}
+            {conversations.length > 0 && (
+              <div className="flex flex-col gap-1">
+                <h3 className="m-0 px-1.5 text-[12px] font-semibold text-fg-subtle">Recent chats</h3>
+                {/* a search earns its place only once the list is longer than a glance */}
+                {conversations.length > SEARCH_FROM && searchChats}
+                {recentChats}
+              </div>
+            )}
+            <div className="mt-auto flex flex-col gap-1">
+              {/* Farmer, insurer, agronomist, scientist: report views for agriculture projects only (audit R1-28). */}
+              {farmControls && <ReportAudienceSelect label="Answers written for" compact />}
+              {mapChanges}
+            </div>
+          </div>
+        ) : (
+          <>
+            <div className="flex shrink-0 items-center gap-1 border-b border-white/[0.07] pb-1.5">
+              <button
+                type="button"
+                className="flex size-8 shrink-0 items-center justify-center rounded-[8px] text-fg-muted hover:bg-white/[0.06] hover:text-fg cursor-pointer"
+                onClick={() => setConversationId(null)}
+                aria-label="All chats"
+                title="All chats"
+              >
+                <ArrowLeft className="size-4" />
+              </button>
+              <span className="min-w-0 flex-1 truncate text-[14px] font-semibold">{chatName(current)}</span>
+              <button
+                type="button"
+                className="flex size-8 shrink-0 items-center justify-center rounded-[8px] text-caramel hover:bg-white/[0.06] cursor-pointer"
+                onClick={() => setConversationId(null)}
+                aria-label="New chat"
+                title="New chat"
+              >
+                <Plus className="size-4" />
+              </button>
+            </div>
+            {conversation}
+          </>
+        )}
+      </div>
+    );
+  }
 
   return (
     <div className={`z-30 max-h-screen h-full w-full flex flex-col ${PANEL}`} style={{ fontFamily: PANEL_FONT }}>
@@ -378,90 +676,13 @@ export default function VersionVisualization({
               </button>
               {onClose && <CloseButton onClose={onClose} />}
             </div>
-            <label className="flex items-center gap-2.5 rounded-[9px] bg-raised px-2.5 py-1.5">
-              <Search className="size-4 text-fg-muted" />
-              <input
-                id="chat-search"
-                type="search"
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-                placeholder="Search chats"
-                aria-label="Search chats"
-                className="min-w-0 flex-1 bg-transparent text-[14px] text-fg placeholder:text-fg-subtle outline-none"
-              />
-            </label>
+            {searchChats}
             {/* Farmer, insurer, agronomist, scientist: report views for agriculture projects only (audit R1-28). */}
             {farmControls && <ReportAudienceSelect label="Answers written for" compact />}
           </div>
           <div className="px-5 pt-3 pb-1.5 text-[12px] font-semibold text-fg-subtle">Recents</div>
-          <div className="min-h-0 flex-1 overflow-y-auto px-2.5" role="list" aria-label="Recent chats">
-            {recent.length === 0 && (
-              <p className="m-0 px-2.5 py-2 text-[13px] text-fg-subtle">
-                {conversations.length === 0 ? 'No chats yet. Ask Sage below to start one.' : 'No chat matches.'}
-              </p>
-            )}
-            {recent.map((c) =>
-              confirmDelete === c.id ? (
-                <div key={c.id} role="listitem" className="flex flex-col gap-2 rounded-[9px] bg-white/[0.06] px-2.5 py-2 text-[13.5px]">
-                  <span className="truncate">Delete “{chatName(c)}”?</span>
-                  <span className="flex gap-2">
-                    <button
-                      type="button"
-                      disabled={deleteChat.isPending}
-                      onClick={() => deleteChat.mutate(c.id)}
-                      className="rounded-full bg-[#B23A2E] px-3 py-1 text-[12.5px] font-semibold text-white hover:bg-[#C9473A] disabled:opacity-60 cursor-pointer"
-                    >
-                      {deleteChat.isPending ? 'Deleting…' : 'Delete'}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setConfirmDelete(null)}
-                      className="rounded-full px-3 py-1 text-[12.5px] font-semibold text-fg-muted hover:bg-white/[0.06] cursor-pointer"
-                    >
-                      Cancel
-                    </button>
-                  </span>
-                  {deleteChat.isError && <span className="text-[12.5px] text-[#F08A7E]">{(deleteChat.error as Error).message}</span>}
-                </div>
-              ) : (
-                <div key={c.id} role="listitem" className="group relative">
-                  <button
-                    type="button"
-                    className={`${ROW} justify-between pr-9`}
-                    onClick={() => setConversationId(c.id)}
-                    title={`${c.message_count} messages`}
-                  >
-                    <span className="min-w-0 truncate">{chatName(c)}</span>
-                    <span className="shrink-0 text-[12px] text-fg-subtle group-hover:hidden">{formatShortRelativeTime(c.updated_at)}</span>
-                  </button>
-                  <button
-                    type="button"
-                    aria-label={`Delete “${chatName(c)}”`}
-                    title="Delete chat"
-                    onClick={() => setConfirmDelete(c.id)}
-                    className="absolute right-1.5 top-1/2 hidden size-7 -translate-y-1/2 items-center justify-center rounded-[7px] text-fg-muted hover:bg-white/[0.08] hover:text-[#F08A7E] group-hover:flex focus-visible:flex cursor-pointer"
-                  >
-                    <Trash2 className="size-4" />
-                  </button>
-                </div>
-              ),
-            )}
-          </div>
-          {mapTree && mapTree.tree.length > 0 && (
-            <div className="border-t border-white/[0.07] px-2.5 pt-1.5 pb-3">
-              <button
-                type="button"
-                className={`${ROW} text-[13px] text-fg-muted`}
-                onClick={() => setChangesOpen((v) => !v)}
-                aria-expanded={changesOpen}
-              >
-                <ChevronRight className={`size-3.5 transition-transform ${changesOpen ? 'rotate-90' : ''}`} />
-                Map changes
-                <span className="ml-auto text-[12px] text-fg-subtle">{mapTree.tree.length}</span>
-              </button>
-              {changesOpen && <div className="max-h-56 overflow-y-auto pl-3">{[...mapTree.tree].reverse().map((n) => editLine(n))}</div>}
-            </div>
-          )}
+          {recentChats}
+          {mapChanges}
         </>
       ) : (
         <>
@@ -487,20 +708,7 @@ export default function VersionVisualization({
             </button>
             {onClose && <CloseButton onClose={onClose} />}
           </div>
-          <div className="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto px-3 py-3">
-            {displayItems.map((item) =>
-              item.type === 'group'
-                ? changesFolded(item.id, item.nodes)
-                : getMessagesForMap(item.node.map_id).length > 0
-                  ? nodeWithMessages(item.node)
-                  : editLine(item.node),
-            )}
-            {working && (
-              <div className="flex items-center gap-2 px-2.5 py-1.5 text-[13px] text-fg-muted">
-                <Brain className="size-4 animate-pulse text-caramel" /> Sage is working…
-              </div>
-            )}
-          </div>
+          {conversation}
         </>
       )}
     </div>

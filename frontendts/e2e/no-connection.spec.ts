@@ -56,7 +56,7 @@ test('requests that never arrive are said in plain words, in Sage too', async ({
   // the browser still believes it is online, as a phone with one bar does: nothing gets through
   await page.route('**/*', (route) => route.abort('internetdisconnected'));
   await tools(page).getByRole('button', { name: 'Sage' }).click();
-  const ask = page.getByPlaceholder(/Ask Sage/).last();
+  const ask = page.getByRole('textbox', { name: 'Ask Sage', exact: true }); // Sage's own box, not the cards'
   await ask.fill('How healthy is this field?');
   await ask.press('Enter');
 
@@ -76,7 +76,7 @@ test('a gateway error is a plain line with its number', async ({ page }, testInf
     route.fulfill({ status: 502, contentType: 'text/html', body: '<html><h1>502 Bad Gateway</h1></html>' }),
   );
   await tools(page).getByRole('button', { name: 'Sage' }).click();
-  const ask = page.getByPlaceholder(/Ask Sage/).last();
+  const ask = page.getByRole('textbox', { name: 'Ask Sage', exact: true }); // Sage's own box, not the cards'
   await ask.fill('How healthy is this field?');
   await ask.press('Enter');
 
