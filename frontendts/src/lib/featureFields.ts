@@ -2,8 +2,10 @@
 // property names, and internal fields hidden.
 
 // 'older' only tells the map to draw a satellite hexagon in grey, and 'reading' is the number it writes on a soil
-// moisture hexagon; the hexagon's note and its moisture say both in words.
+// moisture hexagon; the hexagon's note and its moisture say both in words. 'band' named the blue a soil moisture
+// hexagon was once drawn in; it is drawn in one ink now, and the figure says it.
 const HIDDEN_FIELDS = new Set([
+  'band',
   'h3_index',
   'screening_model',
   'analysis_goal',
@@ -49,7 +51,7 @@ const LABELS: Record<string, string> = {
   h3_resolution: 'Hexagon size',
   // hexagons of the satellite view (src/services/satellite_view.py)
   ndvi: 'NDVI (greenness, -1 to 1)',
-  weakest: 'Its weakest square (NDVI)',
+  weakest: 'Its weakest square',
   moisture: 'Soil moisture (%)',
   band: 'Range',
   period: 'Ten days',
@@ -75,7 +77,8 @@ function humanize(key: string): string {
 function formatValue(key: string, value: unknown): string {
   if (key === 'h3_resolution') {
     const res = Number(value);
-    return H3_AREA[res] ? `${H3_AREA[res]} (H3 resolution ${res})` : String(value);
+    // the size a reader can picture; the grid's own number for it means nothing to them
+    return H3_AREA[res] ?? String(value);
   }
   if (key === 'risk_level' && typeof value === 'string') return humanize(value);
   if (typeof value === 'boolean') return value ? 'Yes' : 'No';
@@ -92,4 +95,38 @@ export function featureFieldRows(properties: Record<string, unknown>): FeatureFi
   return Object.entries(properties)
     .filter(([key]) => !HIDDEN_FIELDS.has(key) && !ENRICHED_PREFIXES.some((p) => key.startsWith(p)))
     .map(([key, value]) => ({ key, label: LABELS[key] ?? humanize(key), value: formatValue(key, value) }));
+}
+
+/** What was tapped, when it is one reading: the figure, what it measures, what the figure means and when it is for. */
+export interface FeatureReading {
+  value: string;
+  label: string;
+  /** The reading in words ("Cropland or moderate vegetation"). */
+  means?: string;
+  /** The day or days it is for ("seen 19 Nov 2026", "1-10 Nov 2026"). */
+  when?: string;
+  /** The properties the reading already says: left out of the rows under it. */
+  said: string[];
+}
+
+/** The reading a tapped hexagon of the satellite view leads with (src/services/satellite_view.py); null for
+ * anything else, which is read as rows. A hexagon is known by its size being there: a district or a plot that
+ * only happens to hold columns called ndvi and seen_on keeps all its rows. */
+export function featureReading(properties: Record<string, unknown>): FeatureReading | null {
+  if (properties.h3_resolution === undefined) return null;
+  const text = (key: string) => (typeof properties[key] === 'string' && properties[key] ? (properties[key] as string) : undefined);
+  if (typeof properties.ndvi === 'number' && (text('plants') || text('seen_on'))) {
+    const seen = text('seen_on');
+    return {
+      value: properties.ndvi.toFixed(2),
+      label: 'NDVI',
+      means: text('plants'),
+      when: seen ? `seen ${seen}` : undefined,
+      said: ['ndvi', 'plants', 'seen_on'],
+    };
+  }
+  if (typeof properties.moisture === 'number' && text('period')) {
+    return { value: `${Math.round(properties.moisture)}%`, label: 'Soil moisture', when: text('period'), said: ['moisture', 'period'] };
+  }
+  return null;
 }

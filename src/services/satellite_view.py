@@ -1230,10 +1230,12 @@ YEAR_PLACE_WORDS = {"low": "near the bottom", "middle": "in the middle", "high":
 
 
 def plants_facts(plants: Plants, today: date) -> dict[str, Any]:
-    """The plants picture in numbers and sentences: {"sentences", "parts", "direction", "median", "classes", "seen_said",
-    "days"}. "seen_said" is each day's share in words, largest first ("66% on 19 Nov"), as the "seen" sentence lists them.
-    "parts" names each sentence ("covered", "seen", "older", "newer", "haze", "greenness", "change"; only those said), so a
-    surface with little room can say some of them in the same words."""
+    """The plants picture in numbers and sentences: {"sentences", "parts", "care", "direction", "median", "classes",
+    "seen_said", "days"}. "seen_said" is each day's share in words, largest first ("66% on 19 Nov"), as the "seen" sentence
+    lists them. "parts" names each sentence ("covered", "seen", "older", "newer", "haze", "greenness", "change"; only those
+    said), so a surface with little room can say some of them in the same words. "care" is the sentences among them a
+    reader must not miss even in a short answer: ground no pass saw, a look weeks older or newer than the main one, haze.
+    "short" is "greenness" and "change" as one line, in the same numbers."""
     known = plants.seen > 0
     total = int(known.sum())
     days, counts = np.unique(plants.seen[known], return_counts=True)
@@ -1274,6 +1276,7 @@ def plants_facts(plants: Plants, today: date) -> dict[str, Any]:
     median = middle_ndvi(plants)
     parts["greenness"] = f"By greenness (NDVI): {_list(said)}. The middle square reads {median:.2f}."
     direction = None
+    short = f"NDVI {median:.2f} in the middle square"
     if plants.change is not None:
         moved = plants.change.median
         direction = "steady" if abs(moved) < STEADY else ("rose" if moved > 0 else "fell")
@@ -1281,28 +1284,42 @@ def plants_facts(plants: Plants, today: date) -> dict[str, Any]:
                "fell": f"fell by {abs(moved):.2f}"}[direction]
         parts["change"] = (f"On the squares seen {_day_words(plants.change.now, today)}, NDVI {how} since "
                            f"{_day_words(plants.change.before, today)}.")
-    return {"sentences": list(parts.values()), "parts": parts, "direction": direction, "median": round(median, 2),
+        short += f"; it {how} since {_day_words(plants.change.before, today)}"
+    # the shares are the whole photo's, so they are said apart from the middle square's figure
+    short += f". Across the photo: {_list(said)}"
+    care = [parts[name] for name in ("older", "newer", "haze") if name in parts]
+    if plants.covered < 0.999:
+        care.insert(0, parts["covered"])
+    return {"sentences": list(parts.values()), "parts": parts, "short": short + ".", "care": care, "direction": direction,
+            "median": round(median, 2),
             "classes": classes, "seen_said": shown,
             "days": [{"day": day.isoformat(), "share": round(share, 3)} for day, share in by_day]}
 
 
 def soil_facts(soil: Soil, today: date) -> dict[str, Any]:
-    """The soil moisture reading in numbers and sentences: {"sentences", "parts", "position", "median", "low",
-    "high"}. "parts" names each sentence ("reading", "year", "first", "limits"; only those said)."""
+    """The soil moisture reading in numbers and sentences: {"sentences", "parts", "care", "position", "median", "low",
+    "high"}. "parts" names each sentence ("reading", "year", "first", "limits"; only those said). "care" is "first" and
+    "limits" in one short sentence, for an answer with little room, and "short" is "reading" and "year" as one line, in the
+    same numbers."""
     median, low, high = soil_spread(soil)
     words = period_words(soil.period, today)
     parts = {"reading": f"Soil moisture for {words} (FAO WaPOR estimate, {SOIL_SQUARE_M} m squares): the middle square "
                         f"reads {median:.0f}%, from {low:.0f}% to {high:.0f}% across the photo."}
     position = soil_year_place(soil)
+    short = f"{median:.0f}% for {words}, from {low:.0f}% to {high:.0f}% across the photo"
     if position is not None:
         where = YEAR_PLACE_WORDS[position]
+        short += f"; {where} of its own year"
         parts["year"] = (f"At the photo's centre it reads {soil.centre:.0f}%; over the year before it ran from "
                          f"{soil.year_low:.0f}% to {soil.year_high:.0f}%, so it is {where} of its own year.")
     if soil.first_estimate:
         parts["first"] = "This is FAO's first estimate; FAO replaces it with a steadier one about two months later."
     parts["limits"] = ("It follows Rwanda's wet and dry seasons but was not confirmed against rain week by week "
                        "(tested 2026-11-23): read it as the season's level, not a precise reading.")
-    return {"sentences": list(parts.values()), "parts": parts, "position": position, "median": round(median, 1),
+    care = ("Soil moisture is FAO's first estimate: read it as the season's level, not a precise reading."
+            if soil.first_estimate else "Read soil moisture as the season's level, not a precise reading.")
+    return {"sentences": list(parts.values()), "parts": parts, "short": short + ".", "care": care, "position": position,
+            "median": round(median, 1),
             "low": round(low, 1), "high": round(high, 1)}
 
 

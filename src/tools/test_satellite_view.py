@@ -84,13 +84,41 @@ async def test_both_layers_go_on_the_map_and_the_answer_says_plants_soil_and_the
                              ("Adding Soil moisture - Cyampirita_Orthophoto", "Lsoil", True)]
     assert result["together"] == "Plants are filling in and the soil reads near the top of its year: the rains are carrying the crop."
     assert [layer["kind"] for layer in result["layers"]] == [satellite_layers.PLANTS_KIND, satellite_layers.SOIL_KIND]
-    said = tool.reply(result)
-    assert said.startswith("Here is what the satellites show over Cyampirita_Orthophoto.\n\n**Plants.** Every 10 m square")
-    assert "**Soil moisture.** Soil moisture for 1-10 Nov (FAO WaPOR estimate, 100 m squares)" in said
-    assert "**Together.** Plants are filling in" in said
-    assert said.endswith('Two layers are on the map, each with its own switch: "Plants (NDVI) - Cyampirita_Orthophoto" '
-                         'and "Soil moisture - Cyampirita_Orthophoto". Zoom in and the hexagons get smaller, to show where a '
-                         'weak patch sits; tap a hexagon for its NDVI and its date and tap a soil moisture number for its reading.')
+    # the answer: what the two say together first, three short points, the sources; in the view's own numbers
+    assert tool.reply(result) == (
+        "**Plants are filling in and the soil reads near the top of its year: the rains are carrying the crop.**\n\n"
+        "- **Plants:** NDVI 0.55 in the middle square; it rose by 0.24 since 8 Oct. Across the photo: 100% cropland or "
+        "moderate vegetation.\n"
+        "- **Soil moisture:** 65% for 1-10 Nov, from 62% to 68% across the photo; near the top of its own year.\n"
+        "- **Read with care:** Soil moisture is FAO's first estimate: read it as the season's level, not a precise reading.\n\n"
+        "Both are on the map, each with its own switch: tap a hexagon for its NDVI and its date and tap a soil moisture "
+        "figure for its reading.\n\n"
+        "Sources: Sentinel-2, 10 m squares · FAO WaPOR, 100 m squares")
+
+
+def test_the_short_answer_is_a_fraction_of_every_sentence_and_keeps_what_must_not_be_missed():
+    """Roger, 2026-11-23: three dense paragraphs lost the reader."""
+    said = sv.words(_view())
+    result = {"status": "success", "photo": "Cyampirita_Orthophoto", **said, "layers": [], "not_drawn": []}
+    everything = " ".join(said["plants"]["sentences"] + said["soil"]["sentences"] + [said["together"]])  # the first answer
+    assert len(tool.reply(result).split()) < 0.75 * len(everything.split())
+    # a look weeks older and a hazy corner: said still, in the view's own sentences
+    said["plants"]["care"] = ["34% of the photo holds an older look, drawn in grey: clouds hid it on 19 Nov, so it must not "
+                              "be read against the fresh part.", "2% was only seen through haze and may read low."]
+    answer = tool.reply(result)
+    points = answer.split("\n\n")[1].split("\n")
+    assert [point.split(":**")[0] for point in points] == ["- **Plants", "- **Soil moisture", "- **Read with care"]
+    assert "- **Read with care:** 34% of the photo holds an older look, drawn in grey" in answer
+    assert "2% was only seen through haze and may read low." in answer
+    # with nothing said together, the first line is still a finding, not a greeting
+    result["together"] = None
+    assert tool.reply(result).startswith("**The middle square of Cyampirita_Orthophoto reads NDVI 0.55.**\n\n- **Plants:**")
+    result["plants"] = None
+    assert tool.reply(result).startswith("**Soil moisture under Cyampirita_Orthophoto reads 65%.**\n\n- **Soil moisture:**")
+    assert tool.reply(result).endswith("Sources: FAO WaPOR, 100 m squares")
+    # a layer of a kind with nothing to tap is still named, in a whole sentence
+    result["layers"] = [{"layer_id": "L9", "name": "Another layer", "kind": "something_new"}]
+    assert 'The layer "Another layer" is on the map.\n\nSources:' in tool.reply(result)
 
 
 @pytest.mark.anyio
@@ -107,9 +135,10 @@ async def test_one_missing_part_is_said_in_plain_words_and_the_other_still_comes
     result = await _ask()
     assert result["status"] == "success" and result["soil"] is None and result["together"] is None
     said = tool.reply(result)
-    assert "FAO's soil moisture file could not be read just now." in said and "**Soil moisture.**" not in said
-    assert said.endswith('The layer "Plants (NDVI) - Cyampirita_Orthophoto" is on the map. Zoom in and the hexagons get '
-                         'smaller; tap a hexagon for its NDVI and its date.')
+    assert "- **Read with care:** FAO's soil moisture file could not be read just now." in said
+    assert "**Soil moisture:**" not in said
+    assert said.endswith('The layer "Plants (NDVI) - Cyampirita_Orthophoto" is on the map: tap a hexagon for its NDVI and '
+                         'its date.\n\nSources: Sentinel-2, 10 m squares')
 
 
 @pytest.mark.anyio

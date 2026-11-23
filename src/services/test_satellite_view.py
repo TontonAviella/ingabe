@@ -1067,3 +1067,31 @@ def test_what_is_worked_out_is_filed_under_the_stamp_of_the_view_it_came_from(ni
     seen, stamp = sv._ready(key)
     assert seen is not None and stamp == _kept_file(tmp_path).stat().st_mtime == sv._views[key][1]
     assert sv._ready(sv._key([29.0, -2.0, 29.01, -1.99])) == (None, 0.0)
+
+
+def test_the_one_line_forms_say_the_sentences_own_numbers_and_care_keeps_the_cautions():
+    """A short answer (Sage's) says "short" and "care"; a full one (the card) says every sentence. The numbers are the
+    same ones."""
+    # a third of the photo last seen a month ago, a corner through haze, and greener than six weeks before
+    ndvi = [[0.2, 0.5, 0.5], [0.65, 0.5, 0.5]]
+    days = [[4, 4, 35], [4, 4, 35]]
+    haze = [[True, False, False], [False, False, False]]
+    plants = sv.plants_facts(_plants(ndvi, days, sv.Change(TODAY, date(2026, 10, 8), 0.2, 70), haze), TODAY)
+    assert plants["short"] == ("NDVI 0.50 in the middle square; it rose by 0.20 since 8 Oct. Across the photo: 17% dense "
+                               "vegetation, 67% cropland or moderate vegetation and 17% sparse vegetation.")
+    # with no earlier look to compare, the figure and the shares alone
+    assert sv.plants_facts(_plants(ndvi, days, None, haze), TODAY)["short"].startswith("NDVI 0.50 in the middle square. Across the photo: ")
+    assert "The middle square reads 0.50." in plants["parts"]["greenness"]
+    assert "NDVI rose by 0.20 since 8 Oct." in plants["parts"]["change"]
+    assert plants["care"] == [plants["parts"]["older"], plants["parts"]["haze"]]
+    # ground no pass saw is a caution too, said first
+    patchy = sv.plants_facts(_plants(ndvi, [[4, 4, -1], [4, 4, -1]]), TODAY)
+    assert patchy["care"] == [patchy["parts"]["covered"]] and patchy["care"][0].startswith("67% of this photo has a clear")
+    assert sv.plants_facts(_plants(ndvi, [[4] * 3] * 2), TODAY)["care"] == []  # all seen, one day, no haze: nothing to add
+    soil = sv.soil_facts(_soil(), TODAY)
+    assert soil["short"] == "68% for 1-10 Nov, from 62% to 76% across the photo; near the top of its own year."
+    assert "reads 68%, from 62% to 76% across the photo" in soil["parts"]["reading"]
+    assert "near the top of its own year" in soil["parts"]["year"]
+    assert sv.soil_facts(_soil(centre=None), TODAY)["short"] == "68% for 1-10 Nov, from 62% to 76% across the photo."
+    assert sv.soil_facts(_soil(first=False), TODAY)["care"] == "Read soil moisture as the season's level, not a precise reading."
+    assert "season's level, not a precise reading" in soil["care"] and "season's level, not a precise reading" in soil["parts"]["limits"]

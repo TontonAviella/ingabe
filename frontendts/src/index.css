@@ -365,44 +365,58 @@
 .drone-card-popup.maplibregl-popup-anchor-left .maplibregl-popup-tip { border-right-color: var(--color-panel); }
 .drone-card-popup.maplibregl-popup-anchor-right .maplibregl-popup-tip { border-left-color: var(--color-panel); }
 
-/* Close-look bubbles: a round picture pinned to the place it shows (CloseLookBubbles). */
+/* Close-look marks: a small numbered dot on the place a close look was taken (CloseLookBubbles). The picture is not
+   on the map: it shows over the dot while a pointer rests on it, and in the card a tap opens. Roger, 2026-11-23:
+   ten round pictures 46 px wide, each with a badge and a tail, hid what they were pinned to and looked immature. */
 .close-look-bubble {
   position: relative;
-  width: 46px;
-  height: 46px;
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
   padding: 0;
   border-radius: 50%;
-  border: 2px solid var(--color-caramel);
-  background: var(--color-panel);
-  box-shadow: 0 4px 14px rgb(0 0 0 / 0.5);
+  border: 1.5px solid var(--color-caramel);
+  background: color-mix(in srgb, var(--color-panel) 90%, transparent);
+  box-shadow: 0 2px 8px rgb(0 0 0 / 0.45);
   cursor: pointer;
   overflow: visible;
+  transition: background-color 0.12s, border-color 0.12s;
 }
-.close-look-bubble::after {
+/* a close look with nothing to count: a dot in the ring */
+.close-look-bubble:not(:has(.close-look-badge))::before {
   content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--color-caramel);
+}
+.close-look-bubble img {
   position: absolute;
   left: 50%;
-  bottom: -8px;
-  transform: translateX(-50%);
-  border: 6px solid transparent;
-  border-top: 7px solid var(--color-caramel);
-  border-bottom: 0;
+  bottom: calc(100% + 8px);
+  width: 96px;
+  height: 96px;
+  max-width: none;
+  border-radius: 12px;
+  border: 1px solid rgb(255 255 255 / 0.14);
+  box-shadow: 0 8px 24px rgb(0 0 0 / 0.5);
+  object-fit: cover;
+  opacity: 0;
+  transform: translateX(-50%) scale(0.92);
+  transform-origin: bottom center;
+  pointer-events: none;
+  transition: opacity 0.12s, transform 0.12s;
 }
-.close-look-bubble img { width: 100%; height: 100%; border-radius: 50%; object-fit: cover; display: block; }
-.close-look-bubble:hover, .close-look-bubble:focus-visible { border-color: var(--color-fg); outline: none; transform: scale(1.08); }
+.close-look-bubble:hover, .close-look-bubble:focus-visible { background: var(--color-caramel); border-color: var(--color-fg); outline: none; z-index: 2; }
+.close-look-bubble:focus-visible { outline: 2px solid var(--color-fg); outline-offset: 2px; }
+.close-look-bubble:hover img, .close-look-bubble:focus-visible img { opacity: 1; transform: translateX(-50%) scale(1); }
 .close-look-badge {
-  position: absolute;
-  top: -6px;
-  right: -6px;
-  min-width: 18px;
-  height: 18px;
-  padding: 0 4px;
-  border-radius: 9px;
-  background: var(--color-caramel);
-  color: var(--color-canvas);
-  font: 800 11px/18px -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
-  text-align: center;
+  color: var(--color-fg);
+  font: 700 11px/1 -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+  font-variant-numeric: tabular-nums;
 }
+.close-look-bubble:hover .close-look-badge, .close-look-bubble:focus-visible .close-look-badge { color: var(--color-canvas); }
 .close-look-popup .maplibregl-popup-content {
   background: var(--color-panel);
   color: var(--color-fg);
