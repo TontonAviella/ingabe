@@ -1205,6 +1205,30 @@ def _list(parts: Sequence[str]) -> str:
     return parts[0] if len(parts) == 1 else ", ".join(parts[:-1]) + " and " + parts[-1]
 
 
+def middle_ndvi(plants: Plants) -> float:
+    """The NDVI of the photo's middle square: the median of every square with a clear look. The sentences and the
+    map's key say this one number."""
+    return float(np.median(plants.ndvi[plants.seen > 0]))
+
+
+def soil_spread(soil: Soil) -> tuple[float, float, float]:
+    """(middle, lowest, highest) soil moisture across the photo's squares, in percent."""
+    values = soil.percent[np.isfinite(soil.percent)]
+    return float(np.median(values)), float(values.min()), float(values.max())
+
+
+def soil_year_place(soil: Soil) -> Optional[str]:
+    """Where the reading at the photo's centre sits in its own last year: "low", "middle" or "high" (thirds of the
+    year's range); None when the year is not known."""
+    if soil.centre is None or soil.year_low is None or soil.year_high is None or soil.year_high <= soil.year_low:
+        return None
+    place = (soil.centre - soil.year_low) / (soil.year_high - soil.year_low)
+    return "low" if place < 1 / 3 else ("high" if place > 2 / 3 else "middle")
+
+
+YEAR_PLACE_WORDS = {"low": "near the bottom", "middle": "in the middle", "high": "near the top"}
+
+
 def plants_facts(plants: Plants, today: date) -> dict[str, Any]:
     """The plants picture in numbers and sentences: {"sentences", "parts", "direction", "median", "classes", "seen_said",
     "days"}. "seen_said" is each day's share in words, largest first ("66% on 19 Nov"), as the "seen" sentence lists them.
@@ -1247,7 +1271,7 @@ def plants_facts(plants: Plants, today: date) -> dict[str, Any]:
         share = float(((values >= cls.min_ndvi) & (values < upper)).sum() / total)
         classes.append({"key": cls.key, "label": ndvi_classes.ground_label(cls), "share": share})
     said = [f"{_percent(c['share'])} {c['label'].lower()}" for c in reversed(classes) if c["share"] > 0]
-    median = float(np.median(values))
+    median = middle_ndvi(plants)
     parts["greenness"] = f"By greenness (NDVI): {_list(said)}. The middle square reads {median:.2f}."
     direction = None
     if plants.change is not None:
@@ -1265,16 +1289,13 @@ def plants_facts(plants: Plants, today: date) -> dict[str, Any]:
 def soil_facts(soil: Soil, today: date) -> dict[str, Any]:
     """The soil moisture reading in numbers and sentences: {"sentences", "parts", "position", "median", "low",
     "high"}. "parts" names each sentence ("reading", "year", "first", "limits"; only those said)."""
-    values = soil.percent[np.isfinite(soil.percent)]
-    median, low, high = float(np.median(values)), float(values.min()), float(values.max())
+    median, low, high = soil_spread(soil)
     words = period_words(soil.period, today)
     parts = {"reading": f"Soil moisture for {words} (FAO WaPOR estimate, {SOIL_SQUARE_M} m squares): the middle square "
                         f"reads {median:.0f}%, from {low:.0f}% to {high:.0f}% across the photo."}
-    position = None
-    if soil.centre is not None and soil.year_low is not None and soil.year_high is not None and soil.year_high > soil.year_low:
-        place = (soil.centre - soil.year_low) / (soil.year_high - soil.year_low)
-        position = "low" if place < 1 / 3 else ("high" if place > 2 / 3 else "middle")
-        where = {"low": "near the bottom", "middle": "in the middle", "high": "near the top"}[position]
+    position = soil_year_place(soil)
+    if position is not None:
+        where = YEAR_PLACE_WORDS[position]
         parts["year"] = (f"At the photo's centre it reads {soil.centre:.0f}%; over the year before it ran from "
                          f"{soil.year_low:.0f}% to {soil.year_high:.0f}%, so it is {where} of its own year.")
     if soil.first_estimate:
