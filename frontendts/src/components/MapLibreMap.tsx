@@ -120,7 +120,22 @@ async function createAgriIndicesLayer(layerId: string, geojsonUrl: string) {
 }
 
 import { bbox } from '@turf/turf';
-import { Activity, Brain, Database, Eye, EyeOff, History, Layers3, MousePointerClick, PanelRightOpen, Send, X, ZoomIn } from 'lucide-react';
+import {
+  Activity,
+  ArrowUp,
+  Brain,
+  Database,
+  Eye,
+  EyeOff,
+  History,
+  Layers3,
+  MousePointerClick,
+  PanelRightOpen,
+  Send,
+  Square,
+  X,
+  ZoomIn,
+} from 'lucide-react';
 import {
   AJAXError,
   type LayerSpecification,
@@ -153,6 +168,8 @@ import VersionVisualization from '@/components/VersionVisualization';
 import { featureFieldRows } from '@/lib/featureFields';
 import { inspectionPhotoUrl } from '@/lib/inspectionPhoto';
 import { addScale } from '@/lib/mapScale';
+import { type PendingQuestion, pendingText, questionsHeld } from '@/lib/sagePending';
+import { sageStarters } from '@/lib/sageStarters';
 import { drawnAtZoom } from '@/lib/tappedFeature';
 import { useIsMobile } from '../hooks/use-mobile';
 import { createAnalyticsTurnId, track, trackDuration, trackError } from '../lib/analytics';
@@ -173,7 +190,7 @@ import type {
 } from '../lib/types';
 import type { MobileWorkspacePanel } from '../lib/workspacePanels';
 import { toggleMobileWorkspacePanel } from '../lib/workspacePanels';
-import { type SageLink, SageReply } from './SageReply';
+import { type SageLink, SageLive, SageReply, sageWorking } from './SageReply';
 
 const EMPTY_POINT_CLOUD_LAYERS: MapLayer[] = [];
 
@@ -1613,6 +1630,10 @@ export default function MapLibreMap({
   }, [pointsGeoJSON]);
 
   const [inputValue, setInputValue] = useState('');
+  // The question just sent, shown in the conversation at once (the drawer): the server's copy comes a moment later.
+  // It is the reader's line until the conversation gains a question: `after` is how many it held when this was sent.
+  const [pendingQuestion, setPendingQuestion] = useState<PendingQuestion | null>(null);
+  const held = questionsHeld(mapTree);
   const readyStateRef = useRef<number>(readyState);
 
   useEffect(() => {
@@ -1638,6 +1659,7 @@ export default function MapLibreMap({
     });
 
     setInputValue(''); // Clear input after preparing to send
+    setPendingQuestion({ text: trimmedText, after: held });
 
     const userMessage: ChatCompletionUserMessageParam = {
       role: 'user',
@@ -1756,12 +1778,14 @@ export default function MapLibreMap({
           http_status: response.status,
         });
         addError('Your session has expired. Please refresh the page to continue chatting.', true);
+        setPendingQuestion(null);
         return;
       } else {
         // the server's own words, or a plain line with the status (never a gateway's "Bad Gateway")
         throw await serverError(response);
       }
     } catch (error) {
+      setPendingQuestion(null); // it was not sent: the box says why, and the question is not shown as asked
       const msg = error instanceof Error ? error.message : 'Network error';
       trackError('sage_message_send_failed', error, {
         project_id: project.id,
@@ -1792,6 +1816,8 @@ export default function MapLibreMap({
 
   // Handle input submission
   const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    // with the one drawer the box is a form: Enter submits it, like its send button
+    if (oneDrawer) return;
     if (e.key === 'Enter' && inputValue.trim()) {
       sendMessage(inputValue);
       setInputValue('');
@@ -1850,6 +1876,12 @@ export default function MapLibreMap({
     errors: criticalErrors,
     send: sendMessage,
   };
+
+  const sageBusy = sageWorking(sageLink.waiting, streamingText, activeActions, criticalErrors);
+  const photoOnMap = (mapData?.layers ?? []).some((l) => l.type === 'raster');
+  // In the drawer the column is narrow and its title already says Sage: the words must fit beside the button.
+  const askAbout = farmProject ? 'this photo, a plot or a place…' : 'this photo, the map or a place…';
+  const askPlaceholder = conversationId !== null ? 'Continue this chat…' : `${oneDrawer ? 'Ask about' : 'Ask Sage about'} ${askAbout}`;
 
   // A camera point of a photo inspection shows its photo in the feature panel.
   const selectedPhotoUrl = selectedFeature ? inspectionPhotoUrl(selectedFeature.source, selectedFeature.properties) : null;
@@ -2098,17 +2130,16 @@ export default function MapLibreMap({
             </CardContent>
           </Card>
         )}
-        {/* Sage's answer steps aside only while a field is being outlined: with "Hide panels" it stays, since a
-            question asked about a field still needs its answer seen */}
-        <div className={!oneDrawer && tappingField ? 'hidden' : 'contents'}>
-          <ToolSlot tool="sage">
+        {/* Without the drawer: Sage's answer is a card over the map. It steps aside only while a field is being
+            outlined: with "Hide panels" it stays, since a question asked about a field still needs its answer seen.
+            With the one drawer there is no card: the answer is read in the conversation, once. */}
+        {!oneDrawer && (
+          <div className={tappingField ? 'hidden' : 'contents'}>
             <SageReply
               reply={lastAssistantMsg}
-              replyMessageId={lastMsg && lastMsg.role === 'assistant' ? lastMsg.id : undefined}
+              replyMessageId={sageLink.replyMessageId}
               mapId={mapId}
-              waiting={
-                !!lastMsg && (lastMsg.role === 'user' || lastMsg.role === 'tool' || (lastMsg.role === 'assistant' && !lastMsg.content))
-              }
+              waiting={sageLink.waiting}
               streamingText={streamingText}
               actions={activeActions}
               errors={criticalErrors}
@@ -2119,25 +2150,69 @@ export default function MapLibreMap({
               actionIcon={getActionIcon}
               centered={chatsHidden}
             />
+          </div>
+        )}
+        {oneDrawer ? (
+          // The question box is the last thing in Sage's column, as in every chat: Enter or the button sends, and
+          // while Sage works the same button stops it.
+          <ToolSlot tool="sage">
+            <form
+              className="order-last flex min-h-12 w-full shrink-0 items-center rounded-[18px] border border-white/10 bg-panel pr-1.5 focus-within:border-caramel/60"
+              onSubmit={(e) => {
+                e.preventDefault();
+                if (inputValue.trim()) void sendMessage(inputValue);
+              }}
+            >
+              <Input
+                className="flex-1 h-12 border-none shadow-none !bg-transparent px-4 text-[15px] text-fg placeholder:text-fg-subtle focus:!ring-0 focus:!ring-offset-0 focus-visible:!ring-0 focus-visible:!ring-offset-0 focus-visible:!outline-none"
+                placeholder={askPlaceholder}
+                aria-label="Ask Sage"
+                value={inputValue}
+                onChange={(e) => setInputValue(e.target.value)}
+              />
+              {selectedFeature && (
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <span onClick={() => selectFeature(null)} className="px-2 hover:cursor-pointer text-gray-400 hover:text-gray-200">
+                      <MousePointerClick className="h-6 w-6 inline-block" />
+                    </span>
+                  </TooltipTrigger>
+                  <TooltipContent>
+                    <p>Sage can see your selected feature</p>
+                  </TooltipContent>
+                </Tooltip>
+              )}
+              {sageBusy ? (
+                <button
+                  type="button"
+                  aria-label={isCancelling ? 'Stopping Sage' : 'Stop Sage'}
+                  title={isCancelling ? 'Stopping…' : 'Stop'}
+                  disabled={isCancelling}
+                  onClick={() => setIsCancelling(true)}
+                  className="flex size-9 shrink-0 items-center justify-center rounded-full bg-raised text-fg hover:bg-white/[0.12] disabled:opacity-50 cursor-pointer disabled:cursor-default"
+                >
+                  <Square className="size-3.5 fill-current" aria-hidden="true" />
+                </button>
+              ) : (
+                <button
+                  type="submit"
+                  aria-label="Send to Sage"
+                  title="Send"
+                  disabled={!inputValue.trim()}
+                  className="flex size-9 shrink-0 items-center justify-center rounded-full bg-caramel text-panel hover:bg-caramel-hi disabled:opacity-40 cursor-pointer disabled:cursor-default"
+                >
+                  <ArrowUp className="size-4" aria-hidden="true" />
+                </button>
+              )}
+            </form>
           </ToolSlot>
-        </div>
-        <ToolSlot tool="sage">
+        ) : (
           <div
-            className={
-              oneDrawer
-                ? 'order-first flex min-h-12 w-full shrink-0 items-center rounded-[18px] border border-white/10 bg-panel focus-within:border-caramel/60'
-                : `z-30 absolute bottom-12 left-1/2 ${chatsHidden ? '' : 'xl:left-3/5'} transform -translate-x-1/2 w-[calc(100%-1rem)] sm:w-4/5 max-w-[34rem] ${mapClear ? 'hidden' : 'flex'} items-center min-h-12 rounded-[18px] border border-white/10 bg-panel/95 shadow-[0_12px_32px_rgba(0,0,0,0.45)] backdrop-blur-xl focus-within:border-caramel/60`
-            }
+            className={`z-30 absolute bottom-12 left-1/2 ${chatsHidden ? '' : 'xl:left-3/5'} transform -translate-x-1/2 w-[calc(100%-1rem)] sm:w-4/5 max-w-[34rem] ${mapClear ? 'hidden' : 'flex'} items-center min-h-12 rounded-[18px] border border-white/10 bg-panel/95 shadow-[0_12px_32px_rgba(0,0,0,0.45)] backdrop-blur-xl focus-within:border-caramel/60`}
           >
             <Input
               className={`flex-1 h-12 border-none shadow-none !bg-transparent px-4 text-[15px] text-fg placeholder:text-fg-subtle focus:!ring-0 focus:!ring-offset-0 focus-visible:!ring-0 focus-visible:!ring-offset-0 focus-visible:!outline-none`}
-              placeholder={
-                conversationId !== null
-                  ? 'Continue this chat…'
-                  : farmProject
-                    ? 'Ask Sage about this photo, a plot or a place…'
-                    : 'Ask Sage about this photo, the map or a place…'
-              }
+              placeholder={askPlaceholder}
               value={inputValue}
               onChange={(e) => setInputValue(e.target.value)}
               onKeyDown={handleKeyDown}
@@ -2155,14 +2230,14 @@ export default function MapLibreMap({
               </Tooltip>
             )}
           </div>
-        </ToolSlot>
+        )}
       </div>
 
       <ToolSlot tool="sage">
         <div
           className={
             oneDrawer
-              ? 'order-2 min-h-0'
+              ? 'order-1 flex min-h-0 flex-1 flex-col'
               : `${mobileWorkspacePanel === 'history' ? 'fixed' : 'hidden'} inset-y-0 right-0 z-50 w-[min(22rem,calc(100%-1rem))] bg-background shadow-xl xl:static ${chatsHidden ? 'xl:hidden' : 'xl:block'} xl:w-96 xl:shrink-0 xl:shadow-none`
           }
         >
@@ -2182,10 +2257,28 @@ export default function MapLibreMap({
             currentMapId={mapId}
             conversations={conversations}
             conversationsEnabled={conversationsEnabled}
-            setConversationId={setConversationId}
+            setConversationId={(id) => {
+              setPendingQuestion(null); // the reader went to another chat: the question belongs to the one left
+              setConversationId(id);
+            }}
             activeActions={activeActions}
             farmControls={farmProject}
-            onClose={() => (oneDrawer ? drawer.close() : setChatsHidden(true))}
+            // the drawer has its own close button: a second one here would do the same thing
+            onClose={oneDrawer ? undefined : () => setChatsHidden(true)}
+            busy={sageBusy}
+            pendingQuestion={pendingText(pendingQuestion, held)}
+            starters={sageStarters(farmProject, photoOnMap)}
+            onAsk={(question) => void sendMessage(question)}
+            live={
+              <SageLive
+                waiting={sageLink.waiting}
+                streamingText={streamingText}
+                actions={activeActions}
+                errors={criticalErrors}
+                errorsElsewhere={errorsOnMap}
+                onDismissError={dismissError}
+              />
+            }
           />
         </div>
       </ToolSlot>

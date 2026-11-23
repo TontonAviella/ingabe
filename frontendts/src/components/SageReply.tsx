@@ -67,7 +67,9 @@ export function Answer({ text, streaming }: { text: string; streaming?: boolean 
 
 /** "Was this right?" under a finished answer: 👍, or 👎 with an optional note. Saved per person and answer; the
  * Ingabe Health page shows each rated answer next to the steps Sage took (src/services/sage_answer_ratings.py). */
-function AnswerRating({ mapId, messageId }: { mapId: string; messageId: number }) {
+export function AnswerRating({ mapId, messageId, inChat = false }: { mapId: string; messageId: number; inChat?: boolean }) {
+  // in the conversation it sits under the answer with no rule above it and no side padding of its own
+  const frame = inChat ? '' : 'border-t border-white/[0.06] px-4';
   const [state, setState] = useState<'idle' | 'asking' | 'sending' | 'sent' | 'failed'>('idle');
   const [rating, setRating] = useState<'up' | 'down' | null>(null);
   const [note, setNote] = useState('');
@@ -110,13 +112,13 @@ function AnswerRating({ mapId, messageId }: { mapId: string; messageId: number }
 
   if (state === 'sent') {
     return (
-      <p className="m-0 border-t border-white/[0.06] px-4 py-2.5 text-[12px] text-fg-muted">
+      <p className={`m-0 py-2.5 text-[12px] text-fg-muted ${frame}`}>
         {rating === 'up' ? 'Thanks.' : 'Thanks. Ingabe will look at this answer and the steps Sage took.'}
       </p>
     );
   }
   return (
-    <div className="flex flex-col gap-2 border-t border-white/[0.06] px-4 py-2">
+    <div className={`flex flex-col gap-2 ${inChat ? '' : 'py-2'} ${frame}`}>
       <div className="flex items-center gap-1">
         <span className="mr-1 text-[12px] text-fg-subtle">Was this answer right?</span>
         {button('up', 'Yes, this answer was right', ThumbsUp)}
@@ -148,10 +150,10 @@ function AnswerRating({ mapId, messageId }: { mapId: string; messageId: number }
   );
 }
 
-function Sources({ sources }: { sources: string[] }) {
+export function Sources({ sources, inChat = false }: { sources: string[]; inChat?: boolean }) {
   if (sources.length === 0) return null;
   return (
-    <div className="flex flex-wrap items-center gap-1.5 border-t border-white/[0.06] px-4 py-2.5">
+    <div className={`flex flex-wrap items-center gap-1.5 ${inChat ? 'pt-1' : 'border-t border-white/[0.06] px-4 py-2.5'}`}>
       <span className="mr-0.5 text-[11px] font-semibold uppercase tracking-[0.07em] text-fg-subtle">Sources</span>
       {sources.map((source) => (
         <span key={source} className="rounded-full border border-white/10 bg-white/[0.05] px-2.5 py-0.5 text-[12px] text-fg-soft">
@@ -201,8 +203,7 @@ export function SageReply({
   const [overflows, setOverflows] = useState(false);
   const [hidden, setHidden] = useState(false);
   const body = useRef<HTMLDivElement>(null);
-  // An error ends the wait: without it a failed turn would say 'Thinking…' for ever.
-  const working = !!streamingText || actions.length > 0 || (!!waiting && errors.length === 0);
+  const working = sageWorking(waiting, streamingText, actions, errors);
   // While Sage works, the last answer gives way to what it is doing (it would read as the new answer).
   const text = streamingText || (working ? '' : reply || '');
   const { body: answer, sources } = streamingText ? { body: streamingText, sources: [] } : splitSources(text);
@@ -323,6 +324,66 @@ export function SageReply({
         </div>
       )}
     </section>
+  );
+}
+
+/** Whether Sage is at work on the chat's last question: an answer being written, a step in hand, or a question
+ * still waiting. An error ends the wait: without it a failed turn would say 'Thinking…' for ever. */
+export function sageWorking(waiting: boolean | undefined, streamingText: string | undefined, actions: unknown[], errors: unknown[]) {
+  return !!streamingText || actions.length > 0 || (!!waiting && errors.length === 0);
+}
+
+/** What Sage is doing now, at the end of the conversation (the one drawer): the step in hand on one line, then
+ * the answer as it is written, or what went wrong. It shows nothing once the answer is in the conversation, so an
+ * answer is on the screen once. */
+export function SageLive({
+  waiting,
+  streamingText,
+  actions,
+  errors,
+  errorsElsewhere = false,
+  onDismissError,
+}: {
+  waiting?: boolean;
+  streamingText?: string;
+  actions: { action_id: string; action: string }[];
+  errors: SageError[];
+  /** As for SageReply: the errors are said on the map, so they end the wait here but are not listed twice. */
+  errorsElsewhere?: boolean;
+  onDismissError: (id: string) => void;
+}) {
+  const working = sageWorking(waiting, streamingText, actions, errors);
+  const listed = errorsElsewhere ? [] : errors;
+  if (!working && listed.length === 0) return null;
+  const step = actions[actions.length - 1]?.action;
+  return (
+    <div className="flex flex-col gap-2 px-0.5">
+      {listed.map((error) => (
+        <div
+          key={error.id}
+          role="alert"
+          className="flex items-start justify-between gap-3 rounded-[14px] border border-[#C2410C]/40 bg-[#C2410C]/10 px-3 py-2"
+        >
+          <span className="text-[14px] leading-snug text-[#F3C9B4]">{error.message}</span>
+          <button
+            type="button"
+            onClick={() => onDismissError(error.id)}
+            className="shrink-0 text-[12px] font-semibold text-caramel-hi hover:underline cursor-pointer"
+          >
+            Dismiss
+          </button>
+        </div>
+      ))}
+      {streamingText ? (
+        <Answer text={streamingText} streaming />
+      ) : working ? (
+        // the step is announced; the answer is not read out word by word as it is written
+        <p role="status" className="m-0 flex items-center gap-2 text-[14px] text-fg-muted">
+          <LoaderCircle className="size-4 shrink-0 animate-spin text-caramel" aria-hidden="true" />
+          {step ? step.replace(/\.{3}$/, '…') : 'Thinking…'}
+        </p>
+      ) : null}
+    </div>
   );
 }
 
