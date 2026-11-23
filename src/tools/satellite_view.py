@@ -103,28 +103,50 @@ async def show_plants_and_soil_from_satellite(
     }
 
 
+# What each part of the answer is read from, for the line of sources under it.
+# No brackets: the app shows each source as a chip and drops them (sageReplyText.ts).
+_SOURCE_OF = {"plants": "Sentinel-2, 10 m squares", "soil": "FAO WaPOR, 100 m squares"}
+
+
 def reply(result: dict[str, Any]) -> str:
-    """The answer in words, from the tool's own sentences."""
+    """The answer in words, from the tool's own sentences, in the shape of Sage's other answers (AnswerStyle in
+    system_prompt.py): one bold line that says the finding, a few short points, the sources.
+
+    Roger, 2026-11-23: the first answer said every sentence the view holds, three dense paragraphs, and lost the
+    reader. This one leads with what the two layers say together and keeps, of the rest, what the reader came
+    for (how green, which way it is going, how wet) and what must not be missed (an older look, haze, an
+    estimate). The days each square was seen and the soil's fuller caveats are on the map's key, on a tap of a
+    hexagon, and in the satellite question card, which says every sentence."""
     if result.get("status") != "success":
         return str(result.get("error") or "The satellite view could not be made just now.")
-    parts = [f"Here is what the satellites show over {result['photo']}."]
-    if result.get("plants"):
-        parts.append("**Plants.** " + " ".join(result["plants"]["sentences"]))
-    if result.get("soil"):
-        parts.append("**Soil moisture.** " + " ".join(result["soil"]["sentences"]))
+    plants, soil = result.get("plants"), result.get("soil")
     if result.get("together"):
-        parts.append("**Together.** " + result["together"])
-    parts.extend(result.get("missing") or [])
+        head = result["together"]
+    elif plants:
+        head = f"The middle square of {result['photo']} reads NDVI {plants['median']:.2f}."
+    else:
+        head = f"Soil moisture under {result['photo']} reads {soil['median']:.0f}%." if soil else "Here is what the satellites show."
+    points = []
+    if plants:
+        points.append("- **Plants:** " + plants["short"])
+    if soil:
+        points.append("- **Soil moisture:** " + soil["short"])
+    care = [*(plants["care"] if plants else []), *([soil["care"]] if soil else []), *(result.get("missing") or [])]
+    if care:
+        points.append("- **Read with care:** " + " ".join(care))
+    parts = [f"**{head}**", "\n".join(points)]
     layers = result.get("layers") or []
-    names = [f"\"{layer['name']}\"" for layer in layers]
     taps = {satellite_layers.PLANTS_KIND: "tap a hexagon for its NDVI and its date",
-            satellite_layers.SOIL_KIND: "tap a soil moisture number for its reading"}
+            satellite_layers.SOIL_KIND: "tap a soil moisture figure for its reading"}
     how = " and ".join(taps[layer["kind"]] for layer in layers if layer.get("kind") in taps)
-    if len(names) == 2:
-        parts.append(f"Two layers are on the map, each with its own switch: {names[0]} and {names[1]}. Zoom in and the "
-                     f"hexagons get smaller, to show where a weak patch sits; {how}.")
-    elif names:
-        parts.append(f"The layer {names[0]} is on the map. Zoom in and the hexagons get smaller; {how}.")
+    how = f": {how}." if how else "."
+    if len(layers) == 2:
+        parts.append(f"Both are on the map, each with its own switch{how}")
+    elif layers:
+        parts.append(f"The layer \"{layers[0]['name']}\" is on the map{how}")
     if result.get("not_drawn"):
         parts.append(f"I could not draw {' or '.join(result['not_drawn'])} on the map just now; the numbers above still hold.")
+    read = [_SOURCE_OF[name] for name, part in (("plants", plants), ("soil", soil)) if part]
+    if read:
+        parts.append("Sources: " + " · ".join(read))
     return "\n\n".join(parts)

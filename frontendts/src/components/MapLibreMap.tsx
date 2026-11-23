@@ -134,7 +134,6 @@ import {
   Send,
   Square,
   X,
-  ZoomIn,
 } from 'lucide-react';
 import {
   AJAXError,
@@ -154,6 +153,7 @@ import { AdminLevelsOverlay } from '@/components/AdminLevelsOverlay';
 import AttributeTable from '@/components/AttributeTable';
 import { CloseLookBubbles } from '@/components/CloseLookBubbles';
 import { DroneCards } from '@/components/DroneCards';
+import { FeaturePanel } from '@/components/FeaturePanel';
 import { FieldTaps } from '@/components/FieldTaps';
 import { useFollowProjectIndustry } from '@/components/IndustryGate';
 import LayerList from '@/components/LayerList';
@@ -161,11 +161,9 @@ import { MapDrawer, MapDrawerProvider, ToolSlot, useMapDrawer } from '@/componen
 import { MapLegends } from '@/components/MapLegends';
 import { TerrainOverlay } from '@/components/TerrainOverlay';
 import { TowerCards } from '@/components/towers/TowerCards';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import VersionVisualization from '@/components/VersionVisualization';
-import { featureFieldRows } from '@/lib/featureFields';
 import { inspectionPhotoUrl } from '@/lib/inspectionPhoto';
 import { addScale } from '@/lib/mapScale';
 import { type PendingQuestion, pendingText, questionsHeld } from '@/lib/sagePending';
@@ -2054,81 +2052,24 @@ export default function MapLibreMap({
           </button>
         )}
         {selectedFeature && (
-          <Card className="absolute bottom-10 left-4 max-h-[60vh] overflow-auto py-2 rounded-sm border-0 gap-2 max-w-72 w-full">
-            <CardHeader className="px-2">
-              <CardTitle className="text-base flex justify-between items-center gap-2">
-                <div className="flex gap-2 items-baseline">
-                  {mapData?.layers?.find((l) => l.id === selectedFeature.source) ? (
-                    <>
-                      <span>{mapData?.layers?.find((l) => l.id === selectedFeature.source)?.name}</span>
-                      <span className="text-xs text-gray-500 dark:text-gray-400">
-                        {mapData?.layers?.find((l) => l.id === selectedFeature.source)?.type}
-                      </span>
-                    </>
-                  ) : (
-                    <span>Selected feature</span>
-                  )}
-                </div>
-                <div className="flex gap-2">
-                  <button
-                    onClick={() => {
-                      if (selectedFeature && selectedFeature.geometry && mapRef.current) {
-                        const map = mapRef.current;
-                        const feature_bbox = bbox(selectedFeature.geometry);
-                        map.fitBounds(
-                          [
-                            [feature_bbox[0], feature_bbox[1]],
-                            [feature_bbox[2], feature_bbox[3]],
-                          ],
-                          {
-                            padding: 50,
-                            duration: 1000,
-                          },
-                        );
-                      }
-                    }}
-                    className="text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200"
-                    title="Zoom to feature"
-                  >
-                    <ZoomIn className="h-4 w-4 cursor-pointer" />
-                  </button>
-                  <button
-                    onClick={() => selectFeature(null)}
-                    className="text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200"
-                    title="Deselect feature"
-                  >
-                    <X className="h-4 w-4 cursor-pointer" />
-                  </button>
-                </div>
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="px-2 max-h-[50vh] overflow-auto">
-              {selectedPhotoUrl && (
-                <a href={selectedPhotoUrl} target="_blank" rel="noreferrer" title="Open the full photo">
-                  <img src={selectedPhotoUrl} alt="Inspection photo" loading="lazy" className="mb-2 w-full rounded-sm" />
-                </a>
-              )}
-              <div className="overflow-x-auto">
-                <table className="w-full text-xs">
-                  <thead>
-                    <tr className="border-b">
-                      <th className="text-left py-1 pr-2 font-medium">Attribute</th>
-                      <th className="text-left py-1 font-medium">Value</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {selectedFeature.properties &&
-                      featureFieldRows(selectedFeature.properties).map((row) => (
-                        <tr key={row.key} className="border-b border-gray-100 dark:border-gray-700" title={row.key}>
-                          <td className="py-1 pr-2 text-gray-600 dark:text-gray-400 break-words">{row.label}</td>
-                          <td className="py-1 break-all">{row.value}</td>
-                        </tr>
-                      ))}
-                  </tbody>
-                </table>
-              </div>
-            </CardContent>
-          </Card>
+          <FeaturePanel
+            layerName={mapData?.layers?.find((l) => l.id === selectedFeature.source)?.name}
+            properties={selectedFeature.properties}
+            photoUrl={selectedPhotoUrl}
+            onZoom={() => {
+              if (selectedFeature.geometry && mapRef.current) {
+                const feature_bbox = bbox(selectedFeature.geometry);
+                mapRef.current.fitBounds(
+                  [
+                    [feature_bbox[0], feature_bbox[1]],
+                    [feature_bbox[2], feature_bbox[3]],
+                  ],
+                  { padding: 50, duration: 1000 },
+                );
+              }
+            }}
+            onClose={() => selectFeature(null)}
+          />
         )}
         {/* Without the drawer: Sage's answer is a card over the map. It steps aside only while a field is being
             outlined: with "Hide panels" it stays, since a question asked about a field still needs its answer seen.

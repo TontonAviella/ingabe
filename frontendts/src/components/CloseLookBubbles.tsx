@@ -6,10 +6,11 @@ import { useFieldCloseLook, useInspectionCloseLooks } from '@/hooks/useCloseLook
 import { isPhotoInspectionLayer } from '@/lib/inspectionPhoto';
 import type { MapLayer } from '@/lib/types';
 
-// Picture bubbles pinned to the map where a close look was taken: each tower photo at the place the drone took it
-// (its GPS), each square of a farm photo at its centre. They are markers on the map itself, so they stay on their
-// coordinates as the map moves, zooms or tilts. Tapping one opens what the close look saw there, said as things for
-// a person to check; nothing here is a count.
+// Small numbered marks pinned to the map where a close look was taken: each tower photo at the place the drone took
+// it (its GPS), each square of a farm photo at its centre. They are markers on the map itself, so they stay on their
+// coordinates as the map moves, zooms or tilts. A pointer resting on one shows its picture; tapping one opens what
+// the close look saw there, said as things for a person to check; nothing here is a count. (They were round pictures
+// 46 px wide until 2026-11-23: ten of them hid the ground they were pinned to. The styles are in index.css.)
 //
 // With the map's one drawer (components/MapDrawer.tsx) the words open in the drawer, beside the map: a pop-up of
 // this much text over the photo left nothing of the photo to see. While a field is being outlined the bubbles are
@@ -92,7 +93,7 @@ function usePinned(map: MLMap | null, bubbles: Bubble[], onOpen: ((bubble: Bubbl
     if (!map || bubbles.length === 0) return;
     // Opens above its bubble; the map first slides the bubble low on the screen, so the pop-up has room above it and
     // stays clear of the chat box and the panels.
-    const popup = new Popup({ className: 'close-look-popup', closeButton: true, maxWidth: '320px', offset: 58, anchor: 'bottom' });
+    const popup = new Popup({ className: 'close-look-popup', closeButton: true, maxWidth: '320px', offset: 18, anchor: 'bottom' });
     const markers = bubbles.map((b) => {
       const node = el('button', 'close-look-bubble');
       node.setAttribute('type', 'button');
@@ -119,7 +120,8 @@ function usePinned(map: MLMap | null, bubbles: Bubble[], onOpen: ((bubble: Bubbl
           .setDOMContent(popupContent(b, Math.round(height * 0.8) - 110))
           .addTo(map);
       });
-      return new Marker({ element: node, anchor: 'bottom' }).setLngLat([b.lon, b.lat]).addTo(map);
+      // the mark's middle is the place (the round picture stood above it on a tail)
+      return new Marker({ element: node, anchor: 'center' }).setLngLat([b.lon, b.lat]).addTo(map);
     });
     return () => {
       popup.remove();
