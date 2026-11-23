@@ -98,6 +98,19 @@ async def test_a_plot_carries_the_kept_fields_cover_count_and_check(monkeypatch)
     assert field_facts.said(kept_facts["a"]) == ("Field 3 · under 10 m² · green cover 62% · about 700 plants in the 86% of it that can be counted")
     assert kept_facts["a"].checked_said and kept_facts["b"].plants_said is None
 
+    # what the photo's kept satellite view says of an outline reaches the plot and the kept field with that outline
+    from src.services import field_health
+    satellite = {field_health.key_of(_square(30.0)): ("satellite NDVI 0.52 on 19 Nov", "From the satellite (Sentinel-2): NDVI 0.52 ..."),
+                 field_health.key_of(_square(30.01)): (None, "From the satellite: this field holds 1 of the satellite's 10 m squares whole ...")}
+    with_view = await field_facts.of_plots(None, "b", "photo", "L1", plots, satellite=satellite)
+    assert field_facts.said(with_view[0]).endswith(" · satellite NDVI 0.52 on 19 Nov") and with_view[0].satellite_note.startswith("From the satellite (Sentinel-2)")
+    assert with_view[1].satellite_said is None and "too few" not in field_facts.said(with_view[1])  # the reason is the note's
+    assert with_view[1].satellite_note.startswith("From the satellite: this field holds 1")
+    assert with_view[2].satellite_said is None and with_view[2].satellite_note is None  # no view said anything of it
+    kept_with_view = await field_facts.of_kept(None, "b", "photo", "L1", satellite=satellite)
+    assert kept_with_view["a"].satellite_said == "satellite NDVI 0.52 on 19 Nov" and kept_with_view["b"].satellite_said is None
+    assert kept_facts["a"].satellite_said is None  # and with no view kept, nothing is said
+
     # one check that cannot be read loses that check, not the field; a counts record that cannot be read, the counts
     async def broken(*_):
         raise RuntimeError("storage is down")

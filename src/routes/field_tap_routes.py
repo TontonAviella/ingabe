@@ -131,7 +131,7 @@ async def get_field_taps(layer: MapLayer = Depends(get_layer),
     this_photo = {"name": layer.name, "metadata": layer.metadata_dict or {}, "uploaded": added}
     apart, unsure = field_flights.other_flights(this_photo, other_flights)
     state["kept"] = await _with_facts(state["kept"], s3, bucket, key, layer.layer_id, session.get_user_id(), cog_url,
-                                      thermal_photos, apart, this_photo)
+                                      thermal_photos, apart, this_photo, layer.bounds)
     # photos of this place added the same day with no flight day given: not known to be other flights
     state["photos_not_told_apart"] = unsure
     given = field_flights.flown_on(layer.metadata_dict or {})
@@ -204,10 +204,11 @@ async def _with_facts(rows: list[dict[str, Any]], s3: Any, bucket: str, key: str
                       user_id: str, cog_url: Optional[str] = None,
                       thermal_photos: Optional[list[dict[str, Any]]] = None,
                       other_flights: Optional[list[dict[str, Any]]] = None,
-                      this_photo: Optional[dict[str, Any]] = None) -> list[dict[str, Any]]:
+                      this_photo: Optional[dict[str, Any]] = None, bounds: Any = None) -> list[dict[str, Any]]:
     """Each kept field with what is known of it in the words every surface uses (field_facts): its size, its
     plant count and a person's check of it once Sage counted it, and the rows of the farm's documents linked to it
-    by place. Reads only; a field whose facts cannot be read is still shown."""
+    by place, and what the photo's kept satellite view says of it (`bounds`: the photo's place). Reads only; a field
+    whose facts cannot be read is still shown."""
     if not rows:
         return rows
     known: dict[str, field_facts.FieldFacts] = {}
@@ -239,7 +240,7 @@ async def _with_facts(rows: list[dict[str, Any]], s3: Any, bucket: str, key: str
             logger.exception("field taps: the other flights of the kept fields could not be read")
     try:
         known = await field_facts.of_kept(s3, bucket, key, layer_id, record_links.by_field(linked), health, flights,
-                                          this_photo)
+                                          this_photo, await photo_context.satellite_of_fields(bounds, rows))
     except Exception:
         logger.exception("field taps: the facts of the kept fields could not be read")
     return [{**row, "facts": {"name": known[row["id"]].name, "area_said": known[row["id"]].area_said, "plants_said": known[row["id"]].plants_said,
@@ -250,6 +251,7 @@ async def _with_facts(rows: list[dict[str, Any]], s3: Any, bucket: str, key: str
                               "temperature_said": known[row["id"]].temperature_said,
                               "temperature_note": (field_health.temperature_note(known[row["id"]].temperature_from)
                                                    if known[row["id"]].temperature_said else None),
+                              "satellite_note": known[row["id"]].satellite_note,
                               "flights": list(known[row["id"]].flights),
                               "records_said": list(known[row["id"]].records_said)}} if row["id"] in known else row
             for row in rows]

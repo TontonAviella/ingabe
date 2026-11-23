@@ -861,3 +861,209 @@ def test_a_pass_on_the_photos_other_grid_counts_as_a_new_pass(tmp_path, in_proce
     ])
     assert sv.plants_view(BOX, TODAY).newest_pass == TODAY - timedelta(days=1)
     assert sv._newest_pass_since(BOX, TODAY - timedelta(days=6), TODAY) == TODAY - timedelta(days=1)
+
+
+# --- One field of the photo, and the view a card or a field panel may read without a satellite -------------------
+
+
+def _field(left_m: float, top_m: float, wide_m: float, tall_m: float) -> dict[str, Any]:
+    """A field's outline in latitude and longitude, placed from the top-left corner of the photo's grid of squares."""
+    from pyproj import Transformer
+
+    west, _, _, north = transform_bounds("EPSG:4326", "EPSG:32736", *BOX)
+    to_lonlat = Transformer.from_crs("EPSG:32736", "EPSG:4326", always_xy=True).transform
+    corners = [(west + left_m, north - top_m), (west + left_m + wide_m, north - top_m),
+               (west + left_m + wide_m, north - top_m - tall_m), (west + left_m, north - top_m - tall_m)]
+    ring = [list(to_lonlat(x, y)) for x, y in corners]
+    return {"type": "Polygon", "coordinates": [ring + ring[:1]]}
+
+
+def _two_looks() -> sv.Plants:
+    """89 rows of 156 squares over the photo: the west 100 seen 4 days ago at 0.60, the east 56 seen 40 days ago at
+    0.30, with one square of the west reading far off."""
+    ndvi = np.full((89, 156), 0.60, dtype=np.float32)
+    ndvi[:, 100:] = 0.30
+    ndvi[2, 2] = 0.05
+    days = np.full((89, 156), 4)
+    days[:, 100:] = 40
+    return _plants(ndvi, days)
+
+
+def test_a_field_takes_the_middle_of_the_whole_squares_inside_it_and_says_their_day():
+    seen = _view(_two_looks(), _soil_over_the_photo())
+    field = sv.field_seen(seen, _field(3, 3, 54, 54))
+    # the field's line runs 3 m inside the first squares and 7 m into the sixth: 6 x 6 squares touch it, and the
+    # 4 x 4 between lie wholly inside it
+    assert field is not None and (field.whole, field.squares) == (16, 16)
+    assert field.ndvi == pytest.approx(0.60)  # the middle, so the one square reading 0.05 does not move it
+    assert field.day == TODAY - timedelta(days=4) and field.older is False
+    short, sentences = sv.field_words(field, TODAY)
+    assert short == "satellite NDVI 0.60 on 19 Nov"
+    assert sentences is not None and sentences.startswith(
+        "From the satellite (Sentinel-2): NDVI 0.60 on 19 Nov, the middle of the 16 whole 10 m squares inside this field.")
+
+
+def test_a_field_too_small_for_the_squares_gets_no_ndvi_and_is_told_why():
+    seen = _view(_two_looks(), _soil_over_the_photo())
+    field = sv.field_seen(seen, _field(103, 103, 25, 25))  # one square lies wholly inside
+    assert field is not None and field.whole == 1 and field.ndvi is None
+    short, sentences = sv.field_words(field, TODAY)
+    assert short is None
+    assert sentences is not None and "holds 1 of the satellite's 10 m squares whole, too few for an NDVI of its own (it takes 4)" in sentences
+    nothing = sv.field_seen(seen, _field(303, 303, 12, 12))
+    assert nothing is not None and nothing.whole == 0
+    assert "holds none of the satellite's 10 m squares whole" in (sv.field_words(nothing, TODAY)[1] or "")
+
+
+def test_a_field_under_an_older_look_says_so_and_one_across_two_looks_uses_one_day_only():
+    seen = _view(_two_looks(), _soil_over_the_photo())
+    old = sv.field_seen(seen, _field(1203, 103, 60, 60))
+    assert old is not None and old.ndvi == pytest.approx(0.30) and old.older is True
+    short, sentences = sv.field_words(old, TODAY)
+    assert short == "satellite NDVI 0.30 on 14 Oct, an older look"
+    assert "That is weeks older than the look most of the photo has, so do not read it against fields seen later." in (sentences or "")
+    # 7 columns of fresh look and 4 of old inside it: the figure is the fresh squares alone, never a mix of two
+    # crop moments
+    across = sv.field_seen(seen, _field(923, 103, 120, 60))
+    assert across is not None and across.ndvi == pytest.approx(0.60) and across.day == TODAY - timedelta(days=4)
+    assert (across.squares, across.whole) == (35, 55)
+    # and it says how much of the field it rests on
+    assert "the middle of 35 of the 55 whole 10 m squares inside this field (the others had no clear look that day)" in (
+        sv.field_words(across, TODAY)[1] or "")
+
+
+def test_squares_seen_only_through_haze_are_left_out_of_a_fields_figure():
+    plants = _two_looks()
+    haze = np.zeros(plants.ndvi.shape, bool)
+    haze[:10, :10] = True
+    hazy = sv.Plants(plants.grid, plants.ndvi, plants.seen, haze, None, 3)
+    field = sv.field_seen(_view(hazy, _soil_over_the_photo()), _field(3, 3, 64, 64))
+    assert field is not None and field.whole == 25 and field.squares == 0 and field.ndvi is None
+    assert "no NDVI for this field yet; too few of its 10 m squares had a clear look on one day" in (
+        sv.field_words(field, TODAY)[1] or "")
+
+
+def test_a_field_reads_the_soil_square_under_its_middle_as_the_seasons_level_not_its_own():
+    seen = _view(_two_looks(), _soil_over_the_photo())
+    west = sv.field_seen(seen, _field(0, 0, 50, 50))
+    east = sv.field_seen(seen, _field(1400, 0, 50, 50))
+    assert west is not None and east is not None
+    assert west.soil is not None and east.soil is not None and west.soil < east.soil  # wetter to the east
+    assert west.period == "2026-11-D1"
+    sentences = sv.field_words(west, TODAY)[1] or ""
+    assert f"Soil moisture {west.soil:.0f}% for 1-10 Nov in the 100 m square under its middle (FAO estimate): the "\
+           "season's level, not this field's own reading." in sentences
+    off_the_grid = {"type": "Polygon", "coordinates": [[[31.0, -1.0], [31.001, -1.0], [31.001, -1.001], [31.0, -1.001], [31.0, -1.0]]]}
+    away = sv.field_seen(seen, off_the_grid)
+    assert away is not None and away.soil is None and away.whole == 0
+
+
+def test_a_broken_outline_has_no_satellite_figure_and_does_not_raise():
+    seen = _view(_two_looks(), _soil_over_the_photo())
+    assert sv.field_seen(seen, {"type": "Polygon", "coordinates": "not a ring"}) is None
+    assert sv.field_seen(seen, {"type": "Polygon", "coordinates": []}) is None
+
+
+def test_the_named_sentences_are_the_sentences_sage_says():
+    plants = sv.plants_facts(_two_looks(), TODAY)
+    assert plants["sentences"] == list(plants["parts"].values())
+    assert set(plants["parts"]) == {"covered", "seen", "older", "greenness"}  # no haze, no change: neither is said
+    soil = sv.soil_facts(_soil_over_the_photo(), TODAY)
+    assert soil["sentences"] == list(soil["parts"].values()) and list(soil["parts"]) == ["reading", "year", "first", "limits"]
+
+
+def test_ready_gives_the_kept_view_and_reads_no_satellite(night, tmp_path):
+    assert sv.ready(BOX) is None and sv.of_fields(BOX, {"a": _field(0, 0, 50, 50)}) == {}
+    assert night["plants"] == 0 and night["searched"] == []  # asking read nothing
+    made = sv.view(BOX, MID_NOV)
+    assert sv.ready(BOX) is made
+    sv._views.clear()  # another process, or after a restart: read from the cache volume
+    kept = sv.ready(BOX)
+    assert kept is not None and kept.plants is not None and np.array_equal(kept.plants.ndvi, made.plants.ndvi)
+    assert sv.ready(BOX) is kept  # and held from then on
+    said = sv.of_fields(BOX, {"a": _field(-3, -3, 46, 46), "broken": {"type": "Polygon", "coordinates": []}})
+    assert set(said) == {"a"} and said["a"][0] is not None and said["a"][0].startswith("satellite NDVI 0.50 on ")
+    assert night["plants"] == 1
+    sv._views.clear()
+    _age(_kept_file(tmp_path), sv.FRESH_HOURS + 1)
+    assert sv.ready(BOX) is None and night["plants"] == 1  # past its freshness it is not said, and nothing is read
+
+
+def test_too_wide_says_why_without_reading_anything_and_never_raises():
+    assert sv.too_wide(BOX) is None
+    assert "too wide for a square-by-square satellite view" in (sv.too_wide([29.0, -3.0, 31.0, -1.0]) or "")
+    # a photo's cards ask this while they are listed: a box that is not one is said, not raised
+    for not_a_box in ([30.0, -2.0, 30.0, -2.0], [30.43, -1.70, 30.41, -1.69], [30.0, -95.0, 30.1, -94.0], [30.0, -2.0]):
+        assert sv.too_wide(not_a_box) == sv.NOT_A_BOX
+
+
+def test_a_newer_look_beside_an_older_main_one_is_said_since_both_are_drawn_in_colour():
+    # the main look is the older one here: 100 columns seen 23 Oct, 56 seen 19 Nov
+    ndvi = np.full((89, 156), 0.35, dtype=np.float32)
+    ndvi[:, 100:] = 0.60
+    days = np.full((89, 156), 31)
+    days[:, 100:] = 4
+    said = sv.plants_facts(_plants(ndvi, days), TODAY)
+    assert "older" not in said["parts"]
+    assert said["parts"]["newer"] == ("36% of the photo holds a newer look (up to 19 Nov) than the main one of 23 Oct: a "
+                                      "difference between the two parts can be the weeks between them, not the crop.")
+    assert list(said["parts"]) == ["covered", "seen", "newer", "greenness"]
+    assert "newer" not in sv.plants_facts(_two_looks(), TODAY)["parts"]  # there the main look is the fresh one
+
+
+def test_whole_squares_are_found_by_exact_geometry_also_along_a_straight_edge_and_in_a_field_that_bends():
+    plants = _two_looks()
+    west, _, _, north = transform_bounds("EPSG:4326", "EPSG:32736", *BOX)
+    # a straight-edged field 3 m wider than 3 x 2 squares on each side: all 6 lie wholly inside, though the middle of
+    # each is only 8 m from the line
+    straight = box(west + 97, north - 123, west + 133, north - 97)
+    inside = sv._whole_squares(straight, plants.grid)
+    assert inside.sum() == 6 and inside[10:12, 10:13].all()
+    # an L-shaped field: the squares in its notch are not inside it
+    bent = Polygon([(west + 197, north - 197), (west + 253, north - 197), (west + 253, north - 223), (west + 223, north - 223),
+                    (west + 223, north - 253), (west + 197, north - 253)])
+    inside = sv._whole_squares(bent, plants.grid)
+    # two rows of 5 across the top, three rows of 2 down the leg, and nothing in the notch
+    assert inside.sum() == 10 + 6 and inside[20:22, 20:25].all() and inside[22:25, 20:22].all()
+    assert not inside[22:25, 22:25].any()
+    # a field off the grid, and one that is a sliver, hold none
+    assert not sv._whole_squares(box(west - 500, north + 100, west - 400, north + 200), plants.grid).any()
+    assert not sv._whole_squares(box(west + 300, north - 304, west + 400, north - 301), plants.grid).any()
+
+
+def test_what_was_said_of_an_outline_is_remembered_while_the_same_view_is_held(night, tmp_path, monkeypatch):
+    sv.view(BOX, MID_NOV)
+    worked: list[int] = []
+    real = sv.field_seen
+    monkeypatch.setattr(sv, "field_seen", lambda *a, **k: worked.append(1) or real(*a, **k))
+    first = sv.of_fields(BOX, {"a": _field(-3, -3, 46, 46), "broken": {"type": "Polygon", "coordinates": []}})
+    assert set(first) == {"a"} and len(worked) == 2
+    again = sv.of_fields(BOX, {"a": _field(-3, -3, 46, 46), "broken": {"type": "Polygon", "coordinates": []},
+                               "b": _field(3, 3, 14, 14)})
+    assert again["a"] == first["a"] and set(again) == {"a", "b"} and len(worked) == 3  # only the outline not yet asked about
+    # the night writes a newer view: what was said of the old one is not said of the new
+    night["newest"] = MID_NOV + timedelta(days=1)
+    _age(_kept_file(tmp_path), 1)
+    assert sv.refresh(BOX, MID_NOV + timedelta(days=2)) == sv.MADE
+    sv.of_fields(BOX, {"a": _field(-3, -3, 46, 46)})
+    assert len(worked) == 4
+
+
+def test_one_outline_that_cannot_be_worked_out_loses_its_own_words_not_every_fields(night):
+    sv.view(BOX, MID_NOV)
+    off_the_globe = {"type": "Polygon", "coordinates": [[[30.42, float("nan")], [30.43, -1.7], [30.43, -1.69], [30.42, float("nan")]]]}
+    far_off = {"type": "Polygon", "coordinates": [[[1e308, 1e308], [1e308, -1e308], [-1e308, 1e308], [1e308, 1e308]]]}
+    said = sv.of_fields(BOX, {"good": _field(-3, -3, 46, 46), "nan": off_the_globe, "far": far_off})
+    assert said["good"][0] is not None and said["good"][0].startswith("satellite NDVI 0.50")
+    assert said.get("nan", (None, None))[0] is None and said.get("far", (None, None))[0] is None
+
+
+def test_what_is_worked_out_is_filed_under_the_stamp_of_the_view_it_came_from(night, tmp_path):
+    made = sv.view(BOX, MID_NOV)
+    key = sv._key(BOX)
+    seen, stamp = sv._ready(key)
+    assert seen is made and stamp == sv._views[key][1]
+    sv._views.clear()  # after a restart: read from the cache volume, held under the file's own time
+    seen, stamp = sv._ready(key)
+    assert seen is not None and stamp == _kept_file(tmp_path).stat().st_mtime == sv._views[key][1]
+    assert sv._ready(sv._key([29.0, -2.0, 29.01, -1.99])) == (None, 0.0)

@@ -46,6 +46,9 @@ export interface KeptOutline {
     health_note?: string | null;
     temperature_said?: string | null;
     temperature_note?: string | null;
+    /** What the photo's kept satellite view says of this field (its own NDVI where it holds enough whole 10 m
+     * squares, the soil moisture of the 100 m square it sits in), or why it has no figure. Missing until a view is kept. */
+    satellite_note?: string | null;
     records_said?: string[];
     /** The field's same outline on the other flights of its place, oldest first, this photo's line among them. */
     flights?: FieldFlight[];
