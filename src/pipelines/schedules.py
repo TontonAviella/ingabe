@@ -118,6 +118,18 @@ nightly_parcel_ndvi_schedule = ScheduleDefinition(
     default_status=DefaultScheduleStatus.RUNNING,
 )
 
+# ─── Satellite views of drone photos, made ahead ───────────────────────
+
+# Midnight UTC is 02:00 in Kigali: before anyone is up, and two hours before the next job in the one run slot.
+nightly_satellite_views_schedule = ScheduleDefinition(
+    name="nightly_satellite_views",
+    cron_schedule="0 0 * * *",  # Every night at midnight UTC
+    job_name="nightly_satellite_views_job",
+    execution_timezone="UTC",
+    description="Nightly: plants and soil moisture from the satellite for each farm drone photo → cache volume",
+    default_status=DefaultScheduleStatus.RUNNING,
+)
+
 # ─── Weather data schedule ──────────────────────────────────────────────
 
 daily_weather_ingest_schedule = ScheduleDefinition(

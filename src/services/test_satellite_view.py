@@ -615,3 +615,249 @@ def test_two_askers_at_once_get_one_making_and_fresh_tells_when_asking_costs_not
     sv._views.clear()
     assert sv.fresh(BOX) is True  # after a restart it is still on the cache volume
     sv._views.clear()
+
+
+# --- Made ahead, each night --------------------------------------------------------------------------------------
+
+
+KNOWN_PASS = date(2026, 11, 14)  # the newest pass the search holds on the first night
+MID_NOV = date(2026, 11, 18)  # the ten days after 1-10 Nov have not ended: FAO can hold nothing newer
+
+
+@pytest.fixture
+def night(tmp_path, monkeypatch):
+    """A cache volume of its own, and counters of every read of the satellites."""
+    monkeypatch.setattr(sv, "_KEEP_DIR", tmp_path / "kept")
+    sv._views.clear()
+    state: dict[str, Any] = {"plants": 0, "soil": 0, "searched": [], "newest": KNOWN_PASS, "soil_asked": 0,
+                             "soil_period": "2026-11-D1", "soil_fails": False}
+
+    def plants_view(bbox, today):
+        state["plants"] += 1
+        made = _plants(np.full((4, 4), 0.5), np.full((4, 4), 4))
+        return sv.Plants(made.grid, made.ndvi, made.seen, made.hazy, None, 3, newest_pass=state["newest"])
+
+    def newest_soil(bbox, today):
+        state["soil_asked"] += 1
+        if state["soil_fails"]:
+            raise sv.NoPicture("FAO's soil moisture file could not be read just now.")
+        return state["soil_period"], None
+
+    def soil_view(bbox, today, newest=None):
+        state["soil"] += 1
+        if newest is None:
+            newest_soil(bbox, today)
+        soil = _soil()
+        return sv.Soil(state["soil_period"], soil.percent, soil.west, soil.north, soil.step, soil.first_estimate,
+                       soil.centre, soil.year_low, soil.year_high)
+
+    def newest_pass_since(bbox, since, today):
+        state["searched"].append((since, today))
+        return state["newest"]
+
+    monkeypatch.setattr(sv, "plants_view", plants_view)
+    monkeypatch.setattr(sv, "soil_view", soil_view)
+    monkeypatch.setattr(sv, "_newest_soil", newest_soil)
+    monkeypatch.setattr(sv, "_newest_pass_since", newest_pass_since)
+    yield state
+    sv._views.clear()
+
+
+def _kept_file(tmp_path: Path) -> Path:
+    (kept_file,) = (tmp_path / "kept").glob("*.npz")
+    return kept_file
+
+
+def _age(kept_file: Path, hours: float) -> float:
+    then = kept_file.stat().st_mtime - hours * 3600
+    os.utime(kept_file, (then, then))
+    return then
+
+
+
+
+def test_the_first_night_makes_the_view_and_the_next_ask_costs_nothing(night, tmp_path):
+    assert sv.refresh(BOX, MID_NOV) == sv.MADE
+    assert (night["plants"], night["soil"], night["searched"]) == (1, 1, [])
+    sv._views.clear()  # the app is another process: it finds the view on the cache volume
+    assert sv.fresh(BOX) is True
+    seen = sv.view(BOX, MID_NOV)
+    assert (night["plants"], night["soil"]) == (1, 1)
+    assert seen.plants is not None and seen.plants.newest_pass == KNOWN_PASS
+
+
+def test_a_night_with_no_new_pass_is_one_search_and_the_kept_view_is_fresh_again(night, tmp_path):
+    sv.refresh(BOX, MID_NOV)
+    made_at = _age(_kept_file(tmp_path), sv.FRESH_HOURS + 20)  # two nights on: past its freshness
+    sv._views.clear()
+    assert sv.fresh(BOX) is False
+    assert sv.refresh(BOX, MID_NOV + timedelta(days=2)) == sv.NOTHING_NEW
+    # the search asked only about the days since the newest pass the kept view knew of
+    assert night["searched"] == [(KNOWN_PASS, MID_NOV + timedelta(days=2))]
+    assert (night["plants"], night["soil"]) == (1, 1)  # no pass and no soil file was read again
+    assert _kept_file(tmp_path).stat().st_mtime > made_at and sv.fresh(BOX) is True
+    sv._views.clear()
+    again = sv.view(BOX, MID_NOV + timedelta(days=2))
+    assert again.today == MID_NOV + timedelta(days=2) and again.plants is not None and again.plants.ndvi.shape == (4, 4)
+    assert (night["plants"], night["soil"]) == (1, 1)
+
+
+def test_a_new_pass_cloudy_or_not_has_the_view_made_again(night, tmp_path):
+    sv.refresh(BOX, MID_NOV)
+    night["newest"] = MID_NOV
+    assert sv.refresh(BOX, MID_NOV + timedelta(days=1)) == sv.MADE
+    assert (night["plants"], night["soil"]) == (2, 2)
+    # the pass is now known: the night after reads nothing again, even if that pass was all cloud
+    assert sv.refresh(BOX, MID_NOV + timedelta(days=2)) == sv.NOTHING_NEW
+    assert night["plants"] == 2 and night["searched"][-1] == (MID_NOV, MID_NOV + timedelta(days=2))
+
+
+def test_soil_moisture_is_read_again_only_when_fao_has_published_something_newer(night, tmp_path):
+    sv.refresh(BOX, MID_NOV)
+    assert (night["soil"], night["soil_asked"]) == (1, 1)
+    # 18 to 20 Nov: the ten days after 1-10 Nov have not ended, so FAO is not even asked
+    assert sv.refresh(BOX, date(2026, 11, 20)) == sv.NOTHING_NEW and (night["soil"], night["soil_asked"]) == (1, 1)
+    # 21 Nov: 11-20 Nov has ended and its file may be up. FAO is asked which period is its newest; it is still
+    # 1-10 Nov, so the reading and the centre's year are not read again.
+    assert sv.refresh(BOX, date(2026, 11, 21)) == sv.NOTHING_NEW
+    assert (night["plants"], night["soil"], night["soil_asked"]) == (1, 1, 2)
+    night["soil_period"] = "2026-11-D2"
+    assert sv.refresh(BOX, date(2026, 11, 24)) == sv.SOIL_AGAIN
+    assert (night["plants"], night["soil"], night["soil_asked"]) == (1, 2, 3)
+    sv._views.clear()
+    kept = sv.view(BOX, date(2026, 11, 24))
+    assert kept.soil is not None and kept.soil.period == "2026-11-D2" and night["plants"] == 1
+    # 25 Nov: 21-30 Nov has not ended, nothing newer can exist
+    assert sv.refresh(BOX, date(2026, 11, 25)) == sv.NOTHING_NEW and night["soil_asked"] == 3
+    # a soil file that cannot be read leaves the kept reading in place, and the view fresh
+    night["soil_fails"] = True
+    assert sv.refresh(BOX, date(2026, 12, 2)) == sv.NOTHING_NEW and (night["soil"], night["soil_asked"]) == (2, 4)
+    sv._views.clear()
+    still = sv.view(BOX, date(2026, 12, 2))
+    assert still.soil is not None and still.soil.period == "2026-11-D2"
+
+
+def test_an_older_period_from_fao_is_one_file_failing_to_open_not_news(night, tmp_path):
+    night["soil_period"] = "2026-11-D2"
+    sv.refresh(BOX, date(2026, 11, 24))
+    night["soil_period"] = "2026-11-D1"  # tonight the newer file did not open and the walk back found the older one
+    assert sv.refresh(BOX, date(2026, 12, 2)) == sv.NOTHING_NEW and night["soil"] == 1
+    sv._views.clear()
+    kept = sv.view(BOX, date(2026, 12, 2))
+    assert kept.soil is not None and kept.soil.period == "2026-11-D2"
+
+
+def test_a_new_pass_that_cannot_be_read_leaves_the_older_view_fresh_and_is_tried_again(night, tmp_path):
+    sv.refresh(BOX, MID_NOV)
+    made_at = _age(_kept_file(tmp_path), sv.FRESH_HOURS + 2)
+    night["newest"] = MID_NOV
+    night["soil_fails"] = True  # FAO's file cannot be read tonight
+    assert sv.refresh(BOX, MID_NOV + timedelta(days=1)) == sv.KEPT_OLDER and night["plants"] == 2
+    assert _kept_file(tmp_path).stat().st_mtime > made_at and sv.fresh(BOX) is True
+    sv._views.clear()
+    served = sv.view(BOX, MID_NOV + timedelta(days=1))
+    assert served.plants is not None and served.plants.newest_pass == KNOWN_PASS and night["plants"] == 2
+    night["soil_fails"] = False
+    assert sv.refresh(BOX, MID_NOV + timedelta(days=2)) == sv.MADE and night["plants"] == 3
+
+
+def test_a_cache_volume_that_cannot_be_written_is_owned_up_to(night, tmp_path, monkeypatch):
+    blocked = tmp_path / "a file where the folder should be"
+    blocked.write_text("x")
+    monkeypatch.setattr(sv, "_KEEP_DIR", blocked / "kept")
+    assert sv.refresh(BOX, MID_NOV) == sv.NOT_KEPT and night["plants"] == 1
+    sv._views.clear()
+    assert sv.fresh(BOX) is False
+
+
+def test_a_copy_in_memory_lives_no_longer_than_its_files_freshness(night, tmp_path):
+    held = sv.view(BOX, MID_NOV)
+    _age(_kept_file(tmp_path), sv.FRESH_HOURS + 1)  # the night was missed: the file is past its freshness
+    sv._views[sv._key(BOX)] = (held, _kept_file(tmp_path).stat().st_mtime)
+    assert sv.fresh(BOX) is False
+    again = sv.view(BOX, MID_NOV + timedelta(days=2))
+    assert again is not held and night["plants"] == 2
+
+
+def test_a_first_estimate_that_fao_has_since_replaced_is_read_again(night, tmp_path):
+    sv.refresh(BOX, MID_NOV)
+    # 80 days after 10 Nov the file is FAO's final one: the same period, read again
+    assert sv.refresh(BOX, date(2027, 1, 29)) == sv.SOIL_AGAIN and night["soil"] == 2
+
+
+def test_a_first_estimate_old_enough_to_have_been_replaced_is_read_again():
+    first = _soil()  # 1-10 Nov, a first estimate
+    assert sv._soil_may_be_newer(first, date(2026, 11, 20)) is False
+    assert sv._soil_may_be_newer(first, date(2026, 11, 21)) is True
+    final = _soil(first=False)
+    kept_newest = sv.Soil("2026-11-D3", final.percent, final.west, final.north, final.step, True, 69.0, 40.0, 75.0)
+    assert sv._soil_may_be_newer(kept_newest, date(2026, 12, 10)) is False  # 1-10 Dec ends that day
+    assert sv._soil_may_be_newer(kept_newest, date(2026, 12, 11)) is True
+    old_first = sv.Soil("2026-08-D3", final.percent, final.west, final.north, final.step, True, 69.0, 40.0, 75.0)
+    assert sv._soil_may_be_newer(old_first, date(2026, 11, 23)) is True
+
+
+def test_a_search_that_fails_leaves_the_kept_view_as_it_is(night, tmp_path):
+    sv.refresh(BOX, MID_NOV)
+    made_at = _age(_kept_file(tmp_path), 30)
+    night["newest"] = None
+    assert sv.refresh(BOX, MID_NOV + timedelta(days=1)) == sv.NOT_CHECKED
+    assert _kept_file(tmp_path).stat().st_mtime == made_at and night["plants"] == 1
+
+
+def test_a_view_kept_before_passes_were_remembered_a_half_view_and_a_wide_box(night, tmp_path):
+    night["newest"] = None  # as plants_view gave before it remembered the newest pass
+    assert sv.refresh(BOX, MID_NOV) == sv.MADE
+    night["newest"] = KNOWN_PASS
+    assert sv.refresh(BOX, MID_NOV) == sv.MADE and night["plants"] == 2 and night["searched"] == []
+    night["soil_fails"] = True
+    other = [BOX[0] + 0.1, BOX[1], BOX[2] + 0.1, BOX[3]]
+    assert sv.refresh(other, MID_NOV) == sv.NOT_WHOLE
+    assert sv.fresh(other) is False  # nothing is kept: the first ask tries again
+    assert sv.refresh([29.0, -2.5, 30.5, -1.5], MID_NOV) == sv.TOO_WIDE and night["plants"] == 3
+
+
+def test_the_app_gives_up_its_copy_in_memory_when_the_night_has_written_a_newer_view(night, tmp_path):
+    held = sv.view(BOX, MID_NOV)  # the app made it on an afternoon ask and holds it in memory
+    assert sv.view(BOX, MID_NOV) is held
+    _age(_kept_file(tmp_path), 10)
+    sv._views[sv._key(BOX)] = (held, _kept_file(tmp_path).stat().st_mtime)
+    # the night, in the pipelines' process, makes a newer one: here, the same call with the memory out of the way
+    in_memory = dict(sv._views)
+    sv._views.clear()
+    night["newest"] = MID_NOV
+    assert sv.refresh(BOX, MID_NOV + timedelta(days=1)) == sv.MADE
+    sv._views.clear()
+    sv._views.update(in_memory)
+    newer = sv.view(BOX, MID_NOV + timedelta(days=1))
+    assert newer is not held and newer.plants is not None and newer.plants.newest_pass == MID_NOV
+    assert night["plants"] == 2  # read from the cache volume, not from the satellites
+
+
+def test_the_view_remembers_the_newest_pass_the_search_held_even_an_all_cloud_one(tmp_path, in_process):
+    asked = in_process([
+        _pass(tmp_path, TODAY - timedelta(days=1), ndvi=0.5, cloud_east_of=0.0),
+        _pass(tmp_path, TODAY - timedelta(days=6), ndvi=0.5),
+        _pass(tmp_path, TODAY - timedelta(days=21), ndvi=0.3),
+    ])
+    plants = sv.plants_view(BOX, TODAY)
+    assert plants.covered == 1.0 and plants.newest_pass == TODAY - timedelta(days=1)
+    assert plants.main_day == TODAY - timedelta(days=6)
+    # the night's question: anything since? One search over those days only.
+    del asked[:]
+    assert sv._newest_pass_since(BOX, plants.newest_pass, TODAY) == TODAY - timedelta(days=1)
+    assert asked == [f"{(TODAY - timedelta(days=1)).isoformat()}/{TODAY.isoformat()}"]
+    assert sv._newest_pass_since(BOX, TODAY - timedelta(days=30), TODAY) == TODAY - timedelta(days=1)
+    in_process([], error="HTTPSConnectionPool: timed out")
+    assert sv._newest_pass_since(BOX, plants.newest_pass, TODAY) is None
+
+
+def test_a_pass_on_the_photos_other_grid_counts_as_a_new_pass(tmp_path, in_process):
+    # a photo on the seam of two grids: the view is made from one grid, and the newest pass shows up on the other
+    in_process([
+        _pass(tmp_path, TODAY - timedelta(days=6), ndvi=0.5),
+        _pass(tmp_path, TODAY - timedelta(days=11), ndvi=0.5),
+        _pass(tmp_path, TODAY - timedelta(days=1), ndvi=0.5, tile="35MRU"),
+    ])
+    assert sv.plants_view(BOX, TODAY).newest_pass == TODAY - timedelta(days=1)
+    assert sv._newest_pass_since(BOX, TODAY - timedelta(days=6), TODAY) == TODAY - timedelta(days=1)
