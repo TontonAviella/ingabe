@@ -22,6 +22,7 @@ def cog(monkeypatch):
     The read runs here, not in a raster worker process, so the replacement applies to it."""
     monkeypatch.setattr(ws.raster_process, "run", lambda fn, *args: fn(*args))
     monkeypatch.setattr(ws, "_points", LRUCache(maxsize=64))
+    monkeypatch.setattr(ws, "_first_estimates", TTLCache(maxsize=64, ttl=24 * 3600))
     now = [0.0]
     monkeypatch.setattr(ws, "_unpublished", TTLCache(maxsize=64, ttl=3 * 3600, timer=lambda: now[0]))
     state = {"value": 37, "error": None, "opens": 0}
@@ -118,10 +119,14 @@ def test_a_first_estimate_is_not_kept_on_disk_so_a_restart_reads_faos_replacemen
     assert ws._read_point(fresh, -1.9, 30.1, 0.001, 0.0) == pytest.approx(0.037)
     assert ws._read_point(fresh, -1.9, 30.1, 0.001, 0.0) == pytest.approx(0.037)  # kept in memory meanwhile
     assert state["opens"] == 1
-    monkeypatch.setattr(ws, "_points", LRUCache(maxsize=64))  # the restart
+    clock = [0.0]
+    monkeypatch.setattr(ws, "_first_estimates", TTLCache(maxsize=64, ttl=24 * 3600, timer=lambda: clock[0]))
+    assert ws._read_point(fresh, -1.9, 30.1, 0.001, 0.0) == pytest.approx(0.037)  # the restart: read again, not from disk
+    assert state["opens"] == 2
+    clock[0] = 24 * 3600 + 1  # and without a restart it is read again after a day
     state["value"] = 41  # FAO's replacement
     assert ws._read_point(fresh, -1.9, 30.1, 0.001, 0.0) == pytest.approx(0.041)
-    assert state["opens"] == 2
+    assert state["opens"] == 3
 
 
 def test_a_series_reads_only_what_is_not_kept_and_keeps_settled_periods(cog, monkeypatch):

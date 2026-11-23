@@ -35,6 +35,7 @@ import logging
 import os
 import threading
 import time
+import zipfile
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import date, timedelta
@@ -417,6 +418,8 @@ def plants_view(bbox: Sequence[float], today: date) -> Plants:
             raise NoPicture("The satellite's pictures could not be read just now.")
         raise NoPicture(f"No satellite pass saw this ground clearly in the last {LOOKBACKS[-1]} days.")
     ndvi, seen, from_haze = newest_clear(looks)
+    if not (seen > 0).any():  # class maps showed clear ground, but the bands held no value there
+        raise NoPicture(f"No satellite pass saw this ground clearly in the last {LOOKBACKS[-1]} days.")
     return Plants(grid=grid, ndvi=ndvi, seen=seen, hazy=from_haze, change=change_since(looks, ndvi, seen, from_haze),
                   passes_read=read)
 
@@ -437,13 +440,13 @@ def _read_soil(url: str, bbox: Sequence[float], env: dict[str, str]) -> tuple[st
             west, _, _, north = window_bounds(window, ds.transform)
             return "grid", (values, float(west), float(north), float(ds.res[0]))
     except Exception as why:  # noqa: BLE001 - a worker returns what happened; the caller logs it
-        return ("unpublished", None) if "404" in str(why) else ("error", f"{type(why).__name__}: {why}")
+        return ("unpublished", None) if "HTTP response code: 404" in str(why) else ("error", f"{type(why).__name__}: {why}")
 
 
 def soil_view(bbox: Sequence[float], today: date) -> Soil:
     """The newest published ten days of FAO's soil moisture over bbox, and where the photo's centre sits in its
     own last year. Raises NoPicture."""
-    scale = wapor_service.LAYERS[SOIL_LAYER][0] * 100.0  # stored value to per cent
+    scale, offset = wapor_service.LAYERS[SOIL_LAYER][:2]  # stored value to a share of 1
     period = wapor_service.dekad_of(today)
     for _ in range(SOIL_TRIES):
         kind, got = raster_process.run(_read_soil, wapor_service.raster_url(SOIL_LAYER, period), list(bbox),
@@ -457,7 +460,7 @@ def soil_view(bbox: Sequence[float], today: date) -> Soil:
     else:
         raise NoPicture("FAO has not published soil moisture for the last weeks.")
     values, west, north, step = got
-    percent = np.where(values == wapor_service.NODATA, np.nan, values.astype(np.float32) * scale)
+    percent = np.where(values == wapor_service.NODATA, np.nan, (values.astype(np.float32) * scale + offset) * 100.0)
     if not np.isfinite(percent).any():
         raise NoPicture("FAO's soil moisture holds no value for this ground.")
     _, ends = wapor_service.dekad_days(period)
@@ -510,7 +513,7 @@ def _keep(key: tuple[float, ...], made: View) -> None:
     }
     try:
         _KEEP_DIR.mkdir(parents=True, exist_ok=True)
-        for old in _KEEP_DIR.glob("*.npz"):
+        for old in (*_KEEP_DIR.glob("*.npz"), *_KEEP_DIR.glob("*.part")):  # a .part is a write that never finished
             if time.time() - old.stat().st_mtime > KEEP_DAYS * 86400:
                 old.unlink(missing_ok=True)
         path = _keep_path(key)
@@ -535,7 +538,7 @@ def _kept(key: tuple[float, ...]) -> Optional[View]:
         with np.load(path) as kept:
             facts = json.loads(str(kept["facts"]))
             ndvi, seen, from_haze, percent = kept["ndvi"], kept["seen"], kept["hazy"], kept["percent"]
-    except (OSError, ValueError, KeyError):
+    except (OSError, ValueError, KeyError, EOFError, zipfile.BadZipFile):
         logger.warning("satellite view: the kept view could not be read; making it again", exc_info=True)
         return None
     change = facts["change"]
@@ -692,7 +695,7 @@ def period_words(period: str, today: Optional[date] = None) -> str:
 
 def soil_band(percent: float) -> tuple[str, str]:
     """(the band's words, its colour) for a soil moisture reading."""
-    index = max(i for i, (low, _) in enumerate(SOIL_BANDS) if percent >= low)
+    index = max((i for i, (low, _) in enumerate(SOIL_BANDS) if percent >= low), default=0)
     low, colour = SOIL_BANDS[index]
     if index == 0:
         return f"Below {SOIL_BANDS[1][0]:g}%", colour

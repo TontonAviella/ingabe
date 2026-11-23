@@ -122,6 +122,8 @@ GDAL_COG_ENV = {
 # yet (404) is asked for again after a while; other failures are not kept.
 _points: LRUCache = LRUCache(maxsize=8192)  # (url, lat, lon) -> raw value, None for NODATA
 _unpublished: TTLCache = TTLCache(maxsize=1024, ttl=3 * 3600)  # url -> True
+# A first estimate (see SETTLED_AFTER_DAYS) is kept for a day only, in memory only: FAO replaces it.
+_first_estimates: TTLCache = TTLCache(maxsize=8192, ttl=24 * 3600)  # (url, lat, lon) -> raw value, None for NODATA
 _cache_lock = threading.Lock()
 _MEMO = "wapor_point"  # disk_memo namespace
 # Reads stay 6 at a time rather than all 12 dekads at once; each runs in a raster worker process
@@ -147,8 +149,7 @@ def _read_point(url: str, lat: float, lon: float, scale: float, offset: float) -
     with _cache_lock:
         if url in _unpublished:
             return None
-        known = key in _points
-        raw = _points.get(key)
+        known, raw = _remembered(key)
     if not known:
         known, raw = disk_memo.get(_MEMO, memo_key)
         if known:
@@ -166,10 +167,7 @@ def _read_point(url: str, lat: float, lon: float, scale: float, offset: float) -
                     _unpublished[url] = True
             return None
         raw = None if got == NODATA else got
-        with _cache_lock:
-            _points[key] = raw
-        if _settled(url, date.today()):
-            disk_memo.put(_MEMO, memo_key, raw)
+        _remember(key, raw)
     return None if raw is None else raw * scale + offset
 
 
@@ -184,6 +182,23 @@ _SERIES_THREADS = 8
 def _settled(url: str, today: date) -> bool:
     """Whether the ten-day file at `url` is old enough to be FAO's replaced, final version."""
     return (today - dekad_days(url.rsplit(".", 2)[-2])[1]).days >= SETTLED_AFTER_DAYS
+
+
+def _remembered(key: tuple[str, float, float]) -> tuple[bool, int | None]:
+    """(True, raw value) when this reading is in memory; call with _cache_lock held."""
+    for kept in (_points, _first_estimates):
+        if key in kept:
+            return True, kept[key]
+    return False, None
+
+
+def _remember(key: tuple[str, float, float], raw: int | None) -> None:
+    """Keep a reading: for good (memory and disk) once its file is settled, for a day in memory before that."""
+    settled = _settled(key[0], date.today())
+    with _cache_lock:
+        (_points if settled else _first_estimates)[key] = raw
+    if settled:
+        disk_memo.put(_MEMO, f"{key[0]}|{key[1]!r}|{key[2]!r}", raw)
 
 
 def _read_points_raw(urls: list[str], lat: float, lon: float, env: dict[str, str]) -> list[tuple[str, int | str]]:
@@ -209,8 +224,7 @@ def point_series(layer_code: str, dekads: list[str], lat: float, lon: float) -> 
             if url in _unpublished:
                 raw[dk] = None
                 continue
-            known = key in _points
-            value = _points.get(key)
+            known, value = _remembered(key)
         if not known:
             known, value = disk_memo.get(_MEMO, f"{url}|{lat!r}|{lon!r}")
         if known:
@@ -222,7 +236,6 @@ def point_series(layer_code: str, dekads: list[str], lat: float, lon: float) -> 
             answers = raster_process.run(_read_points_raw, [url for _, url in to_read], lat, lon, GDAL_COG_ENV)
         except Exception as e:  # the worker died or never answered
             answers = [("error", f"raster worker: {e!r}")] * len(to_read)
-        today = date.today()
         for (dk, url), (kind, got) in zip(to_read, answers):
             if kind == "error":
                 logger.warning("WaPOR read failed for %s: %s", url, got)
@@ -232,10 +245,7 @@ def point_series(layer_code: str, dekads: list[str], lat: float, lon: float) -> 
                 raw[dk] = None
                 continue
             value = None if got == NODATA else int(got)
-            with _cache_lock:
-                _points[(url, lat, lon)] = value
-            if _settled(url, today):
-                disk_memo.put(_MEMO, f"{url}|{lat!r}|{lon!r}", value)
+            _remember((url, lat, lon), value)
             raw[dk] = value
     return {dk: (None if (value := raw[dk]) is None else value * scale + offset) for dk in dekads}
 

@@ -314,7 +314,28 @@ def test_soil_squares_carry_their_reading_band_period_and_first_estimate_note():
     assert "note" not in sv.soil_squares(_soil(first=False))["geojson"]["features"][0]["properties"]
 
 
+def test_passes_whose_bands_hold_no_value_give_no_picture_not_a_crash(tmp_path, in_process):
+    empty = _pass(tmp_path, TODAY - timedelta(days=2), ndvi=0.5)
+    for band in ("red", "nir"):
+        with rasterio.open(empty["assets"][band]["href"], "r+") as dst:
+            dst.write(np.zeros((dst.height, dst.width), dtype="uint16"), 1)
+    in_process([empty])
+    with pytest.raises(sv.NoPicture, match="No satellite pass saw this ground clearly"):
+        sv.plants_view(BOX, TODAY)
+
+
+def test_a_kept_file_that_is_not_a_view_is_made_again(tmp_path, monkeypatch):
+    monkeypatch.setattr(sv, "_KEEP_DIR", tmp_path)
+    sv._views.clear()
+    sv._keep_path(sv._key(BOX)).write_bytes(b"not a zip file")
+    monkeypatch.setattr(sv, "plants_view", lambda bbox, today: _plants(np.full((4, 4), 0.5), np.full((4, 4), 4)))
+    monkeypatch.setattr(sv, "soil_view", lambda bbox, today: _soil())
+    assert sv.view(BOX, TODAY).plants is not None
+    sv._views.clear()
+
+
 def test_soil_bands_are_number_ranges_with_no_dry_or_wet_words():
+    assert sv.soil_band(-0.4)[0] == "Below 45%"  # a reading just under zero still has a band
     assert [sv.soil_band(v)[0] for v in (10, 45, 54.9, 65, 75, 100)] == [
         "Below 45%", "45-55%", "45-55%", "65-75%", "75% and above", "75% and above"]
     assert sv.period_words("2026-11-D1", TODAY) == "1-10 Nov"
@@ -382,6 +403,7 @@ def test_soil_that_cannot_be_read_or_is_not_published_says_so_in_plain_words(mon
     monkeypatch.setattr(sv.raster_process, "run", lambda fn, *args: ("unpublished", None))
     with pytest.raises(sv.NoPicture, match="FAO has not published soil moisture for the last weeks"):
         sv.soil_view(BOX, TODAY)
+    assert sv._read_soil("/no/such/file-404.tif", BOX, {})[0] == "error"  # "404" in a name is not "not published"
     monkeypatch.setattr(sv.raster_process, "run", lambda fn, *args: ("error", "CPLE_HttpResponseError: HTTP response code: 503"))
     with pytest.raises(sv.NoPicture) as said:
         sv.soil_view(BOX, TODAY)
