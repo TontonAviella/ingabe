@@ -625,196 +625,41 @@ def nightly_parcel_ndvi(
     context: AssetExecutionContext,
     postgres: PostgresResource,
 ) -> dict[str, Any]:
-    """Compute NDVI statistics for user-uploaded parcel boundaries.
+    """NDVI of every field outlined on a drone photo of a farm project, from its clearest recent pass.
 
-    Runs nightly at 3 AM UTC.  Finds vector layers tagged with
-    metadata->>'rwanda_parcels' = true, extracts individual feature
-    geometries, and computes NDVI via Digital Earth Africa at 10m
-    native resolution.
-
-    Results go into ndvi_parcel_cache for Sage to read instantly.
+    Runs nightly at 3 AM UTC. The fields are read where they are kept (beside their photo in object storage,
+    field_taps), each is measured on the clearest Sentinel-2 pass of the last 30 days (Digital Earth Africa,
+    10 m, clipped to the field), and one row a field and pass goes into ndvi_parcel_cache with the pass's day.
+    What is measured and why the store stayed empty before: src/services/field_ndvi.py.
     """
-    import math
-    import uuid
-
+    from src.services import field_ndvi, field_taps, satellite_ahead
     from src.services.deafrica_stac import get_deafrica_service
+    from src.utils import get_async_s3_client, get_bucket_name
 
-    dea = get_deafrica_service()
-
-    # Find parcel layers: user-uploaded vectors tagged as rwanda_parcels
-    try:
-        parcel_layers = postgres.execute_query("""
-            SELECT layer_id, name
-            FROM map_layers
-            WHERE type = 'vector'
-              AND (metadata->>'rwanda_parcels')::boolean = true
-        """)
-    except Exception:
-        parcel_layers = []
-
-    if not parcel_layers:
-        context.log.info("No user-uploaded parcel layers found")
-        return {"status": "no_parcels", "parcels_processed": 0}
-
-    context.log.info("Found %d parcel layers to process", len(parcel_layers))
-
-    now = datetime.utcnow()
-    date_from = (now - timedelta(days=7)).strftime("%Y-%m-%d")
-    date_to = now.strftime("%Y-%m-%d")
-    week_start = (now - timedelta(days=7)).strftime("%Y-%m-%d")
-
-    total_parcels = 0
-    errors = []
-
-    for layer_id, layer_name in parcel_layers:
-        try:
-            # Try to get individual feature geometries from PostGIS
-            # User-uploaded layers store features in a layer-specific table
-            # or in the postgis_features table
-            feature_rows = []
-
-            # Check for features in the layer's PostGIS table
-            try:
-                feature_rows = postgres.execute_query(
-                    """
-                    SELECT
-                        COALESCE(properties->>'name', properties->>'id',
-                                 properties->>'parcel_id', 'parcel_' || ROW_NUMBER() OVER()),
-                        ST_AsGeoJSON(geom)
-                    FROM postgis_layer_%s
-                    WHERE geom IS NOT NULL
-                    LIMIT 500
-                    """,
-                    (layer_id.replace("-", "_"),),
-                )
-            except Exception:
-                pass
-
-            # Fallback: check if features stored via s3_key FlatGeoBuf
-            if not feature_rows:
-                context.log.info(
-                    "No PostGIS features for layer %s — will process as single geometry",
-                    layer_id,
-                )
-                # Get the layer's bounds as a single geometry
-                try:
-                    bounds_rows = postgres.execute_query(
-                        """
-                        SELECT name, ST_AsGeoJSON(
-                            ST_MakeEnvelope(
-                                (bounds->>'west')::float,
-                                (bounds->>'south')::float,
-                                (bounds->>'east')::float,
-                                (bounds->>'north')::float,
-                                4326
-                            )
-                        )
-                        FROM map_layers
-                        WHERE layer_id = %s
-                        """,
-                        (layer_id,),
-                    )
-                    if bounds_rows:
-                        feature_rows = [(bounds_rows[0][0], bounds_rows[0][1])]
-                except Exception:
-                    pass
-
-            if not feature_rows:
-                context.log.warning("No features found for layer %s", layer_id)
-                continue
-
-            context.log.info(
-                "Processing %d parcels from layer %s (%s)",
-                len(feature_rows), layer_id, layer_name,
-            )
-
-            for parcel_name, geom_geojson in feature_rows:
-                try:
-                    if not geom_geojson:
-                        continue
-
-                    geometry = json.loads(geom_geojson)
-
-                    stats = dea.get_field_stats(
-                        geometry=geometry,
-                        date_from=date_from,
-                        date_to=date_to,
-                        index="ndvi",
-                    )
-
-                    if "error" in stats:
-                        errors.append({"parcel": parcel_name, "error": stats["error"]})
-                        continue
-
-                    intervals = stats.get("intervals", [])
-                    if not intervals:
-                        continue
-
-                    ndvi_means = [
-                        iv["ndvi"]["mean"]
-                        for iv in intervals
-                        if "ndvi" in iv
-                        and iv["ndvi"].get("valid_pixels", 0) > 0
-                        and not math.isnan(iv["ndvi"]["mean"])
-                    ]
-                    if not ndvi_means:
-                        continue
-
-                    mean_ndvi = float(np.mean(ndvi_means))
-                    std_ndvi = float(np.std(ndvi_means))
-                    min_ndvi = float(np.min(ndvi_means))
-                    max_ndvi = float(np.max(ndvi_means))
-                    total_pixels = sum(
-                        iv["ndvi"].get("valid_pixels", 0)
-                        for iv in intervals
-                        if "ndvi" in iv
-                    )
-
-                    # Estimate area from pixel count (10m resolution = 0.01 ha/pixel)
-                    area_ha = round(total_pixels * 0.01, 2)
-
-                    parcel_id = str(uuid.uuid5(
-                        uuid.NAMESPACE_URL,
-                        f"{layer_id}/{parcel_name}",
-                    ))
-
-                    with postgres.get_sync_connection() as pg_conn:
-                        with pg_conn.cursor() as cur:
-                            cur.execute(
-                                """
-                                INSERT INTO ndvi_parcel_cache
-                                    (parcel_id, parcel_name, layer_id, week_start,
-                                     mean_ndvi, std_ndvi, min_ndvi, max_ndvi,
-                                     valid_pixels, area_ha)
-                                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                                """,
-                                (parcel_id, parcel_name, str(layer_id), week_start,
-                                 mean_ndvi, std_ndvi, min_ndvi, max_ndvi,
-                                 total_pixels, area_ha),
-                            )
-                        pg_conn.commit()
-
-                    total_parcels += 1
-
-                except Exception as e:
-                    errors.append({"parcel": parcel_name, "error": str(e)})
-
-        except Exception as e:
-            context.log.error("Failed processing layer %s: %s", layer_id, e)
-            errors.append({"layer_id": str(layer_id), "error": str(e)})
-
-    context.log.info(
-        "Parcel NDVI complete: %d parcels processed, %d errors",
-        total_parcels, len(errors),
+    photos = field_ndvi.photo_layers(
+        postgres.execute_query(satellite_ahead.PHOTOS_SQL, (satellite_ahead.FARM_INDUSTRIES,))
     )
-    return {
-        "status": "ok",
-        "parcels_processed": total_parcels,
-        "layers_checked": len(parcel_layers),
-        "errors_count": len(errors),
-        "errors": errors[:10],
-        "date_range": f"{date_from}/{date_to}",
-    }
+
+    async def _fields() -> list[field_ndvi.Field]:
+        s3, bucket = await get_async_s3_client(), get_bucket_name()
+        found: list[field_ndvi.Field] = []
+        for layer_id, photo_key in photos:
+            found.extend(field_ndvi.fields_of(layer_id, await field_taps.kept(s3, bucket, photo_key, layer_id)))
+        return found
+
+    fields = asyncio.run(_fields()) if photos else []
+    context.log.info("Field NDVI: %d outlined fields on %d farm photos", len(fields), len(photos))
+
+    def _keep(row: dict[str, Any]) -> None:
+        with postgres.get_sync_connection() as pg_conn:
+            with pg_conn.cursor() as cur:
+                cur.execute(field_ndvi.DELETE_SAME_PASS_SQL, (row["parcel_id"], row["pass_date"]))
+                cur.execute(field_ndvi.INSERT_SQL, tuple(row[c] for c in field_ndvi.ROW_COLUMNS))
+            pg_conn.commit()
+
+    result = field_ndvi.run(fields, field_ndvi.today_utc(), get_deafrica_service().get_field_stats, _keep)
+    context.log.info("Field NDVI: %s", {k: v for k, v in result.items() if k != "failed"})
+    return {**result, "photos": len(photos)}
 
 
 @asset(

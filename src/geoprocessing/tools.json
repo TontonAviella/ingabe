@@ -175,7 +175,7 @@
     "type": "function",
     "function": {
       "name": "get_parcel_ndvi_stats",
-      "description": "Read parcel-level NDVI statistics from the nightly cache for user-uploaded field boundaries. Updated nightly by Dagster at 10m native Sentinel-2 resolution. These are individual farm fields uploaded by users and tagged with rwanda_parcels=true. Returns per-parcel mean, std, min, max NDVI and estimated area. Use when the user asks about specific fields, farm parcels, or individual plot vegetation health. WHEN TO USE: user-uploaded field boundary by slug or name (e.g. Cyampirita, Kabarama, Kabari). WHEN NOT TO USE: Rwanda admin boundary \u2014 use get_ndvi_stats or get_cell_ndvi_stats. Real-time on an arbitrary polygon \u2014 use get_field_health.",
+      "description": "Read parcel-level NDVI statistics from the nightly cache for user-uploaded field boundaries. Updated nightly at 10m native Sentinel-2 resolution for the fields a person outlined on a drone photo, each from the clearest pass of the last 30 days. Returns per-field mean, std, min, max NDVI, area, and the pass's date (pass_date) to say with the figure. Use when the user asks about specific fields, farm parcels, or individual plot vegetation health. WHEN TO USE: user-uploaded field boundary by slug or name (e.g. Cyampirita, Kabarama, Kabari). WHEN NOT TO USE: Rwanda admin boundary \u2014 use get_ndvi_stats or get_cell_ndvi_stats. Real-time on an arbitrary polygon \u2014 use get_field_health.",
       "strict": false,
       "parameters": {
         "type": "object",

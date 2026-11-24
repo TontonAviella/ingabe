@@ -446,6 +446,30 @@ async def test_parcel_ndvi_reads_only_this_projects_parcels():
 
 
 @pytest.mark.anyio
+async def test_parcel_ndvi_says_each_fields_newest_pass_and_its_day():
+    """The night keeps one row a field and pass (src/services/field_ndvi.py); Sage reads each field once, at its
+    newest pass, with that pass's day."""
+    from src.services.legacy_tool_shim import LegacyToolContext, execute_legacy_tool
+
+    owner, layer = str(uuid.uuid4()), f"L{RUN_TAG}pd"[:12]
+    async with get_async_db_connection() as conn:
+        my_map = await _project(conn, owner, "agriculture", layer)
+        project_id = await conn.fetchval("SELECT project_id FROM user_mundiai_maps WHERE id = $1", my_map)
+        for day, mean in (("2026-11-05", 0.70), ("2026-11-20", 0.66)):
+            await conn.execute("INSERT INTO ndvi_parcel_cache (parcel_id, parcel_name, layer_id, week_start, pass_date, "
+                               "clear_share, mean_ndvi, computed_at) VALUES ($1, $2, $3, $4::text::date, $4::text::date, 1.0, $5, now())",
+                               f"{layer}-7", f"Field 7 {RUN_TAG}", layer, day, mean)
+        try:
+            result = await execute_legacy_tool("get_parcel_ndvi_stats", LegacyToolContext(
+                user_id=owner, partner_id="", conversation_id=0, map_id=my_map, project_id=project_id, conn=conn,
+                arguments={"layer_id": layer}))
+            assert [(r["pass_date"], r["mean_ndvi"]) for r in result["parcel_ndvi_stats"]] == [("2026-11-20", 0.66)]
+            assert "pass_date" in result["note"]
+        finally:
+            await conn.execute("DELETE FROM ndvi_parcel_cache WHERE layer_id = $1", layer)
+
+
+@pytest.mark.anyio
 async def test_background_writes_link_only_to_notes_the_author_could_read():
     """Hooks write with no user or industry set; a [[slug]] or a frontmatter reference must still not link a note to
     another partner's private note or another industry's note (audit 2026-10-09, round 2)."""

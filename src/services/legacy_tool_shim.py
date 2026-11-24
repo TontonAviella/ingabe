@@ -1248,10 +1248,12 @@ async def _handle_get_parcel_ndvi_stats(ctx: LegacyToolContext) -> Dict[str, Any
         idx += 1
         where_sql = f"WHERE {' AND '.join(where)}"
 
+        # One row a field and pass is kept (src/services/field_ndvi.py): each field is read at its newest pass.
         rows = await ctx.conn.fetch(
-            f"SELECT parcel_id, parcel_name, layer_id, week_start, "
-            f"mean_ndvi, std_ndvi, min_ndvi, max_ndvi, valid_pixels, area_ha "
+            f"SELECT * FROM (SELECT DISTINCT ON (parcel_id) parcel_id, parcel_name, layer_id, week_start, "
+            f"pass_date, clear_share, mean_ndvi, std_ndvi, min_ndvi, max_ndvi, valid_pixels, area_ha, computed_at "
             f"FROM ndvi_parcel_cache {where_sql} "
+            f"ORDER BY parcel_id, pass_date DESC NULLS LAST, computed_at DESC) newest "
             f"ORDER BY computed_at DESC LIMIT 100",
             *params,
         )
@@ -1261,21 +1263,25 @@ async def _handle_get_parcel_ndvi_stats(ctx: LegacyToolContext) -> Dict[str, Any
                 "source": "postgres_cache",
                 "parcel_ndvi_stats": [],
                 "message": (
-                    "No parcel NDVI data yet. Upload field boundaries through "
-                    "the Ingabe app and tag with rwanda_parcels=true in layer "
-                    "metadata. The nightly pipeline processes them."
+                    "No field NDVI yet. Each night the NDVI of every field outlined on a drone photo of this "
+                    "project is read from the clearest Sentinel-2 pass of the last 30 days; a field outlined "
+                    "today has it tomorrow, and a field no pass saw clear in that time has none."
                 ),
             }
         return {
             "status": "success",
             "source": "postgres_cache",
             "count": len(rows),
+            "note": ("Each field's NDVI is from one Sentinel-2 pass, the clearest of the 30 days before it was read; "
+                     "say its pass_date with the figure."),
             "parcel_ndvi_stats": [
                 {
                     "parcel_id": r["parcel_id"],
                     "parcel_name": r["parcel_name"],
                     "layer_id": r["layer_id"],
                     "week_start": str(r["week_start"]) if r["week_start"] else None,
+                    "pass_date": str(r["pass_date"]) if r["pass_date"] else None,
+                    "clear_share": round_or_none(r["clear_share"], 3),
                     "mean_ndvi": round_or_none(r["mean_ndvi"], 4),
                     "std_ndvi": round_or_none(r["std_ndvi"], 4),
                     "min_ndvi": round_or_none(r["min_ndvi"], 4),
@@ -1694,6 +1700,8 @@ async def _handle_get_cell_ndvi_stats(ctx: LegacyToolContext) -> Dict[str, Any]:
                         "sector_name": r["sector_name"],
                         "district_name": r["district_name"],
                         "week_start": str(r["week_start"]) if r["week_start"] else None,
+                    "pass_date": str(r["pass_date"]) if r["pass_date"] else None,
+                    "clear_share": round_or_none(r["clear_share"], 3),
                         "mean_ndvi": round_or_none(r["mean_ndvi"], 4),
                         "std_ndvi": round_or_none(r["std_ndvi"], 4),
                         "min_ndvi": round_or_none(r["min_ndvi"], 4),
